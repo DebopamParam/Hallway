@@ -8,7 +8,7 @@ the attendee's machine with the attendee's keys). The agents meet in a shared
 hallway, find who's worth talking to, set up meetings and swap contact details,
 but only with the person's OK, and never by leaking anything private.
 
-Built on [Switch](https://github.com/switch-ai/switch) for the WeMakeDevs *Flip the Switch* hackathon.
+Built on [Switch](https://github.com/sandbox-quantum/switch) for the WeMakeDevs *Flip the Switch* hackathon.
 
 ```mermaid
 flowchart LR
