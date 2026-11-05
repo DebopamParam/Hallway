@@ -1,0 +1,26 @@
+# Runs Hallway next to an existing Switch stack (github.com/switch-ai/switch,
+# `docker compose up` there first). Hallway joins Switch's network so Switch
+# can call Hallway's privacy guard at http://hallway:8787/guardrails/check.
+services:
+  hallway:
+    build: .
+    env_file: .env
+    environment:
+      SWITCH_URL: http://switch:8000
+      MM_URL: http://mattermost:8065
+      HALLWAY_GUARD_ENDPOINT: http://hallway:8787
+      HALLWAY_DB: /data/hallway.db
+    ports:
+      - "8787:8787"
+    volumes:
+      - hallway-data:/data
+    networks: [switch]
+    restart: unless-stopped
+
+volumes:
+  hallway-data:
+
+networks:
+  switch:
+    name: switch_default
+    external: true

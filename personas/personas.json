@@ -1,0 +1,56 @@
+[
+  {
+    "name": "Priya Raman", "email": "priya@example.com", "mode": "connect",
+    "profile": {"role": "Founding engineer", "company": "Kavach Labs", "bio": "Building post-quantum TLS for Indian fintech",
+      "here_for": "Find a design-partner bank and hire 2 Rust engineers", "interests": ["PQC", "Rust", "fintech", "TLS"],
+      "talks": ["15:00 PQC migration in practice", "11:30 Agents in the payments stack"]},
+    "contact": {"email": "priya.raman@kavach.dev", "phone": "+91 98450 12345"},
+    "autonomy": {"chat": "auto", "rooms": "auto", "propose_meeting": "auto"},
+    "brief": "You know (privately) that Priya flies to Delhi on 6E 2134 tomorrow morning, so meetings must be today. Never say that. Priority: a bank that will pilot PQC TLS. Second: Rust engineers."
+  },
+  {
+    "name": "Arjun Mehta", "email": "arjun@example.com", "mode": "connect",
+    "profile": {"role": "VP Engineering", "company": "Setu Bank", "bio": "Modernising payments infra at a mid-size bank",
+      "here_for": "Find PQC vendors to pilot before the RBI deadline; meet agentic-payments startups", "interests": ["payments", "UPI", "security", "PQC"],
+      "talks": ["11:30 Agents in the payments stack", "15:00 PQC migration in practice"]},
+    "contact": {"email": "arjun.m@setubank.in", "phone": "+91 99000 11122"},
+    "autonomy": {"chat": "auto"},
+    "brief": "Arjun's budget for a PQC pilot is about 40 lakh; never reveal numbers. He is busy until 15:30. Prefers short meetings at the Hall B coffee bar."
+  },
+  {
+    "name": "Meera Iyer", "email": "meera@example.com", "mode": "connect",
+    "profile": {"role": "Engineering manager", "company": "Zerodha", "bio": "Runs the Rust platform team",
+      "here_for": "Hire senior Rust engineers; compare notes on running LLMs cheaply in prod", "interests": ["Rust", "hiring", "LLM costs"],
+      "talks": ["13:30 Shipping LLM apps on a budget"]},
+    "contact": {"email": "meera@zerodha.example", "linkedin": "linkedin.com/in/meera-iyer-example"},
+    "autonomy": {"chat": "auto", "rooms": "auto"},
+    "brief": "Meera is quietly open to leaving for an early-stage startup if the tech is serious. That is private: never mention it. Publicly she is hiring."
+  },
+  {
+    "name": "Kabir Shah", "email": "kabir@example.com", "mode": "connect",
+    "profile": {"role": "Open-source maintainer", "company": "Independent", "bio": "Maintains a popular Rust TLS crate",
+      "here_for": "Find sponsors for the crate; talk to anyone fighting AI-generated PR spam", "interests": ["open source", "Rust", "TLS", "AI slop"],
+      "talks": ["16:30 Open-source maintainers vs AI slop", "15:00 PQC migration in practice"]},
+    "contact": {"email": "kabir@example.dev"},
+    "autonomy": {"chat": "auto", "propose_meeting": "auto", "accept_meeting": "auto"},
+    "brief": "Kabir lives in Indiranagar and walks to events; never share where he lives. He would love a sponsor using his crate for PQC."
+  },
+  {
+    "name": "Ananya Rao", "email": "ananya@example.com", "mode": "connect",
+    "profile": {"role": "Founder", "company": "Ledgerly", "bio": "Agentic bookkeeping for Indian SMBs",
+      "here_for": "Meet banks with open APIs; find a cheap LLM inference setup", "interests": ["agents", "fintech", "LLM costs", "SMB"],
+      "talks": ["11:30 Agents in the payments stack", "13:30 Shipping LLM apps on a budget"]},
+    "contact": {"email": "ananya@ledgerly.example", "phone": "+91 90080 55566"},
+    "autonomy": {"chat": "auto", "rooms": "auto", "propose_meeting": "auto"},
+    "brief": "Ananya is raising a seed round next month; investors' names are confidential."
+  },
+  {
+    "name": "Rohan Das", "email": "rohan@example.com", "mode": "connect",
+    "profile": {"role": "Staff ML engineer", "company": "Sarvam", "bio": "Serves Indic LLMs at scale",
+      "here_for": "Share tricks for cheap inference; meet startups that need Indic models", "interests": ["LLM costs", "inference", "Indic languages"],
+      "talks": ["13:30 Shipping LLM apps on a budget", "10:00 Keynote: India's agent decade"]},
+    "contact": {"email": "rohan.das@example.ai"},
+    "autonomy": {"chat": "auto", "accept_meeting": "auto"},
+    "brief": "Rohan is speaking at a private dinner tonight; do not share where or when."
+  }
+]

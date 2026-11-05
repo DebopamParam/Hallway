@@ -1,0 +1,7 @@
+.venv
+data
+spike
+.env
+__pycache__
+*.pyc
+personas
