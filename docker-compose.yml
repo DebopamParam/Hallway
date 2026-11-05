@@ -17,6 +17,16 @@ services:
     networks: [switch]
     restart: unless-stopped
 
+  daypass:
+    profiles: [daypass]
+    build: ./daypass
+    env_file: .env
+    environment:
+      HALLWAY_URL: http://hallway:8787
+    depends_on: [hallway]
+    networks: [switch]
+    restart: unless-stopped
+
 volumes:
   hallway-data:
 

@@ -65,6 +65,16 @@ def _mcp_url() -> str:
     return f"{settings.public_url}/mcp"
 
 
+def _pass_view(a: dict) -> dict | None:
+    p = hallway.day_pass(a)
+    if not p:
+        return None
+    runs = hallway.store.all(
+        "SELECT cost_usd, tool_calls, summary, ok, created_at FROM pass_runs WHERE attendee_id = ? ORDER BY id DESC LIMIT 8", a["id"])
+    return {"cap_usd": p["cap_usd"], "spent_usd": p["spent_usd"], "runs": p["runs"], "status": p["status"],
+            "last_run_at": p["last_run_at"], "every_s": settings.daypass_every_s, "recent": runs}
+
+
 def _me_view(a: dict) -> dict:
     return {
         **public_profile(a),
@@ -76,6 +86,7 @@ def _me_view(a: dict) -> dict:
         "locked": sorted(LOCKED_ASK),
         "privacy": a["privacy"],
         "agent_seen_at": a["agent_seen_at"],
+        "pass": _pass_view(a),
         "connect": {
             "mcp_url": _mcp_url(),
             "token": a["mcp_token"],
@@ -96,6 +107,7 @@ class StartAuth(BaseModel):
 @app.get("/api/event")
 async def event():
     return {"name": settings.event_name, "daypass_enabled": settings.daypass_enabled,
+            "daypass": {"price": settings.daypass_price, "cap_usd": settings.daypass_cap_usd} if settings.daypass_enabled else None,
             "max_attendees": settings.max_attendees, "lobby": settings.lobby_room_name, "attendees": len(hallway.store.attendees()), "agenda": AGENDA}
 
 
@@ -178,6 +190,17 @@ class UpdateMe(BaseModel):
 @app.put("/api/me")
 async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)):
     a = hallway.update_settings(_me(hw_session), profile=body.profile, contact=body.contact, autonomy=body.autonomy)
+    return _me_view(a)
+
+
+class PassState(BaseModel):
+    paused: bool
+
+
+@app.post("/api/me/pass")
+async def pass_state(body: PassState, hw_session: str | None = Cookie(None)):
+    a = _me(hw_session)
+    hallway.set_pass_paused(a, body.paused)
     return _me_view(a)
 
 
@@ -334,6 +357,40 @@ async def enable_guard(request: Request):
     finally:
         await gw.close()
     return res
+
+
+# ----------------------------------------------------------- day pass worker
+def _worker(request: Request) -> None:
+    key = settings.daypass_worker_key or settings.guard_api_key
+    if not key or not secrets.compare_digest(request.headers.get("x-hallway-worker", ""), key):
+        raise HTTPException(401, "bad worker key")
+
+
+@app.get("/internal/daypass/due")
+async def daypass_due(request: Request, every_s: int | None = None):
+    """Passes whose agent should run now, with what the worker needs to run them."""
+    _worker(request)
+    out = []
+    for p in hallway.due_passes(settings.daypass_every_s if every_s is None else every_s):
+        out.append({"attendee_id": p["attendee_id"], "name": p["name"], "handle": p["handle"],
+                    "mcp_url": _mcp_url(), "token": p["mcp_token"], "runs": p["runs"],
+                    "remaining_usd": round(p["cap_usd"] - p["spent_usd"], 6), "here_for": p["profile"].get("here_for", "")})
+    return out
+
+
+class RunReport(BaseModel):
+    engine: str
+    cost_usd: float
+    tool_calls: int = 0
+    summary: str = ""
+    ok: bool = True
+
+
+@app.post("/internal/daypass/{attendee_id}/runs")
+async def daypass_report(attendee_id: str, body: RunReport, request: Request):
+    _worker(request)
+    p = hallway.record_run(attendee_id, body.engine, body.cost_usd, body.tool_calls, body.summary, body.ok)
+    return {"status": p["status"], "spent_usd": p["spent_usd"], "remaining_usd": round(p["cap_usd"] - p["spent_usd"], 6)}
 
 
 # --------------------------------------------------------------- SPA + MCP

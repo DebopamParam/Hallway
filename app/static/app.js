@@ -230,13 +230,19 @@ async function onboard() {
       <label class="choice ${draft.mode === id ? "on" : ""} ${off ? "off" : ""}">
         <input type="radio" name="mode" value="${id}" ${draft.mode === id ? "checked" : ""} ${off ? "disabled" : ""}>
         <div class="row spread"><h3>${title}</h3>${note}</div><p class="small muted" style="margin-top:4px">${desc}</p></label>`;
+    const dp = state.event.daypass;
     body = `
-      <div class="stack-sm"><h2>Your agent</h2><p class="small muted">It runs on your machine with your keys. Hallway only sees what it says in the hallway.</p></div>
+      <div class="stack-sm"><h2>Your agent</h2><p class="small muted">${dp ? "Bring your own, or rent one for the day." : "It runs on your machine with your keys."} Hallway only sees what it says in the hallway.</p></div>
       <div class="stack">
         ${choice("connect", "Connect", "Add Hallway as an MCP server in Claude Code, Codex or any MCP client. Your agent checks in every few minutes.")}
         ${choice("live", "Live on Switch", "Your agent joins rooms as a Switch agent through Switch Console and wakes the moment someone tags it.")}
         ${draft.mode === "live" ? field("live_name", "Your Switch agent's name", draft.live_agent_name, "steve.claude", "Register it in Switch Console on this event's server first.") : ""}
-        ${choice("daypass", "Day pass", "No agent? Rent one from the organiser for the day.", '<span class="chip">Soon</span>', !state.event.daypass_enabled)}
+        ${choice("daypass", "Day pass", "No agent? The organiser runs one for you today. Nothing to install.",
+          dp ? `<span class="chip">${esc(dp.price)}</span>` : '<span class="chip">Soon</span>', !dp)}
+        ${draft.mode === "daypass" && dp ? `<div class="card stack-sm">
+          <div class="row spread small"><span>Day pass agent</span><strong>${esc(dp.price)}</strong></div>
+          <p class="tiny muted">It checks the hallway every few minutes until it has used $${dp.cap_usd.toFixed(2)} of model time. Pause it any time from the Agent tab.</p>
+          <p class="tiny"><span class="chip">Demo event, no charge</span></p></div>` : ""}
       </div>`;
   } else {
     body = `
@@ -269,7 +275,7 @@ async function onboard() {
       state.me = await api("/api/register", { body: { name: draft.name, profile: draft.profile, contact: draft.contact,
         autonomy: draft.autonomy, mode: draft.mode, live_agent_name: draft.live_agent_name || null } });
       go("me");
-      toast("You're in. Now connect your agent.");
+      toast(draft.mode === "daypass" ? "You're in. Your agent starts in a minute." : "You're in. Now connect your agent.");
     } catch (e) { toast(e.message); }
   };
 }
@@ -469,6 +475,59 @@ async function peopleView() {
 }
 
 // ---------------------------------------------------------------- agent
+const usd = (x) => "$" + (x > 0 && x < 0.1 ? x.toFixed(3) : x.toFixed(2));
+const PASS_STATUS = { active: ["ok", "Running"], paused: ["warn", "Paused"], spent: ["bad", "Budget used"] };
+
+function passView(me, check) {
+  const p = me.pass;
+  const pct = Math.min(100, Math.round((p.spent_usd / p.cap_usd) * 100));
+  const [tone, label] = PASS_STATUS[p.status];
+  const next = p.status !== "active" ? "" : !p.last_run_at ? "First run within a minute"
+    : `Next check in about ${Math.max(1, Math.round((p.last_run_at + p.every_s - Date.now() / 1000) / 60))} min`;
+  shell("me", `<div class="page">
+    <div class="row">${av(me.name, "agent", "lg")}<div class="grow"><h2>${esc(me.agent_display)}</h2>
+      <p class="tiny muted"><span class="mono">@${esc(me.agent)}</span> · Day pass</p></div></div>
+    <div class="row wrap" style="margin-top:12px"><span class="chip ${tone}">${label}</span>${check}</div>
+
+    <div class="section">Budget</div>
+    <div class="card stack">
+      <div class="row spread"><strong class="num">${usd(p.spent_usd)} <span class="muted small">of ${usd(p.cap_usd)}</span></strong>
+        <span class="small muted">${p.runs} ${p.runs === 1 ? "check" : "checks"}</span></div>
+      <div class="meter" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></div>
+      <div class="row spread"><span class="tiny muted">${esc(next)}</span>
+        ${p.status === "spent" ? "" : `<button class="btn sm" id="pause">${p.status === "paused" ? "Resume" : "Pause"}</button>`}</div>
+    </div>
+    <p class="tiny muted" style="margin-top:8px">The organiser runs it with Hallway's tools only. It stops by itself at the cap.</p>
+
+    <div class="section">What it did</div>
+    ${p.recent.length ? `<div class="list">${p.recent.map((r) => `<div class="activity">
+        <div class="text">${r.ok ? "" : '<span class="chip bad">Failed</span> '}${esc(r.summary)}</div>
+        <time>${ago(r.created_at)} · ${usd(r.cost_usd)}</time></div>`).join("")}</div>`
+      : '<p class="small muted">Nothing yet.</p>'}
+
+    <div class="section">What it can do alone</div>
+    <div>${autonomyRows(me.autonomy, me.locked)}</div>
+
+    <button class="btn quiet" id="logout" style="margin-top:24px">Sign out</button>
+  </div>`, { title: "Your agent" });
+  document.getElementById("pause")?.addEventListener("click", async () => {
+    try { state.me = await api("/api/me/pass", { body: { paused: p.status !== "paused" } }); render(); } catch (e) { toast(e.message); }
+  });
+  bindAutonomy(me.autonomy, async (k, v) => {
+    try { state.me = await api("/api/me", { method: "PUT", body: { autonomy: { [k]: v } } }); toast("Saved"); } catch (e) { toast(e.message); }
+  });
+  document.getElementById("logout").onclick = async () => { await api("/api/auth/logout", { body: {} }); state.me = null; go(""); };
+  const seen = JSON.stringify([p.runs, p.status]);
+  every(5000, async () => {
+    try {
+      state.me = await api("/api/me");
+      if (JSON.stringify([state.me.pass.runs, state.me.pass.status]) !== seen) render();
+      const s = document.getElementById("agent-status");
+      if (s) s.innerHTML = agentStatus();
+    } catch { /* keep the last view */ }
+  });
+}
+
 const CONNECT_TABS = [["cc", "Claude Code"], ["cx", "Codex"], ["ko", "Kickoff prompt"]];
 
 async function meView() {
@@ -478,6 +537,7 @@ async function meView() {
   const check = pv.passed ? '<span class="chip ok">Privacy check passed</span>'
     : pv.checked_at ? '<span class="chip bad">Privacy check failed</span>' : '<span class="chip warn">Privacy check not done</span>';
   const live = me.mode === "live";
+  if (me.pass) return passView(me, check);
   shell("me", `<div class="page">
     <div class="row">${av(me.name, "agent", "lg")}<div class="grow"><h2>${esc(me.agent_display)}</h2>
       <p class="tiny muted"><span class="mono">@${esc(me.agent)}</span> · ${live ? "Live on Switch" : "Connected over MCP"}</p></div></div>

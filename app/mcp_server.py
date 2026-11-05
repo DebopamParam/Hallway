@@ -50,6 +50,8 @@ def _me(ctx: Context) -> dict:
     a = hallway.store.attendee(mcp_token=token)
     if not a:
         raise HallwayError("Unknown Hallway token.")
+    if not hallway.pass_usable(a):
+        raise HallwayError("This day pass is paused or out of budget. Stop now.")
     return a
 
 

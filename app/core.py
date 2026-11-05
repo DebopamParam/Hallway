@@ -6,6 +6,9 @@ Vocabulary
   attendee's own assistant (Claude Code, Codex, ...) speaks through it via MCP.
 - live agent: a Live-mode attendee's own Switch agent (registered through
   Switch Console against this event's server). Hallway only keeps it sticky.
+- day pass: an agent the organiser runs for an attendee who has none. Hallway
+  gives it a stand-in like Connect mode and keeps a spend ledger (`passes`);
+  the worker in daypass/ runs it and reports cost after every run.
 - host: Hallway's own Switch agent; creates rooms and posts system cards.
 """
 import asyncio
@@ -34,6 +37,7 @@ AUTONOMY_KEYS = {
 }
 DEFAULT_AUTONOMY = {"chat": "auto", "rooms": "ask", "propose_meeting": "ask", "accept_meeting": "ask", "share_contact": "ask"}
 LOCKED_ASK = {"share_contact"}
+STAND_IN_MODES = ("connect", "daypass")
 
 PUBLIC_PROFILE_FIELDS = ("role", "company", "bio", "here_for", "interests", "talks", "links")
 
@@ -166,8 +170,10 @@ class Hallway:
             return existing
         if len(self.store.attendees()) >= settings.max_attendees:
             raise HallwayError(f"This event is full ({settings.max_attendees} attendees).")
-        if mode not in ("connect", "live"):
-            raise HallwayError("Day pass agents are coming soon. Pick Connect or Live.")
+        if mode not in ("connect", "live", "daypass"):
+            raise HallwayError("Pick Connect, Live or Day pass.")
+        if mode == "daypass" and not settings.daypass_enabled:
+            raise HallwayError("This event has no day pass agents. Pick Connect or Live.")
         handle = self._unique("handle", slug(name.split()[0]) if name.split() else "guest")
         if mode == "live":
             if not live_agent_name or not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", live_agent_name):
@@ -183,13 +189,15 @@ class Hallway:
             mcp_token="hw_" + secrets.token_urlsafe(24), session_token=secrets.token_urlsafe(32),
             mm_user_id=mm_user["id"], mm_password=mm_password, is_persona=int(is_persona), created_at=time.time(),
         )
-        if mode == "connect":
+        if mode in STAND_IN_MODES:
             creds = await self.switch.register_agent(
                 agent_name, f"{name} (agent)",
                 f"{name}'s agent at {settings.event_name}. Speaks for {name} through Hallway.",
             )
             row.update(switch_agent_id=creds.id, switch_agent_key=creds.key)
         self.store.insert("attendees", **row)
+        if mode == "daypass":
+            self.store.insert("passes", id=new_id(), attendee_id=aid, cap_usd=settings.daypass_cap_usd, created_at=time.time())
         attendee = self.store.attendee(id=aid)
         self.presence.ensure(attendee)
         await self._join(attendee, self.lobby)
@@ -221,9 +229,49 @@ class Hallway:
         return self.store.attendee(id=attendee["id"])
 
     def stand_in(self, attendee: dict) -> AgentCreds:
-        if attendee["mode"] != "connect" or not attendee["switch_agent_id"]:
+        if attendee["mode"] not in STAND_IN_MODES or not attendee["switch_agent_id"]:
             raise HallwayError("Live-mode agents talk in rooms natively through Switch, not through Hallway's post/read tools.")
         return AgentCreds(attendee["switch_agent_id"], attendee["switch_agent_key"])
+
+    # ------------------------------------------------------------ day pass
+    def day_pass(self, attendee: dict) -> dict | None:
+        return self.store.one("SELECT * FROM passes WHERE attendee_id = ?", attendee["id"])
+
+    def pass_usable(self, attendee: dict) -> bool:
+        p = self.day_pass(attendee)
+        return p is None or p["status"] == "active"
+
+    def set_pass_paused(self, attendee: dict, paused: bool) -> dict:
+        p = self.day_pass(attendee)
+        if not p:
+            raise HallwayError("You don't have a day pass.")
+        if p["status"] == "spent":
+            raise HallwayError("This pass has used its whole budget.")
+        self.store.update("passes", p["id"], status="paused" if paused else "active")
+        return self.day_pass(attendee)
+
+    def due_passes(self, every_s: float) -> list[dict]:
+        """Active passes whose agent hasn't run for `every_s` seconds."""
+        cutoff = time.time() - every_s
+        return self.store.all(
+            "SELECT p.*, a.name, a.handle, a.mcp_token, a.profile FROM passes p JOIN attendees a ON a.id = p.attendee_id "
+            "WHERE p.status = 'active' AND (p.last_run_at IS NULL OR p.last_run_at < ?) ORDER BY p.last_run_at", cutoff,
+        )
+
+    def record_run(self, attendee_id: str, engine: str, cost_usd: float, tool_calls: int, summary: str, ok: bool) -> dict:
+        p = self.store.one("SELECT * FROM passes WHERE attendee_id = ?", attendee_id)
+        if not p:
+            raise HallwayError("No such pass.")
+        cost = max(0.0, float(cost_usd))
+        spent = round(p["spent_usd"] + cost, 6)
+        status = "spent" if spent >= p["cap_usd"] - 0.005 else p["status"]
+        self.store.insert("pass_runs", attendee_id=attendee_id, engine=engine, cost_usd=cost, tool_calls=int(tool_calls),
+                          summary=summary[:400], ok=int(ok), created_at=time.time())
+        self.store.update("passes", p["id"], spent_usd=spent, runs=p["runs"] + 1, status=status, last_run_at=time.time())
+        if status == "spent" and p["status"] != "spent":
+            self.store.notice(attendee_id, "daypass", "Your day pass agent used its whole budget and has stopped.",
+                              audience="person")
+        return self.store.one("SELECT * FROM passes WHERE id = ?", p["id"])
 
     def resolve(self, who: str) -> dict:
         """An attendee by handle, agent name, @mention, email or name."""
@@ -432,7 +480,7 @@ class Hallway:
     async def post(self, attendee: dict, room_ref: str, text: str, approved: bool = False) -> dict:
         room = self.room_by_ref(room_ref)
         await self.require_member(attendee, room)
-        if attendee["mode"] == "connect" and not attendee["privacy"].get("passed") and room["kind"] == "lobby":
+        if attendee["mode"] in STAND_IN_MODES and not attendee["privacy"].get("passed") and room["kind"] == "lobby":
             raise HallwayError("Finish the privacy check first (start_privacy_check) before talking in the lobby.")
         if not approved and self.needs_approval(attendee, "chat"):
             return self.ask(attendee, "post", f"Post in #{room['name']}: {text[:140]}", {"room": room["name"], "text": text})

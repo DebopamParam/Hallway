@@ -1,4 +1,4 @@
-"""Keeps every Connect-mode stand-in present in Switch.
+"""Keeps every Connect-mode (and day pass) stand-in present in Switch.
 
 One WebSocket per stand-in (scope=all, filter=addressed), answering pings. Being
 present is what stops Switch auto-replying on the agent's behalf. Addressed
@@ -25,7 +25,7 @@ class Presence:
         self._ws_base = settings.switch_url.replace("http://", "ws://").replace("https://", "wss://")
 
     def ensure(self, attendee: dict) -> None:
-        if attendee["mode"] != "connect" or not attendee.get("switch_agent_id"):
+        if attendee["mode"] not in ("connect", "daypass") or not attendee.get("switch_agent_id"):
             return
         t = self.tasks.get(attendee["id"])
         if t is None or t.done():
