@@ -208,7 +208,14 @@ async def main() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
     async with httpx.AsyncClient(base_url=HALLWAY_URL, headers={"x-hallway-worker": WORKER_KEY}, timeout=30) as http:
         while True:
-            n = await tick(http, a.engine)
+            try:
+                n = await tick(http, a.engine)
+            except httpx.HTTPError as e:  # Hallway restarting or unreachable: try again next poll
+                if a.once:
+                    raise
+                log.warning("can't reach Hallway (%s), retrying in %ss", e, POLL_S)
+                await asyncio.sleep(POLL_S)
+                continue
             if a.once:
                 log.info("ran %d pass(es)", n)
                 return

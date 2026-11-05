@@ -23,7 +23,8 @@ services:
     env_file: .env
     environment:
       HALLWAY_URL: http://hallway:8787
-    depends_on: [hallway]
+    depends_on:
+      hallway: {condition: service_healthy}
     networks: [switch]
     restart: unless-stopped
 
