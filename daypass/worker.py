@@ -168,6 +168,7 @@ ENGINES = {"pydantic-ai": run_pydantic_ai, "claude-code": run_claude_code}
 # ------------------------------------------------------------------- loop
 async def run_one(http: httpx.AsyncClient, p: dict, engine: str) -> None:
     budget = min(p["remaining_usd"], PER_RUN_USD)
+    p = {**p, "mcp_url": f"{HALLWAY_URL}/mcp"}  # how *we* reach Hallway, not the public URL attendees use
     if budget <= 0.001:
         return
     try:
