@@ -69,6 +69,15 @@ def public_profile(a: dict) -> dict:
     }
 
 
+def _overlap_keys(profile: dict) -> dict[str, str]:
+    """Lowercased interest and talk keys mapped to their display text."""
+    keys = {i.strip().lower(): i.strip() for i in profile.get("interests") or [] if i.strip()}
+    for t in profile.get("talks") or []:
+        title = t.split(" ", 1)[1] if t[:2].isdigit() and " " in t else t
+        keys["talk:" + title.lower()] = title
+    return keys
+
+
 class Hallway:
     def __init__(self) -> None:
         self.store = Store()
@@ -498,16 +507,22 @@ class Hallway:
 
     # ------------------------------------------------------------------ people
     def search_people(self, me: dict | None, query: str = "", limit: int = 10) -> list[dict]:
+        """Keyword search over public profiles. Without a query, people who share
+        the most interests and talks with `me` come first. Each result carries
+        `shared`, the overlap, so people and agents can say why to meet."""
         words = [w for w in re.findall(r"[a-z0-9+#.]+", query.lower()) if len(w) > 1]
+        mine = _overlap_keys(me["profile"]) if me else {}
         scored = []
         for a in self.store.attendees():
             if me and a["id"] == me["id"]:
                 continue
             pub = public_profile(a)
+            theirs = _overlap_keys(a["profile"])
+            shared = [mine[k] for k in mine if k in theirs]
             hay = " ".join(str(v) for v in pub.values()).lower()
             score = sum(hay.count(w) for w in words) if words else 1
             if score:
-                scored.append((score, pub))
+                scored.append((score * 10 + len(shared), {**pub, "shared": shared}))
         scored.sort(key=lambda x: -x[0])
         return [p for _, p in scored[:limit]]
 
