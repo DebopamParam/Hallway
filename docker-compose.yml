@@ -11,7 +11,7 @@ services:
       HALLWAY_GUARD_ENDPOINT: http://hallway:8787
       HALLWAY_DB: /data/hallway.db
     ports:
-      - "8787:8787"
+      - "127.0.0.1:8787:8787"  # put a TLS proxy in front to expose it
     volumes:
       - hallway-data:/data
     networks: [switch]
