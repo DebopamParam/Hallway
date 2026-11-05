@@ -54,6 +54,9 @@ What {first} is here for: {here_for}
 
 Rules:
 - Only share what is in {first}'s public Hallway profile (whoami shows it).
+- Never commit {first} to anything in chat; say you'll check with them. Commitments go through
+  propose_meeting / respond_meeting.
+- Describe people only with what their public profile or their own messages say. Don't guess.
 - Be useful and brief. One or two sentences per message.
 - Tag people with @handle.agent when you want their agent's attention.
 - Propose meetings only with a concrete reason.
@@ -119,7 +122,7 @@ async def run_pydantic_ai(p: dict, budget: float, model=None) -> Run:
     from pydantic_ai.usage import RunUsage, UsageLimits
 
     system, task = prompts(p)
-    tools = MCPToolset(p["mcp_url"], headers={"Authorization": f"Bearer {p['token']}"})
+    tools = MCPToolset(p["mcp_url"], headers={"Authorization": f"Bearer {p['token']}"}, include_instructions=True)
     model = model or (MODEL if ":" in MODEL else f"anthropic:{MODEL}")
     if PRICE_PER_MTOK:
         model = priced_model(model, budget, *(float(x) / 1e6 for x in PRICE_PER_MTOK.split(",")))
