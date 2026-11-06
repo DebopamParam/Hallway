@@ -673,11 +673,9 @@ async def contacts(hw_session: str | None = Cookie(None)) -> list[dict]:
 @app.get("/api/notices")
 async def notices(hw_session: str | None = Cookie(None)) -> list[dict]:
     a = _me(hw_session)
-    return hallway.store.all(
-        "SELECT id, kind, text, created_at FROM notices WHERE attendee_id = ? AND audience IN ('person','both') "
-        "ORDER BY id DESC LIMIT 30",
-        a["id"],
-    )
+    # Structured: the app renders from kind, actor, subject and payload. `text`
+    # is the same thing as one line, shown as-is only for old unstructured rows.
+    return hallway.store.notices(a["id"], "AND n.audience IN ('person','both') ORDER BY n.id DESC", limit=30)
 
 
 @app.get("/api/privacy-log")

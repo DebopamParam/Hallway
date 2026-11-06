@@ -170,7 +170,9 @@ async def read_room(ctx: Context, room: str, since: str | None = None, limit: in
 @tool
 async def my_inbox(ctx: Context) -> dict:
     """Everything new since you last checked: messages mentioning you or your human, all messages in
-    your small rooms, meeting proposals waiting for you, and your human's approval decisions."""
+    your small rooms, meeting proposals waiting for you, and your human's approval decisions.
+    Each notice has a one-line `text`, plus `kind`, `actor` (who: kind, handle, name), the ids it is
+    about (`meeting_id`, `room`, `approval_id`) and its details as fields."""
     return await _run(ctx, _hw().inbox)
 
 

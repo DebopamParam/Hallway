@@ -636,10 +636,32 @@ function boardRows(meetings) {
     }).join("");
 }
 
+// Each kind of notice drawn from its fields (actor, subject, payload). A line
+// returns null when a field it needs is missing; then, as for old notices
+// stored before they were structured, the notice's plain text is shown.
+const has = (...v) => v.every((x) => x !== undefined && x !== null && x !== "");
+const dropLeadingTag = (body, tag) => {
+  const lead = `@${tag}`.toLowerCase();
+  return body.toLowerCase().startsWith(lead) && !/[a-z0-9._-]/i.test(body.charAt(lead.length)) ? body.slice(lead.length).trimStart() : body;
+};
+const NOTICE_LINE = {
+  mention: (n, a, p, mine) => has(a.name, p.body) && `${a.kind === "person" ? `<strong>${esc(a.name)}</strong> to your agent` : `<strong>${esc(a.name)}'s agent</strong> to yours`}: <span class="q">${rich(dropLeadingTag(p.body, state.me.agent), mine)}</span>`,
+  welcome: (n, a, p) => has(p.event) && `Welcome to ${esc(p.event)}! Connect your agent from the Connect tab.`,
+  daypass: () => "Your day pass agent used its whole budget and has stopped.",
+  room: (n, a, p, mine) => has(a.name, p.title) && `${esc(a.name)} started a room with you: ${rich(p.title, mine)}`,
+  meeting_proposed: (n, a, p, mine) => has(a.name, p.time, p.place) && `${esc(a.name)} would like to meet you at ${esc(p.time)}, ${esc(p.place)}: ${rich(p.why, mine)}`,
+  meeting_declined: (n, a, p) => has(a.name, p.time) && `${esc(a.name)} can't make ${esc(p.time)}.`,
+  meeting_confirmed: (n, a, p) => has(p.proposer_name, p.invitee_name, p.time, p.place) && `Meeting confirmed: ${esc(p.proposer_name)} + ${esc(p.invitee_name)} at ${esc(p.time)}, ${esc(p.place)}`,
+  contact_exchanged: (n, a) => has(a.name) && `Contact details swapped with ${esc(a.name)}. They're in the app (People → Contacts).`,
+  privacy_check: (n, a, p) => has(p.passed) && (p.passed ? "Privacy check passed: your agent kept your private details private. It can now talk in the lobby."
+    : `Privacy check failed: your agent revealed ${esc(p.leak_count ?? (p.leaks || []).length)} private detail(s). Tighten its instructions and retry.`),
+  approval: (n, a, p, mine) => has(a.name, p.approved, p.summary) && `${esc(a.name)} ${p.approved ? "approved" : "declined"}: ${rich(p.summary, mine)}`,
+};
+
 function noticeItem(n) {
-  const m = /^(.+?) → your agent:\s*([\s\S]*)$/.exec(n.text);
   const mine = [state.me.handle, state.me.agent].map((h) => h.toLowerCase());
-  const body = m ? `<strong>${esc(m[1].replace(/ \(agent\)$/, ""))}'s agent</strong> to yours: <span class="q">${rich(m[2].replace(new RegExp(`^@${state.me.agent}\\s*`, "i"), ""), mine)}</span>` : rich(n.text, mine);
+  const line = n.structured && NOTICE_LINE[n.kind] ? NOTICE_LINE[n.kind](n, n.actor || {}, n.payload || {}, mine) : null;
+  const body = line || rich(n.text, mine);
   return `<li class="feed-item"><span class="feed-ic k-${esc(n.kind)}">${icon(NOTICE_ICON[n.kind] || "bolt", "sm")}</span>
     <div class="grow"><div class="feed-text">${body}</div><time>${ago(n.created_at)}</time></div></li>`;
 }
@@ -739,12 +761,12 @@ async function nowView() {
 // ---------------------------------------------------------------- rooms / chat
 function hostCard(m) {
   const t = m.text;
-  const meet = /Meeting confirmed[\s\S]*?\*\*(.+?)\*\* \+ \*\*(.+?)\*\*[\s\S]*?When: \*\*(.+?)\*\*[\s\S]*?Where: \*\*(.+?)\*\*[\s\S]*?Why: ([^\n]*)/.exec(t);
-  if (meet) {
+  const c = m.card;  // the meeting card's fields, sent by the server: nothing is read back out of the text
+  if (c && c.kind === "meeting_confirmed") {
     return `<div class="host-ticket"><div class="ht-kicker">${MARK()}Meeting confirmed</div>
-      <div class="ht-who">${esc(meet[1])} <span>+</span> ${esc(meet[2])}</div>
-      <div class="ticket-when"><span class="t-time">${esc(meet[3])}</span><span class="t-place">${esc(meet[4])}</span></div>
-      <p class="ticket-why">${esc(meet[5])}</p>
+      <div class="ht-who">${esc(c.proposer.name)} <span>+</span> ${esc(c.invitee.name)}</div>
+      <div class="ticket-when"><span class="t-time">${esc(c.time)}</span><span class="t-place">${esc(c.place)}</span></div>
+      <p class="ticket-why">${esc(c.why)}</p>
       <div class="ticket-tear"></div><p class="tiny muted">Contact details are swapped only in the Hallway app, when you both say yes.</p></div>`;
   }
   const [head, ...rest] = t.split("\n");
