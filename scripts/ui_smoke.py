@@ -1,39 +1,73 @@
 """Drive the attendee app in headless Chromium at phone size.
 
-    .venv/bin/python scripts/ui_smoke.py <screenshot-dir> [base-url] [--dark]
+    .venv/bin/python scripts/ui_smoke.py <screenshot-dir> [base-url] [--dark] [--invite CODE]
 
 Signs up a fresh attendee through the UI, walks every tab, saves a screenshot
 per screen and fails on any console error or failed API call.
 
+With --invite (the server runs with that INVITE_CODE) the sign-up starts from
+/?invite=CODE, then two fresh visitors check the gate: one without the code
+must get the invite-only screen, and one with it gets the demo-full screen
+when no spots are left (start the server with INVITE_LIMIT=1 to see it).
+
 The attendee's first name starts with "Uidev": agent and Mattermost names come
 from it, so a test run can never take over a real attendee's agent."""
+import argparse
 import sys
 import time
 from pathlib import Path
 
+import httpx
 from playwright.sync_api import sync_playwright
 
-out = Path(sys.argv[1])
+ap = argparse.ArgumentParser()
+ap.add_argument("out")
+ap.add_argument("base", nargs="?", default="http://localhost:8787")
+ap.add_argument("--dark", action="store_true")
+ap.add_argument("--invite")
+opts = ap.parse_args()
+out = Path(opts.out)
 out.mkdir(parents=True, exist_ok=True)
-args = [a for a in sys.argv[1:] if not a.startswith("--")]
-base = args[1] if len(args) > 1 else "http://localhost:8787"
-dark = "--dark" in sys.argv
+base = opts.base.rstrip("/")
+dark = opts.dark
 stamp = int(time.time())
 email = f"uidev.{stamp}@example.com"
 problems: list[str] = []
+expect: set[int] = set()  # statuses /api/auth/start may answer right now (the gate checks)
+
+
+def watch(page) -> None:
+    def on_console(m):
+        if m.type == "error" and not any(f"status of {code}" in m.text for code in expect):
+            problems.append(f"console: {m.text}")
+
+    def on_response(r):
+        if "/api/" in r.url and r.status >= 400 and not ("/api/auth/start" in r.url and r.status in expect):
+            problems.append(f"{r.status} {r.url}")
+    page.on("console", on_console)
+    page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
+    page.on("response", on_response)
+
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
-    page = browser.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2, color_scheme="dark" if dark else "light")
-    page.on("console", lambda m: m.type == "error" and problems.append(f"console: {m.text}"))
-    page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
-    page.on("response", lambda r: "/api/" in r.url and r.status >= 400 and problems.append(f"{r.status} {r.url}"))
 
-    def shot(name: str) -> None:
-        page.wait_for_timeout(700)
-        page.screenshot(path=str(out / f"{name}.png"), full_page=False)
+    def new_page():
+        pg = browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2,
+                                 color_scheme="dark" if dark else "light").new_page()
+        watch(pg)
+        return pg
 
-    page.goto(base + "/")
+    page = new_page()
+
+    def shot(name: str, pg=None) -> None:
+        pg = pg or page
+        pg.wait_for_timeout(700)
+        pg.screenshot(path=str(out / f"{name}.png"), full_page=False)
+
+    page.goto(base + (f"/?invite={opts.invite}" if opts.invite else "/"))
+    if opts.invite and "invite=" in page.url:
+        problems.append("the invite code stayed in the address bar")
     page.fill("#email", email)
     shot("01-landing")
     page.click("#send")
@@ -80,6 +114,40 @@ with sync_playwright() as p:
     page.click("#edit")
     shot("11-edit-badge")
     page.keyboard.press("Escape")
+
+    if opts.invite:
+        expect.update({403, 409})
+        # No code: the invite-only screen.
+        v = new_page()
+        v.goto(base + "/")
+        v.fill("#email", f"uidev.{stamp}.nocode@example.com")
+        v.click("#send")
+        v.wait_for_selector(".gate")
+        if "invite only" not in v.inner_text(".gate h1"):
+            problems.append("no-code visitor did not get the invite-only screen")
+        shot("12-invite-only", v)
+        # A wrong code: the same screen.
+        w = new_page()
+        w.goto(base + "/?invite=not-the-code")
+        w.fill("#email", f"uidev.{stamp}.wrong@example.com")
+        w.click("#send")
+        w.wait_for_selector(".gate")
+        if "invite only" not in w.inner_text(".gate h1"):
+            problems.append("wrong-code visitor did not get the invite-only screen")
+        # The right code once the demo is full: the demo-full screen.
+        ev = httpx.get(base + "/api/event").json()
+        if ev.get("spots_left") == 0:
+            f = new_page()
+            f.goto(f"{base}/?invite={opts.invite}")
+            shot("13-landing-full", f)
+            f.fill("#email", f"uidev.{stamp}.late@example.com")
+            f.click("#send")
+            f.wait_for_selector(".gate")
+            if "full" not in f.inner_text(".gate h1"):
+                problems.append("invited visitor did not get the demo-full screen when no spots were left")
+            shot("14-demo-full", f)
+        else:
+            print(f"note: {ev.get('spots_left')} spots left, demo-full screen not checked (use INVITE_LIMIT=1)")
     browser.close()
 
 print("\n".join(problems) or "no problems")

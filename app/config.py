@@ -72,6 +72,11 @@ class Settings:
     smtp_from: str = os.environ.get("SMTP_FROM", "")
     smtp_starttls: bool = _bool("SMTP_STARTTLS", True)
     resend_api_key: str = os.environ.get("RESEND_API_KEY", "")
+    # Invite-only demo: new emails need /?invite=<code>; at most INVITE_LIMIT
+    # people (seeded personas don't count) may join. 0 = no limit.
+    invite_code: str = os.environ.get("INVITE_CODE", "").strip()
+    invite_limit: int = int(os.environ.get("INVITE_LIMIT", "0") or 0)
+    demo_video_url: str = os.environ.get("DEMO_VIDEO_URL", "").strip()
     host_agent_name: str = os.environ.get("HOST_AGENT_NAME", "hallway")
     lobby_room_name: str = os.environ.get("LOBBY_ROOM_NAME", "lobby")
 

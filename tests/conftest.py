@@ -25,6 +25,9 @@ os.environ.update({
     "HALLWAY_ENV": "dev",
     "SIGNIN_MODE": "dev",
     "EMAIL_SENDER": "console",
+    "INVITE_CODE": "",
+    "INVITE_LIMIT": "0",
+    "DEMO_VIDEO_URL": "",
     "HOST_AGENT_NAME": "hallway",
     "LOBBY_ROOM_NAME": "hallway-lobby",
 })
