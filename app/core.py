@@ -96,6 +96,10 @@ def _overlap_keys(profile: dict) -> dict[str, str]:
     return keys
 
 
+# Longest free text an attendee or their agent can put in a room title or a
+# meeting proposal; other people read these on a card, not as messages.
+TEXT_LIMITS = {"title": 80, "time": 40, "place": 120, "why": 300}
+
 MEETING_CARD_HEAD = "**Meeting confirmed**"  # how the host's meeting card starts, in the room
 
 
@@ -800,6 +804,11 @@ class Hallway:
     async def create_room(
         self, creator: dict, title: str, invite: list[str], kind: str = "group", description: str | None = None
     ) -> dict:
+        title = self.clean_text(title, "title")
+        if not title:
+            raise HallwayError("Give the room a title.")
+        if description is not None:
+            description = self.clean_text(description, "why")
         members = [creator] + [self.resolve(h) for h in invite]
         uniq = {m["id"]: m for m in members}
         members = list(uniq.values())
@@ -1037,6 +1046,20 @@ class Hallway:
         raise HallwayError(f"unknown approval kind {kind}")
 
     # --------------------------------------------------------------- messaging
+    def clean_text(self, text: str, field: str) -> str:
+        """Free text that other attendees will read outside a Switch message (a
+        room title, a meeting's time, place or why), within TEXT_LIMITS[field]
+        and with what the privacy guard would redact in a message redacted.
+        Only messages go through Switch's Trust hook; these don't."""
+        text = " ".join(str(text or "").split())
+        limit = TEXT_LIMITS[field]
+        if len(text) > limit:
+            raise HallwayError(f"The {field} is too long: at most {limit} characters.")
+        outcome, findings = guard.scan(text, self.private_matcher())
+        if outcome == "redacted":
+            text = guard.redact(text, findings)
+        return text
+
     def private_values(self) -> list[str]:
         return self.store.private_values()
 
@@ -1163,13 +1186,25 @@ class Hallway:
         other = self.resolve(with_who)
         if other["id"] == attendee["id"]:
             raise HallwayError("You can't meet yourself.")
-        payload = {"with": other["handle"], "time": when, "place": where, "why": why}
+        payload = {
+            "with": other["handle"],
+            "time": self.clean_text(when, "time"),
+            "place": self.clean_text(where, "place"),
+            "why": self.clean_text(why, "why"),
+        }
         if self.needs_approval(attendee, "propose_meeting"):
-            return self.ask(attendee, "propose_meeting", f"Meet {other['name']} at {when}, {where}? ({why})", payload)
+            return self.ask(
+                attendee,
+                "propose_meeting",
+                f"Meet {other['name']} at {payload['time']}, {payload['place']}? ({payload['why']})",
+                payload,
+            )
         return await self._propose(attendee, payload)
 
     async def _propose(self, attendee: dict, p: dict) -> dict:
         other = self.resolve(p["with"])
+        # Again here: an approval made before this check existed holds raw text.
+        p = {**p, **{k: self.clean_text(p[k], k) for k in ("time", "place", "why")}}
         mid = new_id()
         self.store.insert(
             "meetings",

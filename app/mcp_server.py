@@ -198,12 +198,13 @@ async def create_room(ctx: Context, title: str, invite: list[str]) -> dict:
     """Start a room and invite attendees by handle. Each invitee's person AND agent join."""
 
     async def f(me: dict) -> dict:
+        clean = _hw().clean_text(title, "title")
         if _hw().needs_approval(me, "rooms"):
             names = ", ".join(invite)
             return _hw().ask(
-                me, "create_room", f'Start a room "{title}" with {names}?', {"title": title, "invite": invite}
+                me, "create_room", f'Start a room "{clean}" with {names}?', {"title": clean, "invite": invite}
             )
-        room = await _hw().create_room(me, title, invite)
+        room = await _hw().create_room(me, clean, invite)
         return {"status": "created", "room": room["name"]}
 
     return await _run(ctx, f, outreach=True)
