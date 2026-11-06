@@ -280,6 +280,19 @@ class Store:
         if table == "attendees":
             self._contact_written(raw["id"], raw.get("contact"))
 
+    def upsert(self, table: str, update: tuple[str, ...] = (), **values: Any) -> bool:
+        """Insert a row keyed by `id`; if one with that id is already there,
+        overwrite just the `update` columns (none: leave it as it is). For rows
+        whose id comes from outside (a Switch room id) and that two code paths
+        may both record. Returns whether a new row was inserted."""
+        enc = {k: json.dumps(v) if k in JSON_COLS else v for k, v in values.items()}
+        cols = ", ".join(enc)
+        marks = ", ".join("?" for _ in enc)
+        action = "DO UPDATE SET " + ", ".join(f"{c} = excluded.{c}" for c in update) if update else "DO NOTHING"
+        existed = self.db.execute(f"SELECT 1 FROM {table} WHERE id = ?", (values["id"],)).fetchone() is not None
+        self.db.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks}) ON CONFLICT(id) {action}", tuple(enc.values()))
+        return not existed
+
     def update(self, table: str, key: str, **values: Any) -> None:
         raw = values
         values = {k: json.dumps(v) if k in JSON_COLS else v for k, v in values.items()}
