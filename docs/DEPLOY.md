@@ -236,6 +236,7 @@ with Docker. If not, run `scripts/up.sh --demo`.
 spots are free again; Switch's config and `.env` stay):
 
 ```bash
+scripts/backup.sh                     # first, if the old demo's data might be wanted again (section 10)
 scripts/demo-reset.sh                 # asks for confirmation; same invite link
 scripts/demo-reset.sh --new-invite    # also a new invite code: the old link stops working
 scripts/demo-reset.sh --personas      # re-seed the personas afterwards
@@ -261,7 +262,99 @@ Billing stops only when the server is destroyed, not when it's powered off.
 - The day pass (only with a model key in `.env`) is capped at `DAYPASS_CAP_USD` per pass.
   The worst case is 10 spots × $0.25 = **$2.50** in model spend. Without a key it's $0.
 
-## 10. Troubleshooting
+## 10. The database: migrations, backups, restore
+
+Hallway keeps everything in one SQLite file, `/data/hallway.db` in the `hallway-data`
+volume. It runs in WAL mode with a 5 s `busy_timeout` and foreign keys on, so a backup
+can read it while Hallway writes, and a brief lock (a backup, the sqlite3 shell) delays
+a write instead of failing it.
+
+**Migrations** run on every start, before Hallway serves anything. They're the numbered
+functions in `MIGRATIONS` in `app/store.py`. `PRAGMA user_version` records how many
+have run, and each one runs in a transaction together with that bump, so a crash leaves
+the DB at the version before it and the next start runs it again. The log says
+`database migrated to version N` when one runs. To change the schema, add a function to
+the end of the list. Never edit one that has shipped. `tests/test_store.py` upgrades a DB
+from every older version to the latest. Take a backup before deploying a new version
+with a migration (below). If you roll back to older code, it starts with a warning
+(`database is at version N, newer than this code`). That's fine for additive changes
+like new indexes. Otherwise, restore the pre-upgrade backup.
+
+**Backups** with `scripts/backup.sh` are online: Hallway keeps running. It takes a
+consistent snapshot through SQLite's backup API inside the container, checks it
+(`PRAGMA integrity_check`), and saves it as `backups/hallway-YYYYMMDDTHHMMSSZ.db`
+(mode 600). Only the newest 14 are kept (`--keep N` or `BACKUP_KEEP`). These files hold
+attendee data, contact details included. Treat them like the live DB.
+
+```bash
+cd ~/Hallway
+scripts/backup.sh                       # back up now; prints the row counts
+scripts/backup.sh --keep 30             # keep a month of nightlies
+scripts/backup.sh check backups/hallway-20261106T031700Z.db
+crontab -e                              # then add the line below: nightly at 03:17 UTC
+```
+
+```cron
+17 3 * * * cd ~/Hallway && scripts/backup.sh --keep 14 >> backups/backup.log 2>&1
+```
+
+A backup on the same disk doesn't survive losing the VPS. Copy the backups off the VM as
+well, for example with [rclone](https://rclone.org) to any S3-compatible bucket
+(Cloudflare R2's free tier is plenty). Add this to the same cron line:
+`&& rclone copy backups r2:hallway-backups --include 'hallway-*.db'`. From the laptop,
+`rsync -a hallway@VPS_IP:Hallway/backups/ ./hallway-backups/` works too.
+
+**Restore** (stops Hallway for a few seconds):
+
+```bash
+cd ~/Hallway
+scripts/backup.sh check backups/hallway-20261106T031700Z.db     # 1. pick one; check it reads
+scripts/backup.sh restore backups/hallway-20261106T031700Z.db   # 2. restore it
+docker compose -p hallway ps; curl -s 127.0.0.1:8787/health     # 3. healthy again?
+```
+
+`restore` checks the file first and changes nothing if it's not a good Hallway DB. Then it:
+
+1. Saves the current DB as `backups/pre-restore-*.db`, so the restore can be undone the
+   same way. Retention never deletes these.
+2. Stops the `hallway` container.
+3. Writes the backup into the volume through a one-off container of the same image,
+   running as the same user. SQLite's backup API takes care of the old `-wal`/`-shm` files.
+4. Starts Hallway again. Migrations bring an older backup up to date on that start.
+
+Sessions in the backup still work, so people stay signed in. Anything written after the
+backup is lost: sign-ups, room records, meetings, approvals. Messages themselves live in
+Mattermost and stay. On a box without Docker, use `scripts/backup.sh --db PATH` and
+`scripts/backup.sh restore FILE --db PATH`, with Hallway stopped for the restore.
+
+**The path off SQLite.** SQLite is the right choice for one event on one box. It handles
+hundreds of attendees with no extra service to run, and backups are a single file. It
+stops being enough when you need more than one Hallway process, for example several
+uvicorn workers or a second VPS behind a load balancer. SQLite allows one writer at a
+time, and the per-meeting and per-email locks in `app/core.py` only cover one process.
+The same applies if you'd rather lean on managed backups and point-in-time recovery than
+on this script. Switch already runs Postgres next to Hallway, so moving would mean:
+
+- **Driver and connection:** `psycopg` (async) with a small pool, replacing the single
+  shared `sqlite3` connection in `Store`. The `?` placeholders become `%s`.
+- **SQL dialect:** `INSERT ... ON CONFLICT` and `RETURNING` work as they are. Change
+  `REAL` timestamps to `double precision` (or `timestamptz`), the JSON columns from `TEXT`
+  to `jsonb` (`kv_purge` uses `json_extract`, which becomes `value->>'at'`),
+  `INTEGER PRIMARY KEY AUTOINCREMENT` to `bigint generated always as identity`, and the
+  `sha256_hex` SQL function that migration 2 uses to `pgcrypto`'s `digest()`.
+- **Migrations:** `PRAGMA user_version` becomes a one-row `schema_version` table, or
+  Alembic, at that point. Migration 1 becomes the Postgres DDL, and 2 isn't needed on a
+  fresh Postgres DB. Move the data once with a small script that reads a backup file.
+- **Concurrency:** replace the in-process locks with row locks
+  (`SELECT ... FOR UPDATE` on the meeting) or conditional updates, so they hold across
+  processes. `transaction()` becomes the pool's transaction context.
+- **Ops:** `pg_dump` (or the provider's backups) replaces `scripts/backup.sh`. Hallway
+  gets its own database and role in Switch's Postgres, not Switch's schema.
+
+All SQL lives in `app/store.py` and `app/core.py`, with a few reads in `app/main.py`.
+Nothing else touches the DB, so the change stays in those files.
+
+## 11. Troubleshooting
 
 **Cloudflare 502 Bad Gateway.** The tunnel is up, but cloudflared can't reach Hallway.
 - The route's service must be `http://hallway:8787`, not `localhost`, not `https`, and not
