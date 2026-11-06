@@ -262,6 +262,8 @@ def _me_view(a: dict, token: str | None = None) -> dict:
         "locked": sorted(LOCKED_ASK),
         "privacy": a["privacy"],
         "agent_seen_at": a["agent_seen_at"],
+        "agent_verified": bool(a["agent_verified"]),
+        "live_proof": hallway.live_proof(a),
         "pass": _pass_view(a),
         "connect": {
             "mcp_url": _mcp_url(),
@@ -529,6 +531,16 @@ async def rotate_agent_key(hw_session: str | None = Cookie(None)) -> dict:
     token = hallway.store.set_mcp_token(a["id"])
     log.info("agent key rotated: %s", a["handle"])
     return _me_view(hallway.store.need_attendee(id=a["id"]), token=token)
+
+
+@app.post("/api/me/verify-agent")
+async def verify_agent(hw_session: str | None = Cookie(None)) -> dict:
+    """Check now whether my Live agent has posted its code (the sync loop also checks)."""
+    a = _me(hw_session)
+    if a["mode"] != "live":
+        raise HallwayError("Only a Live agent needs verifying.")
+    await hallway.verify_live_agent(a)
+    return _me_view(hallway.store.need_attendee(id=a["id"]))
 
 
 class Register(BaseModel):

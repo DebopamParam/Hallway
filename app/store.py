@@ -439,11 +439,22 @@ def _legacy_notice_fields(db: sqlite3.Connection, n: dict) -> dict | None:
     return None
 
 
+def _m5_live_agent_proof(db: sqlite3.Connection) -> None:
+    """4 -> 5: `agent_verified`, whether a Live attendee proved their Switch
+    agent is theirs (it posted a one-time code). Stand-ins are Hallway's own,
+    so verified. Live agents bound before this proved nothing: they start
+    unverified and are offered the check."""
+    if "agent_verified" not in {r[1] for r in db.execute("PRAGMA table_info(attendees)")}:
+        db.execute("ALTER TABLE attendees ADD COLUMN agent_verified INTEGER NOT NULL DEFAULT 1")
+    db.execute("UPDATE attendees SET agent_verified = 0 WHERE mode = 'live'")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m1_base_schema,
     _m2_hash_tokens,
     _m3_indexes,
     _m4_structured_notices,
+    _m5_live_agent_proof,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 

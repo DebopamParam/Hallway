@@ -169,6 +169,7 @@ async def test_removed_attendees_rooms_never_reach_the_next_owner_of_the_name(ad
 
 
 async def test_remove_leaves_a_live_agent_alone(admin, signup, world):
+    world.native_agent("lee.claude")
     await signup("Lee Park", mode="live", live_agent_name="lee.claude")
     r = (await admin.delete("/api/admin/attendees/lee")).json()
     assert r["switch_agent"].startswith("not Hallway's")

@@ -184,7 +184,8 @@ async def test_room_access_is_membership_checked(signup, client, hallway):
     assert "No room" in res["error"]
 
 
-async def test_live_agents_do_not_use_stand_in_tools(signup, client):
+async def test_live_agents_do_not_use_stand_in_tools(signup, client, world):
+    world.native_agent("asha.claude")
     _, me = await signup("Asha Rao", mode="live", live_agent_name="asha.claude")
     res = await mcp_call(client, me["connect"]["token"], "read_room", {"room": "lobby"})
     assert "error" in res

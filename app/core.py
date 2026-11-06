@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import secrets
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -332,11 +333,15 @@ class Hallway:
         names = {handle, agent_name}
         self._reserved_names |= names
         try:
+            proof = await self._open_proof_room(handle, agent_name) if mode == "live" else None
             attendee = await self._create_attendee(
                 name, email, handle, agent_name, mode, profile, contact, autonomy, is_persona
             )
         finally:
             self._reserved_names -= names
+        if proof:
+            self.store.update("rooms", proof["room_id"], created_by=attendee["id"])
+            self.store.kv_set(f"liveproof:{attendee['id']}", proof)
         rec = self.store.kv_get(onboarding_key) if onboarding_key else None
         if isinstance(rec, dict) and onboarding_key:
             rec.update(attendee_id=attendee["id"], expires_at=min(rec["expires_at"], time.time() + REGISTERED_GRACE_S))
@@ -377,6 +382,7 @@ class Hallway:
             mm_user_id=mm_user["id"],
             mm_password=mm_password,
             is_persona=int(is_persona),
+            agent_verified=int(mode != "live"),  # a Live agent proves it is theirs first: verify_live_agent
             created_at=time.time(),
         )
         if mode in STAND_IN_MODES:
@@ -404,6 +410,82 @@ class Hallway:
             event=settings.event_name,
         )
         return attendee
+
+    # ------------------------------------------------------ live agent proof
+    # A Live attendee names a Switch agent that Hallway did not register, so
+    # Hallway can't tell from the name whose it is. Until the agent proves it
+    # (by posting a one-time code in a room only it and the host are in, which
+    # only its owner can make it do), it is not invited anywhere, not counted
+    # as this attendee's in any room, and the sync loop ignores it.
+
+    async def _open_proof_room(self, handle: str, agent_name: str) -> dict:
+        """The proof room for a claimed Live agent, and the code it must post
+        there. Fails (as a HallwayError) if Switch has no agent of that name."""
+        name = await self._free_room_name(f"verify-{handle}")
+        self._creating_rooms.add(name)
+        try:
+            asked_ms = int(time.time() * 1000) - 2000
+            try:
+                res = await self._host_create_room(
+                    name, f"Hallway: {agent_name} posts its code here to prove whose it is.", [agent_name], []
+                )
+            except SwitchError as e:
+                if e.status == 400 and "unknown agent" in str(e).lower():
+                    raise HallwayError(
+                        f"This event's Switch server has no agent called '{agent_name}'. "
+                        "Register it in Switch Console first, then use its exact name."
+                    ) from e
+                raise HallwayError("Switch couldn't check that agent just now. Please try again in a minute.") from e
+            channel = await self._wait_channel(res["name"], asked_ms)
+            self.store.upsert(
+                "rooms",
+                update=("name", "title", "kind"),
+                id=res["id"],
+                name=res["name"],
+                title=f"Verify {agent_name}",
+                kind="verify",
+                mm_channel_id=channel["id"] if channel else None,
+                created_by="host",
+                created_at=time.time(),
+            )
+        finally:
+            self._creating_rooms.discard(name)
+        return {"code": f"hallway-verify-{secrets.token_hex(4)}", "room_id": res["id"], "room": res["name"]}
+
+    def live_proof(self, attendee: dict) -> dict | None:
+        """What an unverified Live attendee's agent must do: post `code` in `room`."""
+        if attendee["mode"] != "live" or attendee["agent_verified"]:
+            return None
+        proof: dict | None = self.store.kv_get(f"liveproof:{attendee['id']}")
+        return proof
+
+    async def verify_live_agent(self, attendee: dict) -> bool:
+        """Whether the attendee's Live agent has posted its code (it is then
+        marked verified, and the sync loop pairs it with its person)."""
+        if attendee["mode"] != "live" or attendee["agent_verified"]:
+            return bool(attendee["agent_verified"])
+        proof = self.live_proof(attendee)
+        if not proof:
+            return False
+        try:
+            msgs = await self.switch.read_context(self._host(), proof["room_id"], limit=50)
+        except SwitchError as e:
+            log.warning("live proof for %s: could not read %s: %s", attendee["handle"], proof["room"], e)
+            return False
+        if not any(m["sender_name"] == attendee["agent_name"] and proof["code"] in m["body"] for m in msgs):
+            return False
+        self.store.update("attendees", attendee["id"], agent_verified=1)
+        self.store.db.execute("DELETE FROM kv WHERE key = ?", (f"liveproof:{attendee['id']}",))
+        attendee["agent_verified"] = 1
+        log.info("live agent %s verified for %s", attendee["agent_name"], attendee["handle"])
+        self.store.notice(
+            attendee["id"],
+            "agent_verified",
+            f"Your Switch agent {attendee['agent_name']} is verified. It joins your rooms now.",
+            audience="both",
+            agent=attendee["agent_name"],
+        )
+        return True
 
     @staticmethod
     def _autonomy(given: dict | None) -> dict:
@@ -542,6 +624,8 @@ class Hallway:
         return out
 
     async def _agent_mm_user_id(self, attendee: dict) -> str | None:
+        if not attendee.get("agent_verified", 1):
+            return None  # the name may be somebody else's agent
         if attendee.get("agent_mm_user_id"):
             return str(attendee["agent_mm_user_id"])
         u = await self.mm.user_by_username(attendee["agent_name"])
@@ -698,6 +782,8 @@ class Hallway:
                 log.warning("add %s to channel of %s: %s", attendee["handle"], room["name"], e)
 
     async def _invite_agent(self, attendee: dict, room: dict, quiet: bool = False) -> None:
+        if not attendee.get("agent_verified", 1):
+            return  # a claimed Live agent nobody has proved is theirs
         # Switch answers {"ok": true} even when the agent's bot can't join (it
         # isn't in the team), so make sure it is when we know its account.
         if attendee.get("agent_mm_user_id"):
@@ -721,11 +807,10 @@ class Hallway:
         self._creating_rooms.add(name)
         try:
             asked_ms = int(time.time() * 1000) - 2000
-            res = await self.switch.create_room(
-                self._host(),
+            res = await self._host_create_room(
                 name,
                 description or title,
-                [m["agent_name"] for m in members],
+                [m["agent_name"] for m in members if m["agent_verified"]],
                 [m["handle"] for m in members],
             )
             channel = await self._wait_channel(res["name"], asked_ms)
@@ -759,6 +844,12 @@ class Hallway:
                     title=title,
                 )
         return room
+
+    async def _host_create_room(
+        self, name: str, description: str, agent_names: list[str], user_names: list[str]
+    ) -> dict:
+        res: dict = await self.switch.create_room(self._host(), name, description, agent_names, user_names)
+        return res
 
     def _room_name_held(self, name: str) -> bool:
         return name in self._creating_rooms or bool(self.store.one("SELECT 1 FROM rooms WHERE name = ?", name))
@@ -816,6 +907,9 @@ class Hallway:
         attendees = self.store.attendees()
         if not attendees:
             return
+        for a in attendees:
+            if not a["agent_verified"]:
+                await self.verify_live_agent(a)
         known = {r["id"] for r in self.store.all("SELECT id FROM rooms")}
         known_names = {r["name"] for r in self.store.all("SELECT name FROM rooms")}
         ours = {a["mm_user_id"] for a in attendees} | {
@@ -854,14 +948,14 @@ class Hallway:
         except SwitchError as e:
             log.debug("list_all_rooms: %s", e)
         for a in attendees:
-            if not a.get("agent_mm_user_id"):
+            if not a.get("agent_mm_user_id") and a["agent_verified"]:
                 try:
                     u = await self.mm._req("GET", f"/users/username/{a['agent_name']}")
                     self.store.update("attendees", a["id"], agent_mm_user_id=u["id"])
                     a["agent_mm_user_id"] = u["id"]
                 except MMError:
                     pass
-        for room in self.store.all("SELECT * FROM rooms"):
+        for room in self.store.all("SELECT * FROM rooms WHERE kind != 'verify'"):
             members = await self.room_members(room)
             if not members:
                 continue

@@ -137,6 +137,7 @@ async def test_register_rejects_unknown_mode(client):
 
 
 async def test_register_live_needs_valid_agent_name(client, world):
+    world.native_agent("asha.claude")
     await sign_in(client, "a@example.com")
     for bad in (None, "Steve Claude", "-x", "UPPER"):
         r = await client.post("/api/register", json={"name": "Asha", "mode": "live", "live_agent_name": bad})
@@ -147,6 +148,60 @@ async def test_register_live_needs_valid_agent_name(client, world):
     assert me["mode"] == "live" and me["agent"] == "asha.claude"
     # Live agents are the attendee's own: Hallway registers no stand-in for them.
     assert not [c for c in world.calls if c[0] == "register_agent" and c[1] == "asha.claude"]
+
+
+async def live_signup(make_client, world, name: str, agent: str, email: str) -> tuple[httpx.AsyncClient, dict]:
+    c = make_client()
+    await sign_in(c, email)
+    r = await c.post("/api/register", json={"name": name, "mode": "live", "live_agent_name": agent})
+    return c, r.json() if r.status_code == 200 else {"status": r.status_code, **r.json()}
+
+
+async def test_live_mode_refuses_an_agent_switch_does_not_know(make_client, world, hallway):
+    """QA #2 part B: a made-up agent name used to register fine."""
+    _, r = await live_signup(make_client, world, "Gus Ghost", "ghost987.claude", "gus@example.com")
+    assert r["status"] == 400 and "no agent called" in r["error"]
+    assert hallway.store.attendee(email="gus@example.com") is None
+
+
+async def test_live_agent_is_not_bound_until_it_posts_its_code(make_client, signup, hallway, world):
+    """QA #2: claiming someone else's Switch agent (here a native agent already
+    in a private room) pulled the claimant into that agent's rooms on the next
+    sync. Now the claim proves nothing until the agent posts a one-time code,
+    which only its owner can make it do."""
+    vc, _ = await signup("Vic Owner", autonomy={"rooms": "auto"})
+    _, fr = await signup("Fran Friend")
+    victim_agent = world.native_agent("vic.claude")
+    room = (await vc.post("/api/rooms", json={"title": "Board secrets", "invite": [fr["handle"]]})).json()["name"]
+    channel = await hallway.mm.channel_by_name(room)
+    channel["members"].add(victim_agent["id"])  # the victim's own agent works in that room
+
+    sq, me = await live_signup(make_client, world, "Sam Squatter", "vic.claude", "sam@example.com")
+    assert me["agent_verified"] is False and me["live_proof"]["code"].startswith("hallway-verify-")
+    proof = me["live_proof"]
+    await hallway.sync_once()
+    await hallway.sync_once()
+    rooms = {r["name"] for r in (await sq.get("/api/rooms")).json()}
+    assert room not in rooms and proof["room"] not in rooms
+    assert (await sq.get(f"/api/rooms/{room}/messages")).status_code == 400
+    # A post by someone else, or without the code, proves nothing.
+    proof_channel = await hallway.mm.channel_by_name(proof["room"])
+    world.add_post(proof_channel, victim_agent["id"], "hi, what's this room?")
+    assert (await sq.post("/api/me/verify-agent")).json()["agent_verified"] is False
+
+
+async def test_live_agent_that_posts_its_code_is_verified_and_paired(make_client, hallway, world):
+    agent = world.native_agent("lee.claude")
+    lc, me = await live_signup(make_client, world, "Lee Park", "lee.claude", "lee@example.com")
+    proof = me["live_proof"]
+    lobby = await hallway.mm.channel_by_name("hallway-lobby")
+    assert agent["id"] not in lobby["members"]  # not invited anywhere yet
+    world.add_post(await hallway.mm.channel_by_name(proof["room"]), agent["id"], f"my code: {proof['code']}")
+    r = (await lc.post("/api/me/verify-agent")).json()
+    assert r["agent_verified"] is True and r["live_proof"] is None
+    await hallway.sync_once()
+    assert agent["id"] in lobby["members"]
+    assert any(n["kind"] == "agent_verified" for n in (await lc.get("/api/notices")).json())
 
 
 async def test_live_mode_rejects_taken_agent_name(make_client, hallway, world):

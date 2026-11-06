@@ -58,6 +58,10 @@ class World:
             self.users[u["id"]] = u
         return u
 
+    def native_agent(self, name: str) -> dict:
+        """An agent someone registered in Switch Console: Hallway holds no key for it."""
+        return self.add_user(name, is_bot=True, first_name=name)
+
     def channel_for_room(self, room_id: str) -> dict:
         if room_id not in self.rooms:
             raise SwitchError(404, f"no room {room_id}")
@@ -118,6 +122,9 @@ class FakeSwitch:
         await asyncio.sleep(0)
         host = self._agent(agent)
         self.w.calls.append(("create_room", {"name": name, "agents": agent_names, "users": user_names}))
+        unknown = [n for n in agent_names if not (self.w.user_by_name(n) or {}).get("is_bot")]
+        if unknown:  # what Switch 0.31.0 answers
+            raise SwitchError(400, f'{{"detail":"Unknown agents: {", ".join(unknown)}"}}')
         cid = f"ch{next(_ids)}"
         rid = f"room{next(_ids)}"
         ch = {
