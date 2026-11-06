@@ -863,9 +863,12 @@ async function roomView(name, tab) {
   every(8000, refreshCounts);
   const input = document.getElementById("say");
   const sendBtn = document.getElementById("send");
+  let sending = false;  // Enter doesn't care that the button is disabled
   const send = async (confirm = false) => {
     const text = input.value.trim();
     if (!text) return input.focus();
+    if (sending) return;
+    sending = true;
     sendBtn.disabled = true;
     try {
       const res = await api(`/api/rooms/${encodeURIComponent(name)}/messages`, { body: { text, confirm } });
@@ -874,13 +877,15 @@ async function roomView(name, tab) {
           <p class="muted">${esc(res.warning.replace(/ Send anyway\?$/, ""))}</p>
           <p class="small">They'll see it like this: <span class="redacted"><span>private</span></span>. You'll see your own words.</p>
           <div class="sheet-actions"><button class="btn ghost" data-answer="edit">Edit message</button><button class="btn primary" data-answer="send">Send anyway</button></div>`);
+        sending = false;
         sendBtn.disabled = false;
         if (ans === "send") return send(true);
         return input.focus();
       }
-      input.value = "";
+      if (input.value.trim() === text) input.value = "";
       setTimeout(() => toBottom(true), 50);
     } catch (e) { toast(e.message); }
+    sending = false;
     sendBtn.disabled = false;
   };
   sendBtn.onclick = () => send();
