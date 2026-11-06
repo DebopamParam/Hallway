@@ -325,7 +325,7 @@ function agentPill() {
   const paused = me.pass && me.pass.status !== "active";
   const on = agentActive() && !paused;
   const label = me.pass && me.pass.status === "spent" ? "Budget used" : paused ? "Paused" : on ? "Agent on" : me.agent_seen_at ? "Agent idle" : me.pass ? "Starting" : "Not connected";
-  return `<span class="pulse ${on ? "on" : ""}"></span><span>${label}</span>`;
+  return `<span class="pulse ${on ? "on" : ""}"></span>${icon("agent", "sm pill-ic")}<span class="pill-label">${label}</span>`;
 }
 
 const TABS = [["now", "Now", "now"], ["lobby", "Lobby", "lobby"], ["rooms", "Rooms", "rooms"], ["people", "People", "people"], ["me", "Agent", "agent"]];
@@ -339,7 +339,7 @@ function shell(active, inner, { title, sub, back, right, chat } = {}) {
     <header class="topbar ${chat ? "chatbar" : ""}">
       ${back ? `<button class="iconbtn" id="topbar-back" aria-label="Back">${icon("back")}</button>`
         : `<a class="home-mark" href="#/now" aria-label="Hallway home">${MARK()}</a>`}
-      <div class="grow topbar-title">${title ? `<h1 class="t">${esc(title)}</h1>${sub ? `<div class="s">${sub}</div>` : ""}` : ""}</div>
+      <div class="grow topbar-title">${title ? `<h1 class="t" title="${esc(title)}">${esc(title)}</h1>${sub ? `<div class="s">${sub}</div>` : ""}` : ""}</div>
       ${right || ""}
       <a class="agent-pill" id="agent-status" href="#/me">${agentPill()}</a>
     </header>
