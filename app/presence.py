@@ -87,6 +87,8 @@ class Presence:
                             state.pop("generation", None)
                         elif kind == "message":
                             self._on_addressed(a, data)
+                        if kind != "connection_state":
+                            self.store.kv_set(conn_key, state)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -102,8 +104,14 @@ class Presence:
         sender = p.get("sender_name") or p.get("sender") or "someone"
         if sender in (a["agent_name"], a["handle"], settings.host_agent_name):
             return
+        event_id = p.get("id") or event.get("sequence")
+        seen_key = f"seen:{a['id']}:{event_id}"
+        if event_id and self.store.kv_get(seen_key):
+            return
         body = (p.get("body") or p.get("content") or "")[:160]
         who = self.store.one("SELECT name, handle FROM attendees WHERE agent_name = ? OR handle = ?", sender, sender)
         if who:
             sender = who["name"] if sender == who["handle"] else f"{who['name']} (agent)"
         self.store.notice(a["id"], "mention", f"{sender} → your agent: {body}", audience="person")
+        if event_id:
+            self.store.kv_set(seen_key, True)
