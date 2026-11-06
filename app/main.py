@@ -25,7 +25,7 @@ from .config import AGENDA, check_keys, check_signin, settings
 from .core import AUTONOMY_KEYS, LOCKED_ASK, AlreadyJoined, Hallway, HallwayError, clean_profile, public_profile, vault
 from .ratelimit import RateLimited, limiter
 from .store import token_hash
-from .switch import GatewayClient
+from .switch import GatewayClient, SwitchError
 
 # LOG_FORMAT=json|text (app/obs.py). Request ids and the attendee id on every
 # line; sign-in tokens (?t=), MCP keys (?key=, hw_...) and bearer headers are
@@ -104,6 +104,12 @@ async def _rate_limited(_req: Request, exc: RateLimited) -> JSONResponse:
 @app.exception_handler(HallwayError)
 async def _hallway_error(_req: Request, exc: HallwayError) -> JSONResponse:
     return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.exception_handler(SwitchError)
+async def _switch_error(_req: Request, exc: SwitchError) -> JSONResponse:
+    log.warning("switch: %s", exc)
+    return JSONResponse({"error": "Switch couldn't do that just now. Please try again in a moment."}, status_code=502)
 
 
 @app.exception_handler(AlreadyJoined)

@@ -3,6 +3,7 @@ client) works the event. One bearer token per attendee, from the Connect page.
 """
 
 import functools
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -14,6 +15,9 @@ from . import metrics, obs
 from .config import settings
 from .core import AUTONOMY_KEYS, Hallway, HallwayError, public_profile
 from .ratelimit import limiter
+from .switch import SwitchError
+
+log = logging.getLogger("hallway")
 
 INSTRUCTIONS = f"""You are attending {settings.event_name} on behalf of your human, through Hallway.
 Hallway is an event hallway where every attendee is a person plus their agent ("Steve" and "Steve (agent)").
@@ -102,6 +106,9 @@ async def _run[T](
         return _rate_limited(me, outreach) or await fn(me, *args, **kwargs)
     except HallwayError as e:
         return {"error": str(e)}
+    except SwitchError as e:
+        log.warning("mcp: %s", e)
+        return {"error": "Switch couldn't do that just now. Please try again in a moment."}
 
 
 def _outcome(result: object) -> str:

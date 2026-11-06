@@ -186,6 +186,8 @@ def _overlap_keys(profile: dict) -> dict[str, str]:
 # meeting proposal; other people read these on a card, not as messages.
 TEXT_LIMITS = {"title": 80, "time": 40, "place": 120, "why": 300}
 
+HOST_CREATE_TRIES, HOST_CREATE_BACKOFF_S = 6, 0.5  # Switch busy creating a room: retry for ~10 s
+
 MEETING_CARD_HEAD = "**Meeting confirmed**"  # how the host's meeting card starts, in the room
 
 
@@ -234,7 +236,7 @@ class Hallway:
         self._sync_task: asyncio.Task[None] | None = None
         self._background: set[asyncio.Task[None]] = set()  # keep fire-and-forget tasks alive until done
         self._lock = asyncio.Lock()
-        self._serial = KeyedLocks()  # per meeting / per email: see _respond_meeting and register
+        self._serial = KeyedLocks()  # per meeting / per email / host room creation: see their callers
         # Names held between "is it free?" and the row being written, across the
         # awaits on Switch and Mattermost in between, so two concurrent callers
         # can't both pick the same one (and sync_once doesn't adopt a room we
@@ -264,8 +266,7 @@ class Hallway:
         self.lobby = self.store.one("SELECT * FROM rooms WHERE kind = 'lobby'")
         if self.lobby is None:
             asked_ms = int(time.time() * 1000) - 2000
-            res = await self.switch.create_room(
-                self.host,
+            res = await self._host_create_room(
                 settings.lobby_room_name,
                 f"{settings.event_name}: the hallway. Every attendee and their agent.",
                 [],
@@ -903,12 +904,16 @@ class Hallway:
         self._creating_rooms.add(name)
         try:
             asked_ms = int(time.time() * 1000) - 2000
-            res = await self._host_create_room(
-                name,
-                description or title,
-                [m["agent_name"] for m in members if m["agent_verified"]],
-                [m["handle"] for m in members],
-            )
+            try:
+                res = await self._host_create_room(
+                    name,
+                    description or title,
+                    [m["agent_name"] for m in members if m["agent_verified"]],
+                    [m["handle"] for m in members],
+                )
+            except SwitchError as e:
+                log.warning("create room %s: %s", name, e)
+                raise HallwayError("Switch couldn't start the room just now. Please try again in a moment.") from e
             channel = await self._wait_channel(res["name"], asked_ms)
             # The room id is Switch's. If sync_once recorded this room while we
             # waited for its channel (it adopts rooms it finds on Switch), a plain
@@ -944,8 +949,20 @@ class Hallway:
     async def _host_create_room(
         self, name: str, description: str, agent_names: list[str], user_names: list[str]
     ) -> dict:
-        res: dict = await self.switch.create_room(self._host(), name, description, agent_names, user_names)
-        return res
+        """Every room is created by the one host agent, and Switch lets an agent
+        create one room at a time ("You are already creating a room"): creates
+        run one at a time here, and a busy answer (a create Switch is still
+        finishing, or another process on the same host agent) is retried."""
+        for attempt in range(HOST_CREATE_TRIES):
+            async with self._serial.hold("host:create_room"):
+                try:
+                    res: dict = await self.switch.create_room(self._host(), name, description, agent_names, user_names)
+                    return res
+                except SwitchError as e:
+                    if "already creating a room" not in str(e) or attempt == HOST_CREATE_TRIES - 1:
+                        raise
+            await asyncio.sleep(HOST_CREATE_BACKOFF_S * (attempt + 1))
+        raise AssertionError("unreachable")
 
     def _room_name_held(self, name: str) -> bool:
         return name in self._creating_rooms or bool(self.store.one("SELECT 1 FROM rooms WHERE name = ?", name))

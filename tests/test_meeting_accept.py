@@ -10,8 +10,6 @@ make its own room."""
 
 import asyncio
 
-import pytest
-
 from app import core
 from app.switch import SwitchError
 
@@ -181,8 +179,8 @@ async def test_failed_room_creation_leaves_the_meeting_open_to_retry(signup, cli
         return await create_room(self, *a, **kw)
 
     monkeypatch.setattr(type(hallway.switch), "create_room", flaky)
-    with pytest.raises(SwitchError):
-        await bc.post(f"/api/approvals/{ap['id']}", json={"approve": True})
+    r = await bc.post(f"/api/approvals/{ap['id']}", json={"approve": True})
+    assert r.status_code == 400 and "try again" in r.json()["error"]  # not a 500
     # Nothing happened, so nothing is marked done: the approval can be given again.
     [still] = [a for a in (await bc.get("/api/approvals")).json() if a["id"] == ap["id"]]
     assert still["status"] == "pending"

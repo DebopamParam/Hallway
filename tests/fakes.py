@@ -92,6 +92,7 @@ class World:
 class FakeSwitch:
     def __init__(self, world: World) -> None:
         self.w = world
+        self.creating: set[str] = set()  # agents with a create_room in flight
 
     async def close(self) -> None:
         pass
@@ -125,6 +126,16 @@ class FakeSwitch:
         unknown = [n for n in agent_names if not (self.w.user_by_name(n) or {}).get("is_bot")]
         if unknown:  # what Switch 0.31.0 answers
             raise SwitchError(400, f'{{"detail":"Unknown agents: {", ".join(unknown)}"}}')
+        # Switch 0.31.0 lets an agent create one room at a time.
+        if agent.id in self.creating:
+            raise SwitchError(
+                400, '{"detail":"You are already creating a room. Wait for it to finish, then try again."}'
+            )
+        self.creating.add(agent.id)
+        try:
+            await asyncio.sleep(0.002)
+        finally:
+            self.creating.discard(agent.id)
         cid = f"ch{next(_ids)}"
         rid = f"room{next(_ids)}"
         ch = {
