@@ -1,10 +1,13 @@
 """Sign up an attendee through the public web API, as the organiser.
 Prints the session cookie and MCP token as JSON. Usage: signup.py persona.json
 
-Sends the admin key (x-hallway-admin: GUARD_API_KEY, from the environment or
-./.env) so seeding works in every SIGNIN_MODE, needs no INVITE_CODE, and the
-attendee is marked as a persona: personas don't take one of the INVITE_LIMIT
-spots. Without a key it signs up like a visitor (dev mode links only)."""
+    HALLWAY_URL=http://localhost:8799 signup.py persona.json
+
+Sends the admin key (x-hallway-admin: HALLWAY_ADMIN_KEY, from the environment
+or ./.env; GUARD_API_KEY still works on localhost but is deprecated) so seeding
+works in every SIGNIN_MODE, needs no INVITE_CODE, and the attendee is marked as
+a persona: personas don't take one of the INVITE_LIMIT spots. Without a key it
+signs up like a visitor (dev mode links only)."""
 import json
 import os
 import sys
@@ -12,17 +15,27 @@ from pathlib import Path
 
 import httpx
 
-BASE = "http://localhost:8787"
+BASE = os.environ.get("HALLWAY_URL", "http://localhost:8787").rstrip("/")
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def admin_key() -> str:
-    key = os.environ.get("HALLWAY_ADMIN_KEY") or os.environ.get("GUARD_API_KEY")
-    if key is None and (ROOT / ".env").exists():
+def _env(name: str) -> str:
+    """From the environment, else ./.env."""
+    if name in os.environ:
+        return os.environ[name].strip()
+    if (ROOT / ".env").exists():
         for line in (ROOT / ".env").read_text().splitlines():
-            if line.strip().startswith("GUARD_API_KEY="):
-                key = line.split("=", 1)[1].strip()
-    return key or ""
+            if line.strip().startswith(f"{name}="):
+                return line.split("=", 1)[1].strip()
+    return ""
+
+
+def admin_key() -> str:
+    key = _env("HALLWAY_ADMIN_KEY") or _env("ADMIN_KEY")
+    if not key and _env("GUARD_API_KEY"):
+        print("signup.py: HALLWAY_ADMIN_KEY is not set, sending GUARD_API_KEY (deprecated)", file=sys.stderr)
+        key = _env("GUARD_API_KEY")
+    return "" if key == "change-me" else key
 
 
 def signup(p: dict, base: str = BASE) -> dict:
@@ -33,7 +46,7 @@ def signup(p: dict, base: str = BASE) -> dict:
     r.raise_for_status()
     link = r.json().get("dev_link")
     if not link:
-        sys.exit(f"no sign-in link for {p['email']}: {r.json().get('message') or 'check GUARD_API_KEY'}")
+        sys.exit(f"no sign-in link for {p['email']}: {r.json().get('message') or 'check HALLWAY_ADMIN_KEY'}")
     c.get(link.replace(base, ""))
     me = c.get("/api/me").json()
     if me.get("onboarding"):

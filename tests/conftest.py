@@ -9,13 +9,16 @@ import tempfile
 
 _TMP = tempfile.mkdtemp(prefix="hallway-tests-")
 WORKER_KEY = "test-worker-key"
+GUARD_KEY = "test-guard-key"
+ADMIN_KEY = "test-admin-key"
 os.environ.update({
     "HALLWAY_DB": os.path.join(_TMP, "import.db"),  # only the import-time Store; each test gets its own
     "HALLWAY_PUBLIC_URL": "http://testserver",
     "SWITCH_URL": "http://switch.invalid",
     "SWITCH_REGISTRATION_KEY": "",
     "MM_URL": "http://mm.invalid",
-    "GUARD_API_KEY": "",
+    "GUARD_API_KEY": GUARD_KEY,
+    "HALLWAY_ADMIN_KEY": ADMIN_KEY,
     "EVENT_NAME": "Test Event",
     "MAX_ATTENDEES": "1000",
     "DAYPASS_ENABLED": "true",

@@ -16,7 +16,7 @@ ADMIN = {"x-hallway-admin": "admin-key"}
 @pytest.fixture
 def invite(monkeypatch):
     def use(**changes):
-        base = dict(invite_code=CODE, invite_limit=0, demo_video_url="", guard_api_key="admin-key")
+        base = dict(invite_code=CODE, invite_limit=0, demo_video_url="", admin_key="admin-key")
         monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, **{**base, **changes}))
     return use
 
@@ -174,7 +174,7 @@ async def test_bad_admin_header_gets_no_bypass(client, invite, headers):
 
 @pytest.mark.parametrize("key", ["", "change-me"])
 async def test_no_bypass_with_unset_or_default_key(client, invite, key):
-    invite(guard_api_key=key)
+    invite(admin_key=key, guard_api_key=key)
     r = await start(client, "mallory@example.com", None, {"x-hallway-admin": key})
     assert r.status_code == 403
 

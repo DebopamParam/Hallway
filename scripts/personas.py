@@ -7,7 +7,7 @@ exactly as an attendee would. Each round, every agent checks its inbox and acts.
 
 Agents only get Hallway's MCP tools: no shell, no files, no other connectors.
 
-Sign-up sends the admin key (GUARD_API_KEY, see signup.py), so personas can be
+Sign-up sends the admin key (HALLWAY_ADMIN_KEY, see signup.py), so personas can be
 seeded on an invite-only demo and never count towards INVITE_LIMIT."""
 import argparse
 import json

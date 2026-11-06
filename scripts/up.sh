@@ -76,7 +76,11 @@ if [ -z "$(getenv .env SWITCH_REGISTRATION_KEY)" ]; then
     $API/gateway/api-keys | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')
   setenv .env SWITCH_REGISTRATION_KEY "$key"
 fi
-grep -q '^GUARD_API_KEY=change-me$' .env && setenv .env GUARD_API_KEY "$(rand)"
+# Three separate secrets, made once: Switch's guard calls, the organiser's admin
+# key, the day pass worker's key. A leak of one doesn't expose the others.
+for key in GUARD_API_KEY HALLWAY_ADMIN_KEY DAYPASS_WORKER_KEY; do
+  case "$(getenv .env $key)" in ""|change-me) setenv .env $key "$(rand)";; esac
+done
 for kv in GATEWAY_ADMIN_EMAIL=$ADMIN_EMAIL GATEWAY_ADMIN_PASSWORD=$ADMIN_PASS \
           MM_ADMIN_USER=$(getenv $SW/.env MATTERMOST_ADMIN_USER) \
           MM_ADMIN_PASSWORD=$(getenv $SW/.env MATTERMOST_ADMIN_PASSWORD) \
@@ -93,7 +97,7 @@ profiles=(); [ "$(getenv .env DAYPASS_ENABLED)" = true ] && [ -n "$(getenv .env 
 build=(--build); [ "${SKIP_BUILD:-}" = 1 ] && build=()  # SKIP_BUILD=1: use images you built
 docker compose -p "$HW_PROJECT" "${profiles[@]}" up -d "${build[@]}"
 wait_for Hallway http://127.0.0.1:$HW_PORT/health
-curl -fs -X POST -H "x-hallway-admin: $(getenv .env GUARD_API_KEY)" http://127.0.0.1:$HW_PORT/api/admin/enable-guard >/dev/null \
+curl -fs -X POST -H "x-hallway-admin: $(getenv .env HALLWAY_ADMIN_KEY)" http://127.0.0.1:$HW_PORT/api/admin/enable-guard >/dev/null \
   && say "Switch Trust now checks every message with Hallway's guard"
 
 cat <<DONE

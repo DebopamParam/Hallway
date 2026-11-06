@@ -77,8 +77,20 @@ worker as well.
 Already running Switch? `cp .env.example .env`, fill in a registration key
 (Gateway → Settings → API keys) and the admin logins, set `SWITCH_NETWORK` to
 your Switch project's `<name>_default` network, then
+set `GUARD_API_KEY`, `HALLWAY_ADMIN_KEY` and `DAYPASS_WORKER_KEY` to three
+different random secrets (`openssl rand -hex 24`), then
 `docker compose up -d --build` and
-`curl -X POST -H "x-hallway-admin: $GUARD_API_KEY" localhost:8787/api/admin/enable-guard`.
+`curl -X POST -H "x-hallway-admin: $HALLWAY_ADMIN_KEY" localhost:8787/api/admin/enable-guard`.
+
+**Secrets.** `GUARD_API_KEY` is what Switch sends to `/guardrails/check`;
+`HALLWAY_ADMIN_KEY` (header `x-hallway-admin`) is the organiser's, for
+`/api/admin/*` and seeding personas; `DAYPASS_WORKER_KEY` is the day pass
+worker's. Admin endpoints always need the admin key: a localhost caller gets in
+without it only with `HALLWAY_ENV=dev` and a localhost `HALLWAY_PUBLIC_URL`,
+because behind a tunnel every visitor looks local. On any other public URL,
+Hallway refuses to start if a key is empty, `change-me`, or shared with another.
+An older `.env` without the admin or worker key still works on localhost: both
+fall back to `GUARD_API_KEY`, with a deprecation warning.
 
 Without Docker: `uv venv && uv pip install -r requirements.txt && scripts/dev.sh`.
 
