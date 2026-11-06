@@ -72,13 +72,19 @@ def _mcp_url() -> str:
     return f"{settings.public_url}/mcp"
 
 
+def _remaining_usd(p: dict) -> float:
+    """What's left of a pass's budget. Never negative: one run can overshoot the cap."""
+    return max(0.0, round(p["cap_usd"] - p["spent_usd"], 6))
+
+
 def _pass_view(a: dict) -> dict | None:
     p = hallway.day_pass(a)
     if not p:
         return None
     runs = hallway.store.all(
         "SELECT cost_usd, tool_calls, summary, ok, created_at FROM pass_runs WHERE attendee_id = ? ORDER BY id DESC LIMIT 8", a["id"])
-    return {"cap_usd": p["cap_usd"], "spent_usd": p["spent_usd"], "runs": p["runs"], "status": p["status"],
+    return {"cap_usd": p["cap_usd"], "spent_usd": p["spent_usd"], "remaining_usd": _remaining_usd(p),
+            "runs": p["runs"], "status": p["status"],
             "last_run_at": p["last_run_at"], "every_s": settings.daypass_every_s, "recent": runs}
 
 
@@ -400,7 +406,7 @@ async def daypass_due(request: Request, every_s: int | None = None):
     for p in hallway.due_passes(settings.daypass_every_s if every_s is None else every_s):
         out.append({"attendee_id": p["attendee_id"], "name": p["name"], "handle": p["handle"],
                     "mcp_url": _mcp_url(), "token": p["mcp_token"], "runs": p["runs"],
-                    "remaining_usd": round(p["cap_usd"] - p["spent_usd"], 6), "here_for": p["profile"].get("here_for", "")})
+                    "remaining_usd": _remaining_usd(p), "here_for": p["profile"].get("here_for", "")})
     return out
 
 
@@ -416,7 +422,7 @@ class RunReport(BaseModel):
 async def daypass_report(attendee_id: str, body: RunReport, request: Request):
     _worker(request)
     p = hallway.record_run(attendee_id, body.engine, body.cost_usd, body.tool_calls, body.summary, body.ok)
-    return {"status": p["status"], "spent_usd": p["spent_usd"], "remaining_usd": round(p["cap_usd"] - p["spent_usd"], 6)}
+    return {"status": p["status"], "spent_usd": p["spent_usd"], "remaining_usd": _remaining_usd(p)}
 
 
 # --------------------------------------------------------------- SPA + MCP

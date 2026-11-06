@@ -148,6 +148,24 @@ docker compose --profile daypass up -d --build   # or: cd daypass && python work
 
 All rooms are Switch rooms on the bundled Mattermost (team `switch`). Attendees use the Hallway app, not Mattermost.
 
+## Tests
+
+```bash
+uv pip install -r requirements.txt -r requirements-dev.txt   # or: pip install ...
+python -m pytest                                             # ~5 s, fully offline
+```
+
+The suite boots the app in-process (httpx + ASGI, with the real lifespan) against
+a temp SQLite DB and in-memory fakes for Switch and Mattermost (`tests/fakes.py`),
+so it needs no running stack and ignores your `.env`. It covers the privacy guard,
+sign-in and onboarding, approvals, meetings, the contact swap, the MCP tools
+through the real `/mcp` endpoint, and the day pass ledger. `xfail` tests mark
+known bugs; flip them when you fix one. CI (`.github/workflows/ci.yml`) runs
+them on every push and pull request, plus `compileall` and both Docker builds.
+
+For a browser check against a running server (needs the Switch stack):
+`python scripts/ui_smoke.py /tmp/shots http://localhost:8787 [--dark]`.
+
 ## Layout
 
 ```
@@ -161,7 +179,8 @@ app/
   static/         the attendee app (no build step)
 daypass/          day pass worker (PydanticAI or headless Claude Code)
 deploy/switch/    Switch 0.31.0 standalone compose (vendored) + env template
-scripts/          up.sh (one-command setup), dev.sh, signup.py, mcp_call.py, personas.py
+scripts/          up.sh (one-command setup), dev.sh, signup.py, mcp_call.py, personas.py, ui_smoke.py
+tests/            pytest suite (fakes for Switch + Mattermost)
 ```
 
 ## License
