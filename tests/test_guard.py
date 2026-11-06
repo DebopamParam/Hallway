@@ -61,20 +61,15 @@ def test_ordinary_hallway_talk_passes(text):
     assert guard.scan(text) == ("ok", [])
 
 
-# Known false positives: realistic event chatter the guard redacts today.
-@pytest.mark.xfail(reason="guard bug: flight regex treats 'AI 2026' (any 2-letter airline code + number) as a flight",
-                   strict=False)
+# Former false positives: realistic event chatter the guard used to redact.
 def test_ai_conference_year_is_not_a_flight():
     assert outcome("The AI 2026 report says agents are mainstream")[0] == "ok"
 
 
-@pytest.mark.xfail(reason="guard bug: itinerary regex redacts walking to a venue room ('heading to Hall B')",
-                   strict=False)
 def test_heading_to_a_hall_is_not_travel():
     assert outcome("I'm heading to Hall B for the PQC talk")[0] == "ok"
 
 
-@pytest.mark.xfail(reason="guard bug: any 8+ digit number is treated as a phone number", strict=False)
 def test_large_amount_is_not_a_phone():
     assert outcome("We raised 12000000 last year")[0] == "ok"
 
@@ -159,3 +154,88 @@ async def test_guardrails_check_requires_key_when_set(client, monkeypatch):
     assert (await client.post("/guardrails/check", json=body)).status_code == 401
     r = await client.post("/guardrails/check", json=body, headers={"x-flintai-api-key": "sekret"})
     assert r.status_code == 200
+
+
+async def _guard_stats(client) -> dict:
+    return (await client.get("/health")).json()["guard"]
+
+
+async def test_guard_error_answers_blocked_not_500(client, monkeypatch):
+    """Switch delivers a message unchecked on a 500: an internal error must block instead."""
+    def boom(*_a, **_kw):
+        raise RuntimeError("detector bug")
+    monkeypatch.setattr(guard, "scan", boom)
+    before = (await _guard_stats(client))["errors"]
+    r = await client.post("/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    assert r.json()["outcome"] == "GUARDRAIL_RESULT_OUTCOME_BLOCKED"
+    assert r.json()["findings"][0]["category"] == "guard_unavailable"
+    assert (await _guard_stats(client))["errors"] == before + 1
+
+
+@pytest.mark.parametrize("body", [
+    b"not json",
+    b'{"messages": "hi"}',
+    b'{"messages": [{"role": "user", "content": null}]}',
+    b'{"messages": [{"role": "user", "content": ["parts"]}]}',
+    b"[]",
+])
+async def test_malformed_check_answers_blocked(client, body):
+    r = await client.post("/guardrails/check", headers={**G, "content-type": "application/json"}, content=body)
+    assert r.status_code == 200
+    assert r.json()["outcome"] == "GUARDRAIL_RESULT_OUTCOME_BLOCKED"
+
+
+async def test_privacy_log_failure_still_returns_the_verdict(client, monkeypatch):
+    from app import main
+
+    def broken(*_a, **_kw):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(main.hallway.store, "insert", broken)
+    r = await client.post("/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": "mail a@b.co"}]})
+    assert r.json()["outcome"] == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
+    assert (await _guard_stats(client))["log_errors"] >= 1
+
+
+async def test_bad_key_is_counted(client, monkeypatch):
+    import dataclasses
+
+    from app import main
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, guard_api_key="sekret"))
+    before = (await _guard_stats(client))["bad_key"]
+    r = await client.post("/guardrails/check", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 401
+    assert (await _guard_stats(client))["bad_key"] == before + 1
+
+
+async def test_slow_check_is_counted(client, monkeypatch):
+    from app import main
+    monkeypatch.setattr(main, "GUARD_SLOW_S", 0.0)
+    before = (await _guard_stats(client))["slow"]
+    await client.post("/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": "hi"}]})
+    stats = await _guard_stats(client)
+    assert stats["slow"] == before + 1 and stats["checks"] >= 1 and stats["p99_ms"] is not None
+
+
+async def test_private_values_follow_contact_updates(client, signup, hallway):
+    """Private values are cached per attendee; a contact change takes effect on the next check."""
+    pc, _ = await signup("Asha Rao", contact={"telegram": "@asha_old_tg"})
+
+    async def check(text: str) -> str:
+        r = await client.post("/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": text}]})
+        return r.json()["outcome"]
+
+    assert await check("ping @asha_old_tg") == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
+    matcher = hallway.private_matcher()
+    assert hallway.private_matcher() is matcher  # no rebuild without a change
+    assert (await pc.put("/api/me", json={"contact": {"telegram": "@asha_new_tg"}})).status_code == 200
+    assert await check("ping @asha_new_tg") == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
+    assert await check("ping @asha_old_tg") == "GUARDRAIL_RESULT_OUTCOME_OK"
+    _, _ = await signup("Bela Shah", contact={"signal": "bela.signal.77"})
+    assert await check("try bela.signal.77") == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
+
+
+def test_private_value_every_occurrence_is_redacted():
+    text = "@Asha_TG or @asha_tg"
+    o, findings = guard.scan(text, ["@asha_tg"])
+    assert o == "redacted" and guard.redact(text, findings) == "[redacted] or [redacted]"

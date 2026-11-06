@@ -5,6 +5,7 @@ are stored as sha256 hashes and looked up by hash; the plain value only ever
 lives in the browser cookie or the attendee's agent config."""
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 import time
@@ -164,7 +165,25 @@ def new_mcp_token() -> str:
     return "hw_" + secrets.token_urlsafe(24)
 
 
+def contact_private_values(contact: dict | None) -> list[str]:
+    """The strings in an attendee's private contact fields that the guard must
+    never let through: each value of 5+ characters, and for a phone also its
+    last 10 digits (so "+91 98111 22233" also catches "9811122233")."""
+    vals: list[str] = []
+    for v in (contact or {}).values():
+        if isinstance(v, str) and len(v.strip()) >= 5:
+            vals.append(v.strip())
+            digits = re.sub(r"\D", "", v)
+            if len(digits) >= 8:
+                vals.append(digits[-10:])
+    return vals
+
+
 class Store:
+    # The private-values cache is kept up to date by insert()/update(); this
+    # full re-read is only a backstop for a write that bypassed them.
+    PRIVATE_MAX_AGE_S = 300
+
     def __init__(self, path: str = settings.db_path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
@@ -173,6 +192,9 @@ class Store:
         self.db.create_function("sha256_hex", 1, lambda t: token_hash(t) if t is not None else None, deterministic=True)
         self.db.executescript(SCHEMA)
         self.migrate()
+        self._private: dict[str, list[str]] | None = None  # attendee id -> private contact values
+        self._private_read_at = 0.0
+        self.private_version = 0  # bumped whenever any attendee's private values may have changed
 
     # ------------------------------------------------------------ migrations
     def migrate(self) -> None:
@@ -234,15 +256,40 @@ class Store:
         return [self._row(r) for r in self.db.execute(sql, args).fetchall()]
 
     def insert(self, table: str, **values: Any) -> None:
+        raw = values
         values = {k: json.dumps(v) if k in JSON_COLS else v for k, v in values.items()}
         cols = ", ".join(values)
         marks = ", ".join("?" for _ in values)
         self.db.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks})", tuple(values.values()))
+        if table == "attendees":
+            self._contact_written(raw["id"], raw.get("contact"))
 
     def update(self, table: str, key: str, **values: Any) -> None:
+        raw = values
         values = {k: json.dumps(v) if k in JSON_COLS else v for k, v in values.items()}
         sets = ", ".join(f"{k} = ?" for k in values)
         self.db.execute(f"UPDATE {table} SET {sets} WHERE id = ?", (*values.values(), key))
+        if table == "attendees" and "contact" in raw:
+            self._contact_written(key, raw["contact"])
+
+    # ------------------------------------------------- private values cache
+    def _contact_written(self, attendee_id: str, contact: dict | None) -> None:
+        if self._private is not None:
+            self._private[attendee_id] = contact_private_values(contact)
+        self.private_version += 1
+
+    def private_values(self) -> list[str]:
+        """Every attendee's private contact values, for the guard. Cached per
+        attendee and updated on each attendee insert / contact update, so the
+        guard doesn't scan the attendees table on every message."""
+        now = time.monotonic()
+        if self._private is None or now - self._private_read_at > self.PRIVATE_MAX_AGE_S:
+            fresh = {r["id"]: contact_private_values(json.loads(r["contact"] or "{}"))
+                     for r in self.db.execute("SELECT id, contact FROM attendees")}
+            if fresh != self._private:
+                self.private_version += 1
+            self._private, self._private_read_at = fresh, now
+        return [v for vals in self._private.values() for v in vals]
 
     def kv_get(self, key: str) -> Any:
         row = self.db.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()

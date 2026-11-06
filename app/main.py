@@ -598,25 +598,105 @@ async def privacy_log(hw_session: str | None = Cookie(None)):
 
 
 # ------------------------------------------------------------------ guard
+# Switch waits GUARD_TIMEOUT_S for an answer, then delivers the message
+# unchecked (it fails open, as it does on any non-2xx answer). A check slower
+# than GUARD_SLOW_S most likely missed that deadline: it is counted and logged.
+GUARD_TIMEOUT_S = 2.0
+GUARD_SLOW_S = 1.0
+
+
+class GuardStats:
+    """Counters for /health: how often the guard could not give Switch a real answer."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.checks = 0
+        self.errors = 0         # internal error: answered BLOCKED instead of a 500
+        self.rate_limited = 0   # over RATE_LIMIT_GUARD: answered BLOCKED instead of a 429
+        self.slow = 0           # took over GUARD_SLOW_S: Switch may have let it through unchecked
+        self.bad_key = 0        # 401: if this is Switch, its Trust key is wrong and it fails open
+        self.log_errors = 0     # the privacy log write failed (the verdict still went out)
+        self.max_ms = 0.0
+        self.recent_ms: list[float] = []
+
+    def timed(self, ms: float) -> None:
+        self.checks += 1
+        self.max_ms = max(self.max_ms, ms)
+        self.recent_ms.append(ms)
+        del self.recent_ms[:-500]
+
+    def as_dict(self) -> dict:
+        recent = sorted(self.recent_ms)
+        pct = (lambda q: round(recent[min(len(recent) - 1, int(q * len(recent)))], 2)) if recent else (lambda q: None)
+        return {"checks": self.checks, "errors": self.errors, "rate_limited": self.rate_limited, "slow": self.slow,
+                "bad_key": self.bad_key, "log_errors": self.log_errors, "p50_ms": pct(0.5), "p99_ms": pct(0.99),
+                "max_ms": round(self.max_ms, 2), "slow_threshold_ms": GUARD_SLOW_S * 1000,
+                "switch_timeout_ms": GUARD_TIMEOUT_S * 1000}
+
+
+guard_stats = GuardStats()
+
+
+def _guard_messages(body) -> tuple[str, str | None]:
+    messages = body.get("messages") if isinstance(body, dict) else None
+    if not isinstance(messages, list):
+        raise ValueError("no messages array")
+    parts = []
+    for m in messages:
+        content = m.get("content", "") if isinstance(m, dict) else None
+        if not isinstance(content, str):
+            raise ValueError("a message has no text content")
+        parts.append(content)
+    role = messages[0].get("role") if messages else None
+    return "\n".join(parts), role if isinstance(role, str) else None
+
+
 @app.post("/guardrails/check")
 async def guardrails_check(request: Request):
+    """Switch Trust's check for every message. Fails CLOSED wherever it can:
+    whatever goes wrong in here is answered BLOCKED (with a 200), because a
+    500, a 429 or a timeout would make Switch deliver the message unchecked."""
+    started = time.perf_counter()
     # Unset only on a localhost dev box (check_keys refuses a public start without it).
     if settings.guard_api_key and not _key_matches(request.headers.get("x-flintai-api-key"), settings.guard_api_key):
+        guard_stats.bad_key += 1
+        log.warning("guard: rejected a check with a bad key from %s (if that is Switch, every message "
+                    "goes through unchecked: fix its Trust key)", client_ip(request))
         raise HTTPException(401, "bad guard key")
-    # Generous: only Switch calls this. Switch fails open on errors, so a 429
-    # here lets a message through unchecked; keep RATE_LIMIT_GUARD high.
-    limiter.check("guard", client_ip(request))
-    body = await request.json()
-    content = "\n".join(m.get("content", "") for m in body.get("messages", []))
-    outcome, findings = guard.scan(content, hallway.private_values())
+    try:
+        # Generous (only Switch calls this), and never a 429: Switch would treat
+        # that as fail-open, so over the limit the message is blocked instead.
+        if limiter.hit("guard", client_ip(request)):
+            guard_stats.rate_limited += 1
+            log.warning("guard: over RATE_LIMIT_GUARD, answering BLOCKED")
+            return guard.blocked_response("rate_limited")
+        content, role = _guard_messages(await request.json())
+        outcome, findings = guard.scan(content, hallway.private_matcher())
+        response = guard.wire_response(outcome, findings)
+    except Exception:
+        guard_stats.errors += 1
+        log.exception("guard: check failed, answering BLOCKED")
+        return guard.blocked_response("guard_error")
+    finally:
+        ms = (time.perf_counter() - started) * 1000
+        guard_stats.timed(ms)
+        if ms > GUARD_SLOW_S * 1000:
+            guard_stats.slow += 1
+            log.warning("guard: a check took %.0f ms; Switch delivers unchecked after %.0f s", ms, GUARD_TIMEOUT_S)
     if outcome != "ok":
-        excerpt = guard.redact(content, findings) if outcome == "redacted" else content
-        hallway.store.insert(
-            "guard_log", room_id=request.headers.get("x-agent-session-id"), role=(body.get("messages") or [{}])[0].get("role"),
-            outcome=outcome, categories=", ".join(sorted({f.category for f in findings})), excerpt=excerpt[:240],
-            created_at=time.time(),
-        )
-    return guard.wire_response(outcome, findings)
+        try:
+            excerpt = guard.redact(content, findings) if outcome == "redacted" else content
+            hallway.store.insert(
+                "guard_log", room_id=request.headers.get("x-agent-session-id"), role=role,
+                outcome=outcome, categories=", ".join(sorted({f.category for f in findings})), excerpt=excerpt[:240],
+                created_at=time.time(),
+            )
+        except Exception:
+            guard_stats.log_errors += 1
+            log.exception("guard: could not write the privacy log (the verdict was still returned)")
+    return response
 
 
 @app.post("/api/admin/enable-guard")
@@ -681,7 +761,7 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {"ok": True}
+    return {"ok": True, "guard": guard_stats.as_dict()}
 
 
 app.mount("/", mcp_app)  # serves /mcp; registered last so the routes above win
