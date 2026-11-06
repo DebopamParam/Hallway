@@ -388,6 +388,8 @@ def run(browser, theme: str) -> None:
     page.click("[data-tab='now']")
     page.wait_for_selector("[data-decide], [data-meet]", timeout=8000)
     page.click("[data-decide][data-v='1']")  # approve: the stamp and a toast
+    # Wait for the API to answer (the stamp lands then), or a slow answer races the checks below.
+    page.wait_for_selector(".ticket.stamped", timeout=15000)
     page.wait_for_timeout(300)
     if not page.inner_text("#sr-status").strip() if page.locator("#sr-status").count() else True:
         add(theme, "17-now-after-approve", "live-region", "serious", "#sr-status", "the approval was not announced")
