@@ -3,6 +3,7 @@ changing any data. For PR proof: run on two commits and compare.
 
     .venv/bin/python scripts/screens.py <out-dir> [persona-email] [--dark]"""
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -14,7 +15,7 @@ out.mkdir(parents=True, exist_ok=True)
 email = next((a for a in sys.argv[2:] if "@" in a), "priya@example.com")
 dark = "--dark" in sys.argv
 session = json.loads((ROOT / "data" / "personas.state.json").read_text())[email]["session"]
-base = "http://localhost:8787"
+base = os.environ.get("HALLWAY_URL", "http://localhost:8787")
 problems: list[str] = []
 
 with sync_playwright() as p:
@@ -25,7 +26,7 @@ with sync_playwright() as p:
     page = ctx.new_page()
     page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
     page.on("console", lambda m: m.type == "error" and problems.append(f"console: {m.text}"))
-    for name in ("lobby", "rooms", "inbox", "people", "me"):
+    for name in ("now", "lobby", "rooms", "people", "me"):
         page.goto(f"{base}/#/{name}")
         page.wait_for_timeout(1500)
         page.screenshot(path=str(out / f"{name}.png"))
