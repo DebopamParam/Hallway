@@ -211,6 +211,20 @@ through the real `/mcp` endpoint, and the day pass ledger. `xfail` tests mark
 known bugs; flip them when you fix one. CI (`.github/workflows/ci.yml`) runs
 them on every push and pull request, plus `compileall` and both Docker builds.
 
+**Dependencies** are locked with hashes: edit the direct pins in `requirements.in`
+(or `requirements-dev.in`, `daypass/requirements.in`), then regenerate the lock
+next to it with `pip-compile --generate-hashes --allow-unsafe --strip-extras <file>.in`
+(pip-tools, under Python 3.13 like the image). The images and CI install with
+`--require-hashes`. Dependabot (`.github/dependabot.yml`) opens weekly PRs for
+pip, the digest-pinned base image and the GitHub Actions.
+
+**Containers** run as an unprivileged user (uid 10001 for Hallway, 10002 for the
+day pass worker) with a read-only root filesystem, a small `/tmp` tmpfs, no Linux
+capabilities, `no-new-privileges`, memory/CPU caps sized for an 8 GB box shared
+with Switch and Mattermost, healthchecks, and rotated `json-file` logs (3 × 10 MB).
+Hallway writes only to its `/data` volume; `scripts/up.sh` hands a volume made by
+an older root image over to uid 10001.
+
 For a browser check against a running server (needs the Switch stack):
 `python scripts/ui_smoke.py /tmp/shots http://localhost:8787 [--dark]`.
 

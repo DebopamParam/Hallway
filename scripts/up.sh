@@ -94,8 +94,14 @@ grep -q '^HALLWAY_PUBLIC_URL=http://localhost:' .env && setenv .env HALLWAY_PUBL
 # 3. Hallway, then point Switch Trust at Hallway's privacy guard
 say "Starting Hallway"
 profiles=(); [ "$(getenv .env DAYPASS_ENABLED)" = true ] && [ -n "$(getenv .env VERCEL_AI_GATEWAY_API_KEY)$(getenv .env ANTHROPIC_API_KEY)" ] && profiles=(--profile daypass)
-build=(--build); [ "${SKIP_BUILD:-}" = 1 ] && build=()  # SKIP_BUILD=1: use images you built
-docker compose -p "$HW_PROJECT" "${profiles[@]}" up -d "${build[@]}"
+[ "${SKIP_BUILD:-}" = 1 ] || docker compose -p "$HW_PROJECT" "${profiles[@]}" build  # SKIP_BUILD=1: use images you built
+# The image runs as uid 10001. A data volume made by an older, root image is
+# owned by root: hand it over once (a no-op on a fresh volume).
+if docker volume inspect "${HW_PROJECT}_hallway-data" >/dev/null 2>&1; then
+  docker compose -p "$HW_PROJECT" run --rm --no-deps -T --user 0 --cap-add CHOWN --cap-add DAC_READ_SEARCH \
+    --entrypoint chown hallway -R hallway:hallway /data
+fi
+docker compose -p "$HW_PROJECT" "${profiles[@]}" up -d
 wait_for Hallway http://127.0.0.1:$HW_PORT/health
 curl -fs -X POST -H "x-hallway-admin: $(getenv .env HALLWAY_ADMIN_KEY)" http://127.0.0.1:$HW_PORT/api/admin/enable-guard >/dev/null \
   && say "Switch Trust now checks every message with Hallway's guard"

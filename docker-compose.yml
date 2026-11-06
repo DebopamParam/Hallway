@@ -2,8 +2,25 @@
 # own Switch and set SWITCH_NETWORK to its <project>_default network). Hallway
 # joins Switch's network so Switch can call Hallway's privacy guard at
 # http://hallway:8787/guardrails/check.
+#
+# Hardened for a small public box (an 8 GB VPS that also runs Switch, Postgres
+# and Mattermost): non-root images, a read-only root filesystem, no Linux
+# capabilities, no privilege escalation, memory/CPU caps and rotated logs.
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+  restart: unless-stopped
+
 services:
   hallway:
+    <<: *hardening
     build: .
     env_file: .env
     environment:
@@ -12,13 +29,23 @@ services:
       HALLWAY_GUARD_ENDPOINT: http://hallway:8787
       HALLWAY_DB: /data/hallway.db
     ports:
-      - "127.0.0.1:${HALLWAY_PORT:-8787}:8787"  # expose it through a Cloudflare Tunnel (README), not this port
+      - "127.0.0.1:${HALLWAY_PORT:-8787}:8787"  # expose it through a Cloudflare Tunnel (docs/DEPLOY.md), not this port
     volumes:
-      - hallway-data:/data
+      - hallway-data:/data  # the only writable path besides /tmp
     networks: [switch]
-    restart: unless-stopped
+    # One uvicorn process with SQLite: ~150 MB in use for a demo-sized event.
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 
   daypass:
+    <<: *hardening
     profiles: [daypass]
     build: ./daypass
     env_file: .env
@@ -27,7 +54,16 @@ services:
     depends_on:
       hallway: {condition: service_healthy}
     networks: [switch]
-    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.5
+    pids_limit: 128
+    # The worker has no port: healthy while it can reach the Hallway it works for.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen(os.environ['HALLWAY_URL'] + '/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
 volumes:
   hallway-data:

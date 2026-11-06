@@ -1,7 +1,24 @@
+# Only requirements.txt and app/ go into the Hallway image (see Dockerfile).
+# Keep secrets, local data, tests and tooling out of the build context.
+.git
+.github
 .venv
+venv
+.env
+.env.*
+!.env.example
 data
 spike
-.env
-__pycache__
-*.pyc
+tests
+scripts
 personas
+deploy
+docs
+daypass
+**/__pycache__
+**/*.pyc
+.pytest_cache
+*.md
+!README.md
+Dockerfile
+.dockerignore

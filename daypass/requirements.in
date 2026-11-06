@@ -1,0 +1,4 @@
+# The day pass worker's direct dependencies. requirements.txt is the hashed lock:
+#   cd daypass && pip-compile --generate-hashes --allow-unsafe --strip-extras requirements.in
+pydantic-ai-slim[anthropic,openai,mcp]==2.66.0
+httpx==0.28.1
