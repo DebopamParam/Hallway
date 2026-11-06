@@ -431,6 +431,92 @@ class Hallway:
         self.store.update("passes", p["id"], status="paused" if paused else "active")
         return self.store.need("SELECT * FROM passes WHERE id = ?", p["id"])
 
+    def admin_set_pass(self, attendee: dict, *, paused: bool | None = None, cap_usd: float | None = None) -> dict:
+        """The organiser's controls on a day pass: pause or resume it, and set
+        its budget. Raising the cap above what it has spent revives a spent
+        pass (as active, or paused if asked); lowering it to or below that
+        stops it as spent."""
+        p = self.day_pass(attendee)
+        if not p:
+            raise HallwayError(f"{attendee['handle']} has no day pass.")
+        cap = p["cap_usd"]
+        if cap_usd is not None:
+            if not 0 <= cap_usd <= 1000:
+                raise HallwayError("The cap must be between 0 and 1000 USD.")
+            cap = round(float(cap_usd), 2)
+        status = p["status"]
+        if paused is not None:
+            status = "paused" if paused else "active"
+        elif status == "spent":
+            status = "active"
+        if p["spent_usd"] >= cap - 0.005:
+            status = "spent"
+        self.store.update("passes", p["id"], cap_usd=cap, status=status)
+        log.info("day pass of %s: status %s, cap %.2f USD (organiser)", attendee["handle"], status, cap)
+        return self.store.need("SELECT * FROM passes WHERE id = ?", p["id"])
+
+    async def remove_attendee(self, attendee: dict) -> dict:
+        """Take an attendee out of the event (the organiser's call): their Switch
+        stand-in and Mattermost account are cleaned up where Hallway can, then
+        every row of theirs is deleted, which frees their invite spot. Rooms and
+        messages they were part of stay. Returns what happened to each part."""
+        aid = attendee["id"]
+        out: dict[str, str] = {}
+        self.presence.forget(aid)
+        if attendee["mode"] in STAND_IN_MODES and attendee.get("switch_agent_id") and attendee.get("switch_agent_key"):
+            try:
+                await self.switch.delete_agent(AgentCreds(attendee["switch_agent_id"], attendee["switch_agent_key"]))
+                out["switch_agent"] = "deleted"
+            except (SwitchError, OSError) as e:
+                log.warning(
+                    "remove %s: could not delete Switch agent %s: %s", attendee["handle"], attendee["agent_name"], e
+                )
+                out["switch_agent"] = f"left in place: {e}"[:200]
+        else:
+            out["switch_agent"] = "not Hallway's (Live mode): left alone" if attendee["mode"] == "live" else "none"
+        if attendee.get("mm_user_id"):
+            try:
+                await self.mm.deactivate_user(attendee["mm_user_id"])
+                out["mattermost_user"] = "deactivated"
+            except (MMError, OSError) as e:
+                log.warning("remove %s: could not deactivate Mattermost user: %s", attendee["handle"], e)
+                out["mattermost_user"] = f"left in place: {e}"[:200]
+        with self.store.transaction():
+            db = self.store.db
+            for table, col in (
+                ("sessions", "attendee_id"),
+                ("worker_tokens", "attendee_id"),
+                ("notices", "attendee_id"),
+                ("approvals", "attendee_id"),
+                ("passes", "attendee_id"),
+                ("pass_runs", "attendee_id"),
+            ):
+                db.execute(f"DELETE FROM {table} WHERE {col} = ?", (aid,))
+            # Meetings and contact swaps with them go too: the other side's app
+            # shows each one with this attendee's name, which is about to go.
+            db.execute("DELETE FROM meetings WHERE proposer_id = ? OR invitee_id = ?", (aid, aid))
+            db.execute("DELETE FROM contacts WHERE requester_id = ? OR target_id = ?", (aid, aid))
+            db.execute("DELETE FROM kv WHERE key LIKE ?", (f"seen:{aid}:%",))  # ids are hex: no wildcards
+            db.execute("DELETE FROM attendees WHERE id = ?", (aid,))
+        self.store.forget_private(aid)
+        log.info("attendee %s removed by the organiser (%s)", attendee["handle"], out)
+        return out
+
+    async def announce(self, text: str) -> dict:
+        """Post in the lobby as the host agent (the organiser's announcements)."""
+        text = text.strip()
+        if not text:
+            raise HallwayError("Write something to announce.")
+        if len(text) > 4000:
+            raise HallwayError("Keep announcements under 4000 characters.")
+        lobby = self._lobby()
+        try:
+            res = await self.switch.post(self._host(), lobby["id"], text)
+        except SwitchError as e:
+            raise HallwayError(f"Switch didn't take the announcement: {e}") from e
+        log.info("organiser announcement posted in %s", lobby["name"])
+        return {"room": lobby["name"], "posted": True, "event_id": (res or {}).get("event_id")}
+
     def due_passes(self, every_s: float) -> list[dict]:
         """Active passes whose agent hasn't run for `every_s` seconds."""
         cutoff = time.time() - every_s

@@ -585,6 +585,12 @@ class Store:
             self._private[attendee_id] = contact_private_values(contact)
         self.private_version += 1
 
+    def forget_private(self, attendee_id: str) -> None:
+        """A removed attendee's private values no longer need guarding."""
+        if self._private is not None:
+            self._private.pop(attendee_id, None)
+        self.private_version += 1
+
     def private_values(self) -> list[str]:
         """Every attendee's private contact values, for the guard. Cached per
         attendee and updated on each attendee insert / contact update, so the

@@ -4,6 +4,7 @@ People post and read through Mattermost (so Switch sees every human message via
 its bridge); the admin session handles users, membership and reads.
 """
 
+import contextlib
 import secrets
 from typing import Any
 
@@ -71,6 +72,8 @@ class MMClient:
             if "exists" not in str(e):
                 raise
             user = await self._req("GET", f"/users/username/{username}")
+            if user.get("delete_at"):  # deactivated when an organiser removed its last owner
+                await self._req("PUT", f"/users/{user['id']}/active", body={"active": True})
             await self._req("PUT", f"/users/{user['id']}/password", body={"new_password": password})
         await self.join_team(user["id"])
         return user, password
@@ -95,6 +98,15 @@ class MMClient:
             stats = await self._req("GET", f"/teams/{tid}/stats")
             await self.ensure_team_capacity(int(stats.get("total_member_count") or 0) + TEAM_HEADROOM)
             await self._req("POST", f"/teams/{tid}/members", body=body)
+
+    async def deactivate_user(self, user_id: str) -> None:
+        """Take a user out of the event team (freeing its seat) and deactivate
+        it: it can't sign in, and its posts stay. A user already gone is fine."""
+        tid = await self.team_id()
+        with contextlib.suppress(MMError):  # not (or no longer) in the team
+            await self._req("DELETE", f"/teams/{tid}/members/{user_id}")
+        await self._req("DELETE", f"/users/{user_id}")
+        self._user_cache.pop(user_id, None)
 
     async def ensure_team_capacity(self, seats: int) -> int:
         """Raise Mattermost's per-team user cap to at least `seats`; returns the cap."""

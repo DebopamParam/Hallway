@@ -172,6 +172,13 @@ class FakeSwitch:
         p = self.w.add_post(ch, uid, content)
         return {"event_id": p["id"]}
 
+    async def delete_agent(self, agent: AgentCreds) -> None:
+        a = self._agent(agent)
+        self.w.calls.append(("delete_agent", a["name"]))
+        del self.w.agents[agent.id]
+        for ch in self.w.channels.values():
+            ch["members"].discard(f"u_{a['name']}")
+
     async def read_context(
         self, agent: AgentCreds, room_id: str, since: str | None = None, limit: int = 50
     ) -> list[dict]:
@@ -242,6 +249,12 @@ class FakeMM:
 
     async def join_team(self, user_id: str) -> None:
         self.w.calls.append(("mm_join_team", user_id))
+
+    async def deactivate_user(self, user_id: str) -> None:
+        if user_id not in self.w.users:
+            raise MMError(f"DELETE /users/{user_id}: 404")
+        self.w.calls.append(("mm_deactivate_user", user_id))
+        self.w.users[user_id]["delete_at"] = _ms()
 
     async def ensure_team_capacity(self, seats: int) -> int:
         return seats

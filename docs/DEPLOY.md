@@ -14,6 +14,10 @@ phone ──https──> Cloudflare ──tunnel (outbound from the VPS)──> 
 Follow the steps in order. Every command runs on the VPS unless it says *laptop*.
 Lines that start with `#` are notes, not commands.
 
+Once it's up, [ORGANISER.md](ORGANISER.md) covers running the event itself (invites,
+attendees, day passes, announcements, exports) with `scripts/hallway_admin.py`, and
+[ARCHITECTURE.md](ARCHITECTURE.md) shows how the parts connect.
+
 ---
 
 ## 1. Pick and size the VPS
@@ -219,6 +223,14 @@ free -h; df -h /
 ```
 
 Logs rotate on their own (3 × 10 MB per container).
+
+Attendees, spots, day passes and the invite code are managed with the organiser CLI,
+from the VPS or your laptop (see [ORGANISER.md](ORGANISER.md)):
+
+```bash
+scripts/hallway_admin.py attendees     # mode and agent status for everyone
+scripts/hallway_admin.py spots         # invite link and spots left
+```
 
 ### Health, readiness and metrics
 
