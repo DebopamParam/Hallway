@@ -296,7 +296,7 @@ def test_exceptions_are_logged_as_one_json_line_without_secrets(json_logs):
 
 
 def test_one_console_handler_replaces_the_mcp_sdks():
-    """FastMCP() calls logging.basicConfig("%(message)s") at import; Hallway's
+    """MCP SDK 1.x (FastMCP()) called logging.basicConfig("%(message)s") at import; Hallway's
     handler replaces it, so each line is printed once, formatted and redacted."""
     root = logging.getLogger()
     sdk = logging.StreamHandler()

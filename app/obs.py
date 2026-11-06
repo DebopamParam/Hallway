@@ -146,7 +146,7 @@ def setup_logging(fmt: str = "text", level: int = logging.INFO) -> logging.Handl
     handler.addFilter(RedactSecrets())
     root = logging.getLogger()
     # Ours from an earlier call, and the bare "%(message)s" console handler the
-    # MCP SDK's FastMCP() installs with basicConfig at import: it would print
+    # MCP SDK (1.x FastMCP()) installed with basicConfig at import: it would print
     # every line a second time, unformatted and unredacted. (Subclasses, such
     # as pytest's capture handlers, stay.)
     for h in list(root.handlers):
