@@ -208,7 +208,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; }
   box-shadow: inset 0 0 0 1px var(--line); font-size: 12.5px; font-weight: 650; white-space: nowrap; color: var(--ink-2); }
 .stack-av { display: inline-flex; }
 .stack-av .av { box-shadow: 0 0 0 2px var(--paper); }
-.stack-av .av + .av { margin-left: -7px; }
+.stack-av .av + .av { margin-left: -2px; }
 
 .view { flex: 1; display: flex; flex-direction: column; }
 .view.enter { animation: enter .38s var(--ease) both; }
