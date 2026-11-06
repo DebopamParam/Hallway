@@ -515,6 +515,14 @@ async def logout_all(hw_session: str | None = Cookie(None)) -> JSONResponse:
     return resp
 
 
+@app.get("/api/session")
+async def session_state(hw_session: str | None = Cookie(None)) -> dict:
+    """Whether this browser has a session, without a 401 when it hasn't: the
+    landing page asks, to send a signed-in attendee into the app."""
+    a, rec, _ = _lookup(hw_session)
+    return {"signed_in": bool(a or rec), "onboarding": bool(rec and not a)}
+
+
 @app.get("/api/me")
 async def me(request: Request, response: Response, hw_session: str | None = Cookie(None)) -> dict:
     a, rec, s = _lookup(hw_session)

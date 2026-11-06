@@ -279,8 +279,10 @@ async function render() {
     if (state.me.onboarding) return go("onboard");
   } else if (!path && !/expired=1|joined=1/.test(location.hash)) {
     // Already signed in on this device: the landing page has nothing for them.
-    try { state.me = await api("/api/me"); } catch { state.me = null; }
-    if (state.me) return go(state.me.onboarding ? "onboard" : "now");
+    // /api/session answers 200 either way: a visitor's console shows no 401.
+    let s = null;
+    try { s = await api("/api/session"); } catch { s = null; }
+    if (s && s.signed_in) return go(s.onboarding ? "onboard" : "now");
   }
   const changed = state.route !== path;
   state.route = path;
