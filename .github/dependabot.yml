@@ -1,0 +1,26 @@
+# Weekly update PRs. Python deps live in requirements*.in; Dependabot reruns
+# pip-compile to refresh the hashed requirements*.txt locks next to them.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directories: ["/", "/daypass"]
+    schedule: {interval: weekly, day: monday}
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-patch:
+        update-types: [minor, patch]
+
+  # The python base image, pinned by tag and digest in both Dockerfiles.
+  - package-ecosystem: docker
+    directories: ["/", "/daypass"]
+    schedule: {interval: weekly, day: monday}
+    groups:
+      base-images:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: {interval: weekly, day: monday}
+    groups:
+      actions:
+        patterns: ["*"]

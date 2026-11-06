@@ -1,0 +1,5 @@
+# Test-only dependencies, constrained to the app lock. requirements-dev.txt is made with:
+#   pip-compile --generate-hashes --allow-unsafe --strip-extras requirements-dev.in
+-c requirements.txt
+pytest==9.2.0
+pytest-asyncio==1.4.1.post1

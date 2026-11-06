@@ -1,2 +1,10 @@
+# Only requirements.txt and worker.py go into the worker image.
+.env
+.env.*
+test_*.py
+__pycache__
+*.pyc
+.pytest_cache
+Dockerfile
+.dockerignore
 .venv/
-__pycache__/
