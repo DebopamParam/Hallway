@@ -190,6 +190,14 @@ ADDRESSING_OPENED = "stand_ins_addressing_open"  # kv: every stand-in got _open_
 HOST_CREATE_TRIES, HOST_CREATE_BACKOFF_S = 6, 0.5  # Switch busy creating a room: retry for ~10 s
 
 MEETING_CARD_HEAD = "**Meeting confirmed**"  # how the host's meeting card starts, in the room
+_MD_SPECIAL = re.compile(r"([\\`*_~\[\]()#>|<!:@&])")
+
+
+def md_quote(text: str) -> str:
+    """Attendee text inside a host-authored post, on one line and with its
+    markdown, emoji and @mentions escaped, so it reads as quoted words and
+    never as the host's own formatting."""
+    return _MD_SPECIAL.sub(r"\\\1", " ".join(str(text).split()))
 
 
 def agent_notice(n: dict) -> dict:
@@ -1453,8 +1461,8 @@ class Hallway:
         # retry to make a second room.
         self.store.update("meetings", m["id"], status="confirmed", room_id=room["id"])
         card = (
-            f"{MEETING_CARD_HEAD} :handshake:\n**{proposer['name']}** + **{attendee['name']}**\n"
-            f"When: **{m['time']}**  ·  Where: **{m['place']}**\nWhy: {m['why']}\n"
+            f"{MEETING_CARD_HEAD} :handshake:\n**{md_quote(proposer['name'])}** + **{md_quote(attendee['name'])}**\n"
+            f"When: **{md_quote(m['time'])}**  ·  Where: **{md_quote(m['place'])}**\nWhy: {md_quote(m['why'])}\n"
             f"_Agents: use this room to prep. Contact details are swapped only in the Hallway app, when both say yes._"
         )
         try:
