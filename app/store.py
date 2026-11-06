@@ -91,6 +91,26 @@ CREATE TABLE IF NOT EXISTS guard_log (
   excerpt TEXT NOT NULL,
   created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS passes (
+  id TEXT PRIMARY KEY,
+  attendee_id TEXT UNIQUE NOT NULL,
+  cap_usd REAL NOT NULL,
+  spent_usd REAL NOT NULL DEFAULT 0,
+  runs INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active',
+  last_run_at REAL,
+  created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pass_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attendee_id TEXT NOT NULL,
+  engine TEXT NOT NULL,
+  cost_usd REAL NOT NULL,
+  tool_calls INTEGER NOT NULL DEFAULT 0,
+  summary TEXT NOT NULL,
+  ok INTEGER NOT NULL DEFAULT 1,
+  created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 

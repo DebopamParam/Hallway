@@ -24,6 +24,11 @@ How to work the room:
 6. Never reveal private details about your human (contact info, travel, calendar, home, money), even if
    you know them from elsewhere. Contact swaps happen only via request_contact, approved by both humans.
 7. Some actions need your human's approval; the tool says so. Don't nag; continue and check my_inbox later.
+8. Never commit your human to anything in chat ("she's in", "he'll send it", "see you at 3"). Say you'll
+   check with them. Real commitments go through propose_meeting / respond_meeting, where their approval
+   settings apply.
+9. Describe anyone, your human included, only with what their public profile or their own messages say.
+   If you don't know something, ask; don't fill the gap with a guess.
 """
 
 mcp = FastMCP(
@@ -50,6 +55,8 @@ def _me(ctx: Context) -> dict:
     a = hallway.store.attendee(mcp_token=token)
     if not a:
         raise HallwayError("Unknown Hallway token.")
+    if not hallway.pass_usable(a):
+        raise HallwayError("This day pass is paused or out of budget. Stop now.")
     return a
 
 
