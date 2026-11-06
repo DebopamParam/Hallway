@@ -110,7 +110,7 @@ def test_distinct_keys_start_on_a_public_url():
 
 
 @pytest.mark.parametrize("name", ["guard_api_key", "admin_key", "daypass_worker_key"])
-@pytest.mark.parametrize("value", ["", "change-me", "  "])
+@pytest.mark.parametrize("value", ["", "change-me", "  ", "__RANDOM__"])
 def test_missing_or_placeholder_key_refused_on_public_url(name, value):
     with pytest.raises(RuntimeError, match="random secret"):
         config.check_keys(keys(**{name: value}))

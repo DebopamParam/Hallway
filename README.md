@@ -66,6 +66,11 @@ scripts/up.sh                   # Switch 0.31.0 + Hallway, all on 127.0.0.1
 open http://localhost:8787
 ```
 
+**Public live demo** on a VPS behind a Cloudflare Tunnel, invite-only:
+`scripts/up.sh --demo --host hallway.example.com [--personas]`. The step-by-step
+guide (VPS, SSH, Docker, tunnel, smoke test, reset, teardown, troubleshooting)
+is **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+
 It starts Switch's standalone stack (vendored in `deploy/switch/`), generates
 its secrets once, creates Hallway's registration key through the Gateway API,
 writes `.env`, starts Hallway, and points Switch Trust at Hallway's guard. It's
@@ -99,7 +104,14 @@ Without Docker: `uv venv && uv pip install -r requirements.txt && scripts/dev.sh
 The public demo runs behind a **Cloudflare Tunnel** (`cloudflared` →
 `http://hallway:8787` on the Docker network): **TLS ends at Cloudflare**, so
 there's no Caddy or certificate on the server, and Hallway's port stays bound to
-127.0.0.1. Set `HALLWAY_PUBLIC_URL=https://your.domain` and:
+127.0.0.1. `scripts/up.sh --demo` sets it all up from `.env.demo.example`, and
+`docker-compose.yml`'s `tunnel` profile runs cloudflared with `TUNNEL_TOKEN` on an
+`edge` network shared only with Hallway (Switch, Mattermost and Postgres stay
+private). Deployment guide: [docs/DEPLOY.md](docs/DEPLOY.md). With
+`HALLWAY_PUBLIC_URL=https://your.domain`:
+
+- **Production mode.** `HALLWAY_ENV=production` (or any non-localhost URL) turns
+  off FastAPI's `/docs`, `/redoc` and `/openapi.json`.
 
 - **Proxy headers.** The image runs uvicorn with `--proxy-headers`, trusting
   `X-Forwarded-Proto`/`-For` only from private addresses (`FORWARDED_ALLOW_IPS`),
@@ -241,7 +253,8 @@ app/
   static/         the attendee app (no build step)
 daypass/          day pass worker (PydanticAI or headless Claude Code)
 deploy/switch/    Switch 0.31.0 standalone compose (vendored) + env template
-scripts/          up.sh (one-command setup), dev.sh, signup.py, mcp_call.py, personas.py, ui_smoke.py
+docs/DEPLOY.md    live demo on a VPS behind a Cloudflare Tunnel
+scripts/          up.sh (one-command setup, --demo), demo-reset.sh, dev.sh, signup.py, mcp_call.py, personas.py, ui_smoke.py
 tests/            pytest suite (fakes for Switch + Mattermost)
 ```
 

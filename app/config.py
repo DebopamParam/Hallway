@@ -108,7 +108,16 @@ def is_dev_env(s: "Settings") -> bool:
 
 
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
-PLACEHOLDER_KEYS = ("", "change-me")
+# change-me is .env.example's placeholder, __RANDOM__ is .env.demo.example's
+# (scripts/up.sh --demo replaces it): neither may ever be a real key.
+PLACEHOLDER_KEYS = ("", "change-me", "__RANDOM__")
+
+
+def api_docs_enabled(s: "Settings") -> bool:
+    """FastAPI's /docs, /redoc and /openapi.json: only on a dev box. In production
+    (HALLWAY_ENV=production, or any non-dev public URL) they're off: the docs
+    page needs inline script and a CDN the CSP refuses, and nobody needs them."""
+    return s.hallway_env != "production" and is_dev_env(s)
 
 
 def is_local_url(s: "Settings") -> bool:
