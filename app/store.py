@@ -621,11 +621,11 @@ class Store:
         row = self.db.execute("DELETE FROM kv WHERE key = ? RETURNING value", (key,)).fetchone()
         return json.loads(row[0]) if row else None
 
-    def kv_purge(self, prefix: str, older_than: float) -> None:
-        """Drop `prefix*` records whose JSON `at` is before `older_than`."""
+    def kv_purge(self, prefix: str, older_than: float, field: str = "at") -> None:
+        """Drop `prefix*` records whose JSON `field` is before `older_than`."""
         self.db.execute(
-            "DELETE FROM kv WHERE key LIKE ? ESCAPE '\\' AND json_extract(value, '$.at') < ?",
-            (prefix.replace("%", r"\%").replace("_", r"\_") + "%", older_than),
+            "DELETE FROM kv WHERE key LIKE ? ESCAPE '\\' AND json_extract(value, ?) < ?",
+            (prefix.replace("%", r"\%").replace("_", r"\_") + "%", f"$.{field}", older_than),
         )
 
     # convenience

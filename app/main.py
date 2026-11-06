@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from . import config, guard, mailer, mcp_server, metrics, obs, security
 from .config import AGENDA, check_keys, check_signin, settings
-from .core import AUTONOMY_KEYS, LOCKED_ASK, Hallway, HallwayError, public_profile
+from .core import AUTONOMY_KEYS, LOCKED_ASK, AlreadyJoined, Hallway, HallwayError, public_profile
 from .ratelimit import RateLimited, limiter
 from .store import token_hash
 from .switch import GatewayClient
@@ -106,28 +106,71 @@ async def _hallway_error(_req: Request, exc: HallwayError) -> JSONResponse:
     return JSONResponse({"error": str(exc)}, status_code=400)
 
 
+@app.exception_handler(AlreadyJoined)
+async def _already_joined(_req: Request, exc: AlreadyJoined) -> JSONResponse:
+    resp = JSONResponse({"error": str(exc), "code": "already_joined"}, status_code=409)
+    resp.delete_cookie(SESSION_COOKIE)  # its onboarding is over
+    return resp
+
+
 # ------------------------------------------------------------------ session
 # The hw_session cookie is a random token; the server keeps only its sha256:
-# a row in `sessions` once the person has an account, or `pre:<hash>` -> email
-# between opening the magic link and finishing onboarding.
+# a row in `sessions` once the person has an account, or `pre:<hash>` ->
+# {email, expires_at} between opening the magic link and finishing onboarding.
+# Registering writes the new attendee's id into that record (core.register):
+# only the session that created an account may get into it that way, and if
+# the registration's response never reached the browser, the same cookie is
+# exchanged for a real session on its next request (see _redeem).
 SESSION_COOKIE = "hw_session"
+ONBOARDING_TTL_S = 2 * 3600  # an onboarding session left unfinished this long must sign in again
 
 
-def _lookup(hw_session: str | None) -> tuple[dict | None, str | None, dict | None]:
-    """(attendee, pending_email, session row). Any may be None."""
+def _pre_key(hw_session: str) -> str:
+    return f"pre:{token_hash(hw_session)}"
+
+
+def _pending(hw_session: str) -> dict | None:
+    """The onboarding record for this cookie, if it is still valid."""
+    rec = hallway.store.kv_get(_pre_key(hw_session))
+    if isinstance(rec, str):  # a plain email, from before onboarding expired: it starts its clock now
+        rec = {"email": rec, "expires_at": time.time() + ONBOARDING_TTL_S}
+        hallway.store.kv_set(_pre_key(hw_session), rec)
+    if not isinstance(rec, dict) or not rec.get("email"):
+        return None
+    if rec.get("expires_at", 0) <= time.time():
+        hallway.store.kv_pop(_pre_key(hw_session))
+        return None
+    return rec
+
+
+def _lookup(hw_session: str | None) -> tuple[dict | None, dict | None, dict | None]:
+    """(attendee, pending onboarding record, session row). Any may be None."""
     if not hw_session:
         return None, None, None
     s = hallway.store.session(hw_session)
     a = hallway.store.attendee(id=s["attendee_id"]) if s else None
     if a:
         obs.set_attendee(a["id"])
-        return a, a["email"], s
-    return None, hallway.store.kv_get(f"pre:{token_hash(hw_session)}"), None
+        return a, None, s
+    return None, _pending(hw_session), None
 
 
 def _session(hw_session: str | None) -> tuple[dict | None, str | None]:
     """(attendee, pending_email). Either may be None."""
-    return _lookup(hw_session)[:2]
+    a, rec, _ = _lookup(hw_session)
+    return a, rec["email"] if rec else None
+
+
+def _redeem(rec: dict, hw_session: str, request: Request, response: Response) -> dict | None:
+    """The account this onboarding cookie created, now signed in with a fresh
+    session, or None if it created none. Single use."""
+    aid = rec.get("attendee_id")
+    a = hallway.store.attendee(id=aid) if aid else None
+    if not a or a["email"] != rec["email"] or not hallway.store.kv_pop(_pre_key(hw_session)):
+        return None
+    obs.set_attendee(a["id"])
+    _set_session_cookie(response, hallway.store.create_session(a["id"], _ua(request)), settings.session_ttl_s)
+    return a
 
 
 def _set_session_cookie(resp: Response, token: str, max_age: float) -> None:
@@ -343,12 +386,14 @@ async def event() -> dict:
 ALREADY_JOINED = "This email already joined. Open Hallway on the device you signed up with."
 
 
-def _issue_link(email: str) -> str:
-    """A fresh single-use sign-in link. Only the fact that one was issued is logged."""
+def _issue_link(email: str, *, join: bool) -> str:
+    """A fresh single-use sign-in link. Only the fact that one was issued is
+    logged. `join`: issued for an email with no account yet, so it may only
+    start an onboarding, never sign in to an account made since."""
     now = time.time()
     hallway.store.kv_purge("magic:", now - settings.magic_link_ttl_s)
     token = secrets.token_urlsafe(24)
-    hallway.store.kv_set(f"magic:{token}", {"email": email, "at": now})
+    hallway.store.kv_set(f"magic:{token}", {"email": email, "at": now, "join": join})
     metrics.signin_links.inc(mode=settings.signin_mode)
     log.info("sign-in link issued for %s (%s mode)", mailer.mask_email(email), settings.signin_mode)
     return f"{settings.public_url}/auth/magic?t={token}"
@@ -383,7 +428,7 @@ async def auth_start(body: StartAuth, request: Request) -> dict:
         raise HallwayError("Enter a valid email.")
     if admin:
         # Organiser tooling (scripts/personas.py): a link for any email, in any mode.
-        return {"sent": True, "dev_link": _issue_link(email)}
+        return {"sent": True, "dev_link": _issue_link(email, join=False)}
     limiter.check("auth_start_email", email)
     mode = settings.signin_mode
     existing = hallway.store.attendee(email=email)
@@ -394,7 +439,7 @@ async def auth_start(body: StartAuth, request: Request) -> dict:
             if not existing:
                 _check_invite(body.invite)
                 _check_spots()
-            subject, text = _signin_email(_issue_link(email))
+            subject, text = _signin_email(_issue_link(email, join=not existing))
         except JoinRefused as refused:
             subject, text = _refusal_email(refused.code)
         try:
@@ -410,7 +455,7 @@ async def auth_start(body: StartAuth, request: Request) -> dict:
     if not existing:
         _check_invite(body.invite)
         _check_spots()
-    return {"sent": True, "dev_link": _issue_link(email)}
+    return {"sent": True, "dev_link": _issue_link(email, join=not existing)}
 
 
 @app.get("/auth/magic")
@@ -421,13 +466,20 @@ async def auth_magic(t: str, request: Request) -> RedirectResponse:
         metrics.signins.inc(outcome="expired")
         return RedirectResponse("/#/?expired=1")
     a = hallway.store.attendee(email=rec["email"])
+    if a and rec.get("join"):
+        # Issued to join with an email that had no account yet, and someone
+        # has joined with it since: on the demo nobody checked that inbox, so
+        # this is not a sign-in to that account.
+        metrics.signins.inc(outcome="already_joined")
+        return RedirectResponse("/#/?joined=1")
     metrics.signins.inc(outcome="ok" if a else "onboarding")
     if a:  # every sign-in is a new session; other devices stay signed in
         obs.set_attendee(a["id"])
         session, target = hallway.store.create_session(a["id"], _ua(request)), "/#/home"
     else:
         session, target = secrets.token_urlsafe(32), "/#/onboard"
-        hallway.store.kv_set(f"pre:{token_hash(session)}", rec["email"])
+        hallway.store.kv_purge("pre:", time.time(), field="expires_at")
+        hallway.store.kv_set(_pre_key(session), {"email": rec["email"], "expires_at": time.time() + ONBOARDING_TTL_S})
     resp = RedirectResponse(target, status_code=303)
     _set_session_cookie(resp, session, settings.session_ttl_s)
     return resp
@@ -438,7 +490,7 @@ async def logout(hw_session: str | None = Cookie(None)) -> JSONResponse:
     """Ends this session on the server too: a copied cookie stops working."""
     if hw_session:
         hallway.store.revoke_session(hw_session)
-        hallway.store.kv_pop(f"pre:{token_hash(hw_session)}")
+        hallway.store.kv_pop(_pre_key(hw_session))
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(SESSION_COOKIE)
     return resp
@@ -456,14 +508,17 @@ async def logout_all(hw_session: str | None = Cookie(None)) -> JSONResponse:
 
 
 @app.get("/api/me")
-async def me(response: Response, hw_session: str | None = Cookie(None)) -> dict:
-    a, email, s = _lookup(hw_session)
+async def me(request: Request, response: Response, hw_session: str | None = Cookie(None)) -> dict:
+    a, rec, s = _lookup(hw_session)
     if a and s and hw_session:
         # The cookie slides with the server-side expiry (the app loads /api/me on open).
         _set_session_cookie(response, hw_session, s["expires_at"] - time.time())
         return _me_view(a)
-    if email:
-        return {"onboarding": True, "email": email}
+    if rec and hw_session:
+        a = _redeem(rec, hw_session, request, response)
+        if a:  # registered, but the response with the new session never arrived
+            return _me_view(a)
+        return {"onboarding": True, "email": rec["email"]}
     raise HTTPException(401, "Sign in first.")
 
 
@@ -490,33 +545,42 @@ async def register(body: Register, request: Request, response: Response, hw_sess
     persona = _is_admin(request)
     if not persona:
         limiter.check("register_ip", client_ip(request))
-    a, email = _session(hw_session)
+    a, rec, _ = _lookup(hw_session)
     if a:
         return _me_view(a)
-    if not email:
+    if not rec or not hw_session:
         raise HTTPException(401, "Open the sign-in link from your email first.")
+    a = _redeem(rec, hw_session, request, response)
+    if a:  # this onboarding already created its account
+        return _me_view(a)
+    email = rec["email"]
     # Checked again here, one registration at a time when there is a limit:
     # links issued while spots were left must not let more than INVITE_LIMIT in.
     async with hallway._lock if settings.invite_limit > 0 else contextlib.nullcontext():
         if not persona and not hallway.store.attendee(email=email):
             _check_spots()
-        a = await hallway.register(
-            name=body.name,
-            email=email,
-            profile=body.profile,
-            contact=body.contact,
-            autonomy=body.autonomy,
-            mode=body.mode,
-            live_agent_name=body.live_agent_name,
-            is_persona=persona,
-        )
+        try:
+            a = await hallway.register(
+                name=body.name,
+                email=email,
+                profile=body.profile,
+                contact=body.contact,
+                autonomy=body.autonomy,
+                mode=body.mode,
+                live_agent_name=body.live_agent_name,
+                is_persona=persona,
+                onboarding_key=_pre_key(hw_session),
+            )
+        except AlreadyJoined:
+            # Someone else's onboarding created this email's account first.
+            hallway.store.kv_pop(_pre_key(hw_session))
+            raise
     obs.set_attendee(a["id"])
     if a.get("mcp_token"):  # only a new attendee gets their key in the response
         metrics.registrations.inc(mode=a["mode"], persona=str(persona).lower())
         log.info("registered attendee %s (%s mode)", a["id"], a["mode"])
-    # The onboarding token is retired; the new account gets a fresh session.
-    if hw_session:  # always: the pending email came from it
-        hallway.store.kv_pop(f"pre:{token_hash(hw_session)}")
+    # The new account gets a fresh session. The onboarding record stays for a
+    # few minutes (marked with the account) in case this response is lost.
     _set_session_cookie(response, hallway.store.create_session(a["id"], _ua(request)), settings.session_ttl_s)
     return _me_view(hallway.store.need_attendee(id=a["id"]), token=a.get("mcp_token"))
 

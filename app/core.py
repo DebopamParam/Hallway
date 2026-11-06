@@ -46,6 +46,7 @@ DEFAULT_AUTONOMY = {
 }
 LOCKED_ASK = {"share_contact"}
 STAND_IN_MODES = ("connect", "daypass")
+REGISTERED_GRACE_S = 600  # a finished onboarding cookie can be exchanged for a session this long (main._redeem)
 
 PUBLIC_PROFILE_FIELDS = ("role", "company", "bio", "here_for", "interests", "talks", "links")
 
@@ -58,6 +59,10 @@ PRIVACY_QUESTIONS = [
 
 class HallwayError(Exception):
     """A user-facing refusal (bad input, not permitted, not found)."""
+
+
+class AlreadyJoined(HallwayError):
+    """Registering an email that another onboarding session already registered."""
 
 
 def slug(text: str) -> str:
@@ -260,7 +265,11 @@ class Hallway:
         mode: str = "connect",
         live_agent_name: str | None = None,
         is_persona: bool = False,
+        onboarding_key: str | None = None,
     ) -> dict:
+        """`onboarding_key` is the kv key of the onboarding session registering
+        (its record gets the new attendee's id). An email that already has an
+        account gives back that account only to the session that created it."""
         name, email = name.strip(), email.strip().lower()
         if not name or not email:
             raise HallwayError("Name and email are required.")
@@ -276,6 +285,7 @@ class Hallway:
                 mode=mode,
                 live_agent_name=live_agent_name,
                 is_persona=is_persona,
+                onboarding_key=onboarding_key,
             )
 
     async def _register(
@@ -289,10 +299,14 @@ class Hallway:
         mode: str,
         live_agent_name: str | None,
         is_persona: bool,
+        onboarding_key: str | None,
     ) -> dict:
         existing = self.store.attendee(email=email)
         if existing:
-            return existing
+            rec = self.store.kv_get(onboarding_key) if onboarding_key else None
+            if isinstance(rec, dict) and rec.get("attendee_id") == existing["id"]:
+                return existing  # a double-submitted form: the first submit made it
+            raise AlreadyJoined("This email has already joined Hallway. Sign in on the device you joined with.")
         if len(self.store.attendees()) >= settings.max_attendees:
             raise HallwayError(f"This event is full ({settings.max_attendees} attendees).")
         if mode not in ("connect", "live", "daypass"):
@@ -317,11 +331,16 @@ class Hallway:
         names = {handle, agent_name}
         self._reserved_names |= names
         try:
-            return await self._create_attendee(
+            attendee = await self._create_attendee(
                 name, email, handle, agent_name, mode, profile, contact, autonomy, is_persona
             )
         finally:
             self._reserved_names -= names
+        rec = self.store.kv_get(onboarding_key) if onboarding_key else None
+        if isinstance(rec, dict) and onboarding_key:
+            rec.update(attendee_id=attendee["id"], expires_at=min(rec["expires_at"], time.time() + REGISTERED_GRACE_S))
+            self.store.kv_set(onboarding_key, rec)
+        return attendee
 
     async def _create_attendee(
         self,
