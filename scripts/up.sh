@@ -82,7 +82,8 @@ grep -q '^HALLWAY_PUBLIC_URL=http://localhost:' .env && setenv .env HALLWAY_PUBL
 # 3. Hallway, then point Switch Trust at Hallway's privacy guard
 say "Starting Hallway"
 profiles=(); [ "$(getenv .env DAYPASS_ENABLED)" = true ] && [ -n "$(getenv .env VERCEL_AI_GATEWAY_API_KEY)$(getenv .env ANTHROPIC_API_KEY)" ] && profiles=(--profile daypass)
-docker compose "${profiles[@]}" up -d --build
+build=(--build); [ "${SKIP_BUILD:-}" = 1 ] && build=()  # SKIP_BUILD=1: use images you built
+docker compose "${profiles[@]}" up -d "${build[@]}"
 wait_for Hallway http://127.0.0.1:$HW_PORT/health
 curl -fs -X POST -H "x-hallway-admin: $(getenv .env GUARD_API_KEY)" http://127.0.0.1:$HW_PORT/api/admin/enable-guard >/dev/null \
   && say "Switch Trust now checks every message with Hallway's guard"

@@ -4,7 +4,7 @@
 # http://hallway:8787/guardrails/check.
 services:
   hallway:
-    build: {context: ., network: "${BUILD_NETWORK:-default}"}
+    build: .
     env_file: .env
     environment:
       SWITCH_URL: http://switch:8000
@@ -20,7 +20,7 @@ services:
 
   daypass:
     profiles: [daypass]
-    build: {context: ./daypass, network: "${BUILD_NETWORK:-default}"}
+    build: ./daypass
     env_file: .env
     environment:
       HALLWAY_URL: http://hallway:8787
