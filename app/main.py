@@ -1,6 +1,7 @@
 """Hallway web server: the attendee app (SPA + JSON API), the MCP endpoint at
 /mcp, and the privacy guard Switch calls at /guardrails/check."""
 import contextlib
+import ipaddress
 import logging
 import os
 import re
@@ -13,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import guard, mailer, mcp_server
+from . import guard, mailer, mcp_server, security
 from . import config
 from .config import AGENDA, check_keys, check_signin, settings
 from .core import AUTONOMY_KEYS, LOCKED_ASK, Hallway, HallwayError, public_profile
@@ -59,6 +60,9 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Hallway", lifespan=lifespan)
+# Security headers on every response (the SPA, the API, /mcp) and the Origin
+# check on cookie-authenticated writes. Reads `settings` per request.
+app.add_middleware(security.SecurityMiddleware, get_settings=lambda: settings)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -93,6 +97,19 @@ def _session(hw_session: str | None) -> tuple[dict | None, str | None]:
 def _set_session_cookie(resp: Response, token: str, max_age: int) -> None:
     resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=max(0, int(max_age)),
                     secure=settings.public_url.startswith("https://"))
+
+
+def client_ip(request: Request) -> str:
+    """The visitor's IP: the one place that knows about CF-Connecting-IP.
+    Behind Cloudflare it's that header; otherwise the peer address (uvicorn has
+    already applied X-Forwarded-For from FORWARDED_ALLOW_IPS proxies).
+    TRUST_CF_CONNECTING_IP=false ignores the header."""
+    if settings.trust_cf_connecting_ip:
+        try:
+            return str(ipaddress.ip_address(request.headers.get("cf-connecting-ip", "").strip()))
+        except ValueError:
+            pass
+    return request.client.host if request.client else "unknown"
 
 
 def _ua(request: Request) -> str:

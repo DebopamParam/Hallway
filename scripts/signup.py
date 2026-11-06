@@ -40,7 +40,9 @@ def admin_key() -> str:
 
 def signup(p: dict, base: str = BASE) -> dict:
     key = admin_key()
-    headers = {"x-hallway-admin": key} if key else {}
+    # Origin: Hallway refuses cookie-authenticated writes without a same-origin
+    # Origin (CSRF check); the admin key alone would exempt us, a visitor isn't.
+    headers = {"origin": base, **({"x-hallway-admin": key} if key else {})}
     c = httpx.Client(base_url=base, follow_redirects=False, timeout=60, headers=headers)
     r = c.post("/api/auth/start", json={"email": p["email"]})
     r.raise_for_status()

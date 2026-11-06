@@ -84,6 +84,10 @@ class Settings:
     invite_code: str = os.environ.get("INVITE_CODE", "").strip()
     invite_limit: int = int(os.environ.get("INVITE_LIMIT", "0") or 0)
     demo_video_url: str = os.environ.get("DEMO_VIDEO_URL", "").strip()
+    # Behind Cloudflare the visitor's IP is CF-Connecting-IP (Cloudflare sets it,
+    # overwriting any the client sent). Set false if Hallway is reachable other
+    # than through Cloudflare, or a client could pick its own IP for rate limits.
+    trust_cf_connecting_ip: bool = _bool("TRUST_CF_CONNECTING_IP", True)
     host_agent_name: str = os.environ.get("HOST_AGENT_NAME", "hallway")
     lobby_room_name: str = os.environ.get("LOBBY_ROOM_NAME", "lobby")
 

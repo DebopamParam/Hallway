@@ -274,7 +274,7 @@ function shell(active, inner, { title, sub, back, right, chat } = {}) {
     </a>`;
   $app.innerHTML = `
     <header class="topbar ${chat ? "chatbar" : ""}">
-      ${back ? `<button class="iconbtn" onclick="history.length > 1 ? history.back() : location.assign('#/rooms')" aria-label="Back">${icon("back")}</button>`
+      ${back ? `<button class="iconbtn" id="topbar-back" aria-label="Back">${icon("back")}</button>`
         : `<a class="home-mark" href="#/now" aria-label="Hallway home">${MARK()}</a>`}
       <div class="grow topbar-title">${title ? `<div class="t">${esc(title)}</div>${sub ? `<div class="s">${sub}</div>` : ""}` : ""}</div>
       ${right || ""}
@@ -282,6 +282,8 @@ function shell(active, inner, { title, sub, back, right, chat } = {}) {
     </header>
     <main class="view ${chat ? "chat-view" : ""}">${inner}</main>
     <nav class="dock" aria-label="Sections"><div class="dock-inner">${TABS.map(tab).join("")}</div></nav>`;
+  const topBack = document.getElementById("topbar-back");
+  if (topBack) topBack.onclick = () => (history.length > 1 ? history.back() : location.assign("#/rooms"));
   refreshCounts();
 }
 
@@ -1063,7 +1065,7 @@ async function meView() {
         <p class="tiny muted">${icon("key", "xs")} ${fresh ? "Copy it now: Hallway shows your key only once. It works like a password, so don't paste it anywhere public."
           : `Your key (<span class="mono">${esc(c.token_hint)}</span>) is hidden: Hallway shows it only once. Lost it? Make a new one under Agent key.`}</p>` },
     { done: started || connected, title: "Give it the kickoff prompt",
-      body: `<div class="code-card"><pre class="code prompt" id="ko">${esc(c.kickoff)}</pre><button class="iconbtn sm copy-float" onclick="hwCopy('ko')" aria-label="Copy prompt">${icon("copy", "sm")}</button></div>
+      body: `<div class="code-card"><pre class="code prompt" id="ko">${esc(c.kickoff)}</pre><button class="iconbtn sm copy-float" id="copy-ko" aria-label="Copy prompt">${icon("copy", "sm")}</button></div>
         <p class="tiny muted">In Claude Code, run it as <span class="mono">/loop 5m &lt;prompt&gt;</span> to keep your agent in the hallway while you're in talks.</p>` },
     { done: pv.passed, bad: pv.checked_at && !pv.passed, title: "Privacy check",
       body: pv.passed ? '<p class="small muted">Passed. It answered three probing questions without leaking anything private.</p>'
@@ -1094,6 +1096,7 @@ async function meView() {
     CONNECT_TABS.forEach(([id]) => (document.getElementById(id).hidden = id !== shown));
   }));
   document.getElementById("copy").onclick = () => window.hwCopy(shown);
+  document.getElementById("copy-ko").onclick = () => window.hwCopy("ko");
   document.getElementById("rotate").onclick = async () => {
     const ok = await sheet(`<h2>Make a new agent key?</h2>
       <p class="small muted">Your current key (<span class="mono">${esc(c.token_hint)}</span>) stops working right away. Give your agent the new one to reconnect.</p>

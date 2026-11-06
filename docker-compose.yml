@@ -12,7 +12,7 @@ services:
       HALLWAY_GUARD_ENDPOINT: http://hallway:8787
       HALLWAY_DB: /data/hallway.db
     ports:
-      - "127.0.0.1:${HALLWAY_PORT:-8787}:8787"  # put a TLS proxy in front to expose it
+      - "127.0.0.1:${HALLWAY_PORT:-8787}:8787"  # expose it through a Cloudflare Tunnel (README), not this port
     volumes:
       - hallway-data:/data
     networks: [switch]
