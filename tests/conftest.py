@@ -22,7 +22,9 @@ os.environ.update({
     "DAYPASS_CAP_USD": "0.50",
     "DAYPASS_EVERY_S": "600",
     "DAYPASS_WORKER_KEY": WORKER_KEY,
-    "DEV_MAGIC_LINKS": "true",
+    "HALLWAY_ENV": "dev",
+    "SIGNIN_MODE": "dev",
+    "EMAIL_SENDER": "console",
     "HOST_AGENT_NAME": "hallway",
     "LOBBY_ROOM_NAME": "hallway-lobby",
 })

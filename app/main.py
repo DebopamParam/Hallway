@@ -3,6 +3,7 @@
 import contextlib
 import logging
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -12,14 +13,28 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import guard, mcp_server
-from .config import AGENDA, settings
+from . import guard, mailer, mcp_server
+from .config import AGENDA, check_signin, settings
 from .core import AUTONOMY_KEYS, LOCKED_ASK, Hallway, HallwayError, public_profile
 from .switch import GatewayClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("hallway")
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+class _RedactSecrets(logging.Filter):
+    """Access logs print the full path: hide sign-in tokens (?t=) and MCP keys (?key=)."""
+    PATTERN = re.compile(r"([?&](?:t|key)=)[^&\s\"]+")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(self.PATTERN.sub(r"\1[redacted]", a) if isinstance(a, str) else a for a in record.args)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_RedactSecrets())
+
 STATIC = Path(__file__).parent / "static"
 hallway = Hallway()
 mcp_server.hallway = hallway
@@ -28,6 +43,11 @@ mcp_app = mcp_server.mcp.streamable_http_app()
 
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
+    check_signin(settings)
+    if "DEV_MAGIC_LINKS" in os.environ and "SIGNIN_MODE" not in os.environ:
+        log.warning("DEV_MAGIC_LINKS is deprecated: set SIGNIN_MODE=%s instead.", settings.signin_mode)
+    log.info("sign-in mode: %s%s", settings.signin_mode,
+             f" (email via {settings.email_sender})" if settings.signin_mode == "email" else "")
     await hallway.start()
     async with mcp_server.mcp.session_manager.run():
         yield
@@ -120,10 +140,30 @@ class StartAuth(BaseModel):
 @app.get("/api/event")
 async def event():
     people = hallway.store.attendees()
-    return {"name": settings.event_name, "daypass_enabled": settings.daypass_enabled,
+    return {"name": settings.event_name, "signin_mode": settings.signin_mode, "daypass_enabled": settings.daypass_enabled,
             "daypass": {"price": settings.daypass_price, "cap_usd": settings.daypass_cap_usd} if settings.daypass_enabled else None,
             "max_attendees": settings.max_attendees, "lobby": settings.lobby_room_name, "attendees": len(people),
             "agents_active": sum(_agent_active(a) for a in people), "agenda": AGENDA}
+
+
+ALREADY_JOINED = "This email already joined. Open Hallway on the device you signed up with."
+
+
+def _issue_link(email: str) -> str:
+    """A fresh single-use sign-in link. Only the fact that one was issued is logged."""
+    now = time.time()
+    hallway.store.kv_purge("magic:", now - settings.magic_link_ttl_s)
+    token = secrets.token_urlsafe(24)
+    hallway.store.kv_set(f"magic:{token}", {"email": email, "at": now})
+    log.info("sign-in link issued for %s (%s mode)", mailer.mask_email(email), settings.signin_mode)
+    return f"{settings.public_url}/auth/magic?t={token}"
+
+
+def _signin_email(link: str) -> tuple[str, str]:
+    minutes = max(1, settings.magic_link_ttl_s // 60)
+    return (f"Your sign-in link for {settings.event_name}",
+            f"Open this link to sign in to Hallway at {settings.event_name}:\n\n{link}\n\n"
+            f"It works once, for the next {minutes} minutes. If you didn't ask for it, ignore this email.")
 
 
 @app.post("/api/auth/start")
@@ -131,18 +171,27 @@ async def auth_start(body: StartAuth):
     email = body.email.strip().lower()
     if "@" not in email:
         raise HallwayError("Enter a valid email.")
-    token = secrets.token_urlsafe(24)
-    hallway.store.kv_set(f"magic:{token}", {"email": email, "at": time.time()})
-    link = f"{settings.public_url}/auth/magic?t={token}"
-    log.info("magic link for %s: %s", email, link)
-    # Production would email this link (it arrives with the RSVP). Dev mode hands it back.
-    return {"sent": True, "dev_link": link if settings.dev_magic_links else None}
+    mode = settings.signin_mode
+    if mode == "email":
+        # Same answer whether or not the email has an account: no enumeration.
+        subject, text = _signin_email(_issue_link(email))
+        try:
+            await mailer.make_sender(settings).send(email, subject, text)
+        except mailer.SendError as e:
+            log.error("sign-in email to %s failed: %s", mailer.mask_email(email), e)
+            raise HTTPException(503, "We couldn't send the email just now. Try again in a minute.")
+        return {"sent": True, "dev_link": None}
+    if mode == "demo" and hallway.store.attendee(email=email):
+        # No email provider, so a link on screen for an existing account would
+        # be a sign-in as somebody else. They're already signed in on their device.
+        return {"sent": False, "dev_link": None, "already_joined": True, "message": ALREADY_JOINED}
+    return {"sent": True, "dev_link": _issue_link(email)}
 
 
 @app.get("/auth/magic")
 async def auth_magic(t: str):
-    rec = hallway.store.kv_get(f"magic:{t}")
-    if not rec or time.time() - rec["at"] > 3600:
+    rec = hallway.store.kv_pop(f"magic:{t}")  # single use: gone on first open
+    if not rec or time.time() - rec["at"] > settings.magic_link_ttl_s:
         return RedirectResponse("/#/?expired=1")
     a = hallway.store.attendee(email=rec["email"])
     if a:
@@ -151,7 +200,8 @@ async def auth_magic(t: str):
         session, target = secrets.token_urlsafe(32), "/#/onboard"
         hallway.store.kv_set(f"pre:{session}", rec["email"])
     resp = RedirectResponse(target, status_code=303)
-    resp.set_cookie("hw_session", session, httponly=True, samesite="lax", max_age=7 * 86400)
+    resp.set_cookie("hw_session", session, httponly=True, samesite="lax", max_age=7 * 86400,
+                    secure=settings.public_url.startswith("https://"))
     return resp
 
 
