@@ -10,12 +10,10 @@ make its own room."""
 
 import asyncio
 
-import pytest
-
 from app import core
 from app.switch import SwitchError
 
-from .conftest import mcp_call, register
+from .conftest import mcp_call, register, sign_in
 
 
 async def propose(client, asha, **kw) -> str:
@@ -181,8 +179,8 @@ async def test_failed_room_creation_leaves_the_meeting_open_to_retry(signup, cli
         return await create_room(self, *a, **kw)
 
     monkeypatch.setattr(type(hallway.switch), "create_room", flaky)
-    with pytest.raises(SwitchError):
-        await bc.post(f"/api/approvals/{ap['id']}", json={"approve": True})
+    r = await bc.post(f"/api/approvals/{ap['id']}", json={"approve": True})
+    assert r.status_code == 400 and "try again" in r.json()["error"]  # not a 500
     # Nothing happened, so nothing is marked done: the approval can be given again.
     [still] = [a for a in (await bc.get("/api/approvals")).json() if a["id"] == ap["id"]]
     assert still["status"] == "pending"
@@ -213,10 +211,26 @@ async def test_concurrent_registrations_with_one_first_name_get_distinct_account
     assert hallway._reserved_names == set()
 
 
-async def test_double_submitted_registration_makes_one_attendee(make_client, hallway):
+async def test_double_submitted_registration_makes_one_attendee(client, hallway):
+    await sign_in(client, "asha@example.com")
     one, two = await asyncio.gather(
-        register(make_client(), "Asha Rao", email="asha@example.com"),
-        register(make_client(), "Asha Rao", email="asha@example.com"),
+        client.post("/api/register", json={"name": "Asha Rao"}),
+        client.post("/api/register", json={"name": "Asha Rao"}),
     )
-    assert one["handle"] == two["handle"] == "asha"
+    assert one.status_code == two.status_code == 200, (one.text, two.text)
+    assert one.json()["handle"] == two.json()["handle"] == "asha"
+    assert len(hallway.store.attendees()) == 1
+
+
+async def test_two_onboardings_of_one_email_make_one_attendee_and_refuse_the_other(make_client, hallway):
+    """QA #0: two browsers each opened a sign-in link for the same new email.
+    Whichever registers second must not be let into the first one's account."""
+    a, b = make_client(), make_client()
+    await sign_in(a, "asha@example.com")
+    await sign_in(b, "asha@example.com")
+    one, two = await asyncio.gather(
+        a.post("/api/register", json={"name": "Asha Rao"}),
+        b.post("/api/register", json={"name": "Asha Attacker"}),
+    )
+    assert sorted([one.status_code, two.status_code]) == [200, 409]
     assert len(hallway.store.attendees()) == 1

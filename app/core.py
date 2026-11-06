@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import secrets
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -25,7 +26,7 @@ from . import guard
 from .config import settings
 from .mm import TEAM_HEADROOM, MMClient, MMError
 from .presence import Presence
-from .store import Actor, Store, new_id, new_mcp_token, token_hash, token_hint
+from .store import CONTACT_FIELDS, Actor, Store, contact_value_ok, new_id, new_mcp_token, token_hash, token_hint
 from .switch import AgentCreds, SwitchClient, SwitchError
 
 log = logging.getLogger("hallway")
@@ -46,6 +47,7 @@ DEFAULT_AUTONOMY = {
 }
 LOCKED_ASK = {"share_contact"}
 STAND_IN_MODES = ("connect", "daypass")
+REGISTERED_GRACE_S = 600  # a finished onboarding cookie can be exchanged for a session this long (main._redeem)
 
 PUBLIC_PROFILE_FIELDS = ("role", "company", "bio", "here_for", "interests", "talks", "links")
 
@@ -60,6 +62,10 @@ class HallwayError(Exception):
     """A user-facing refusal (bad input, not permitted, not found)."""
 
 
+class AlreadyJoined(HallwayError):
+    """Registering an email that another onboarding session already registered."""
+
+
 def slug(text: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return s[:40] or "x"
@@ -70,7 +76,7 @@ def now_iso(ts: float | None = None) -> str:
 
 
 def public_profile(a: dict) -> dict:
-    p = a["profile"]
+    p = clean_profile(a["profile"], strict=False)
     return {
         "handle": a["handle"],
         "name": a["name"],
@@ -81,14 +87,107 @@ def public_profile(a: dict) -> dict:
     }
 
 
+# What a profile may hold: text fields with their longest length, lists of
+# strings with their most items and longest item, and links. Unknown keys are
+# dropped. Every attendee's profile is rendered on everyone's People tab and
+# read by their agents, so one bad value must not break it for all.
+PROFILE_TEXT = {"role": 80, "company": 80, "bio": 300, "here_for": 300}
+PROFILE_LISTS = {"interests": (20, 40), "talks": (30, 160)}
+PROFILE_LINKS = ("github", "linkedin")
+FIELD_MAX = 200  # a link or contact value
+
+
+def _bad(strict: bool, msg: str) -> None:
+    if strict:
+        raise HallwayError(msg)
+
+
+def clean_profile(profile: object, *, strict: bool = True) -> dict:
+    """`profile` within PROFILE_TEXT / PROFILE_LISTS / PROFILE_LINKS. Strict (a
+    write) refuses a wrong type or length; not strict (reading a row stored
+    before this check) leaves the bad field out."""
+    if not isinstance(profile, dict):
+        _bad(strict, "The profile must be an object.")
+        return {}
+    out: dict[str, Any] = {}
+    for k, limit in PROFILE_TEXT.items():
+        v = profile.get(k)
+        if v is None:
+            continue
+        if not isinstance(v, str) or len(v.strip()) > limit:
+            _bad(strict, f"Profile {k} must be text of at most {limit} characters.")
+            continue
+        out[k] = v.strip()
+    for k, (most, limit) in PROFILE_LISTS.items():
+        v = profile.get(k)
+        if v is None:
+            continue
+        if not (isinstance(v, list) and len(v) <= most and all(isinstance(i, str) and len(i) <= limit for i in v)):
+            _bad(strict, f"Profile {k} must be a list of at most {most} texts of at most {limit} characters.")
+            continue
+        out[k] = [i.strip() for i in v if i.strip()]
+    links = profile.get("links")
+    if links is not None:
+        if not isinstance(links, dict):
+            _bad(strict, "Profile links must be an object.")
+        else:
+            out["links"] = {}
+            for k in PROFILE_LINKS:
+                v = links.get(k)
+                if v is None or v == "":
+                    continue
+                if not isinstance(v, str) or len(v) > FIELD_MAX:
+                    _bad(strict, f"The {k} link must be text of at most {FIELD_MAX} characters.")
+                    continue
+                out["links"][k] = v.strip()
+    return out
+
+
+def clean_contact(contact: object) -> dict[str, str]:
+    """The private vault, checked: only email, phone and linkedin, each shaped
+    like one (an empty value removes the field)."""
+    if not isinstance(contact, dict):
+        raise HallwayError("Contact details must be an object.")
+    extra = set(contact) - set(CONTACT_FIELDS)
+    if extra:
+        raise HallwayError(f"Unknown contact field {sorted(extra)[0]!r}: only email, phone and linkedin.")
+    out: dict[str, str] = {}
+    for k in CONTACT_FIELDS:
+        v = contact.get(k)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            continue
+        if not isinstance(v, str) or len(v) > FIELD_MAX:
+            raise HallwayError(f"Your {k} must be text of at most {FIELD_MAX} characters.")
+        v = v.strip()
+        if not contact_value_ok(k, v):
+            raise HallwayError(f"That doesn't look like a {k}: {v[:40]}")
+        out[k] = v
+    return out
+
+
+def vault(a: dict) -> dict[str, str]:
+    """An attendee's stored contact details: only the vault's fields, also for
+    a row written before clean_contact existed."""
+    c = a["contact"] if isinstance(a["contact"], dict) else {}
+    return {k: c[k] for k in CONTACT_FIELDS if contact_value_ok(k, c.get(k))}
+
+
 def _overlap_keys(profile: dict) -> dict[str, str]:
     """Lowercased interest and talk keys mapped to their display text."""
+    profile = clean_profile(profile, strict=False)
     keys = {i.strip().lower(): i.strip() for i in profile.get("interests") or [] if i.strip()}
     for t in profile.get("talks") or []:
         title = t.split(" ", 1)[1] if t[:2].isdigit() and " " in t else t
         keys["talk:" + title.lower()] = title
     return keys
 
+
+# Longest free text an attendee or their agent can put in a room title or a
+# meeting proposal; other people read these on a card, not as messages.
+TEXT_LIMITS = {"title": 80, "time": 40, "place": 120, "why": 300}
+
+ADDRESSING_OPENED = "stand_ins_addressing_open"  # kv: every stand-in got _open_addressing
+HOST_CREATE_TRIES, HOST_CREATE_BACKOFF_S = 6, 0.5  # Switch busy creating a room: retry for ~10 s
 
 MEETING_CARD_HEAD = "**Meeting confirmed**"  # how the host's meeting card starts, in the room
 
@@ -138,7 +237,7 @@ class Hallway:
         self._sync_task: asyncio.Task[None] | None = None
         self._background: set[asyncio.Task[None]] = set()  # keep fire-and-forget tasks alive until done
         self._lock = asyncio.Lock()
-        self._serial = KeyedLocks()  # per meeting / per email: see _respond_meeting and register
+        self._serial = KeyedLocks()  # per meeting / per email / host room creation: see their callers
         # Names held between "is it free?" and the row being written, across the
         # awaits on Switch and Mattermost in between, so two concurrent callers
         # can't both pick the same one (and sync_once doesn't adopt a room we
@@ -168,8 +267,7 @@ class Hallway:
         self.lobby = self.store.one("SELECT * FROM rooms WHERE kind = 'lobby'")
         if self.lobby is None:
             asked_ms = int(time.time() * 1000) - 2000
-            res = await self.switch.create_room(
-                self.host,
+            res = await self._host_create_room(
                 settings.lobby_room_name,
                 f"{settings.event_name}: the hallway. Every attendee and their agent.",
                 [],
@@ -193,8 +291,32 @@ class Hallway:
             task = asyncio.create_task(self._post_later(room_id, LOBBY_RULES.format(event=settings.event_name)))
             self._background.add(task)
             task.add_done_callback(self._background.discard)
+        if not self.store.kv_get(ADDRESSING_OPENED):
+            await self._open_all_stand_ins()
         self._sync_task = asyncio.create_task(self._sync_loop())
         self.presence.ensure_all()
+
+    async def _open_addressing(self, agent_name: str, agent_id: str) -> bool:
+        """Let anyone address a stand-in. Switch registers an agent answering
+        only its owner (Hallway's registration key), and people post from
+        Mattermost accounts no Switch user has claimed: tagging someone's
+        agent drew Switch's public "I only take instructions from my owner"
+        reply in that agent's name, and no addressed event, so no mention
+        notice. "anyone" is Switch's open policy. An agent can't change its
+        own, so the host (same owner) does. Returns whether it worked."""
+        try:
+            await self.switch.op(self._host(), "update_agent_detail", agent_id=agent_id, addressing="anyone")
+            return True
+        except SwitchError as e:
+            log.warning("could not open %s to addressing (tags will draw Switch's refusal): %s", agent_name, e)
+            return False
+
+    async def _open_all_stand_ins(self) -> None:
+        """Once, for stand-ins registered before _open_addressing existed."""
+        rows = self.store.all("SELECT agent_name, switch_agent_id FROM attendees WHERE switch_agent_id IS NOT NULL")
+        ok = [await self._open_addressing(r["agent_name"], r["switch_agent_id"]) for r in rows]
+        if all(ok):
+            self.store.kv_set(ADDRESSING_OPENED, time.time())
 
     def _host(self) -> AgentCreds:
         if self.host is None:
@@ -240,6 +362,7 @@ class Hallway:
             name == settings.host_agent_name
             or name in self._reserved_names
             or bool(self.store.one("SELECT 1 FROM attendees WHERE handle = ? OR agent_name = ?", name, name))
+            or self.store.kv_get(f"retired:{name}") is not None
         )
 
     def _unique(self, base: str) -> str:
@@ -260,8 +383,13 @@ class Hallway:
         mode: str = "connect",
         live_agent_name: str | None = None,
         is_persona: bool = False,
+        onboarding_key: str | None = None,
     ) -> dict:
+        """`onboarding_key` is the kv key of the onboarding session registering
+        (its record gets the new attendee's id). An email that already has an
+        account gives back that account only to the session that created it."""
         name, email = name.strip(), email.strip().lower()
+        profile, contact = clean_profile(profile), clean_contact(contact)
         if not name or not email:
             raise HallwayError("Name and email are required.")
         # A double-submitted onboarding form: the second call waits for the
@@ -276,6 +404,7 @@ class Hallway:
                 mode=mode,
                 live_agent_name=live_agent_name,
                 is_persona=is_persona,
+                onboarding_key=onboarding_key,
             )
 
     async def _register(
@@ -289,10 +418,14 @@ class Hallway:
         mode: str,
         live_agent_name: str | None,
         is_persona: bool,
+        onboarding_key: str | None,
     ) -> dict:
         existing = self.store.attendee(email=email)
         if existing:
-            return existing
+            rec = self.store.kv_get(onboarding_key) if onboarding_key else None
+            if isinstance(rec, dict) and rec.get("attendee_id") == existing["id"]:
+                return existing  # a double-submitted form: the first submit made it
+            raise AlreadyJoined("This email has already joined Hallway. Sign in on the device you joined with.")
         if len(self.store.attendees()) >= settings.max_attendees:
             raise HallwayError(f"This event is full ({settings.max_attendees} attendees).")
         if mode not in ("connect", "live", "daypass"):
@@ -317,11 +450,20 @@ class Hallway:
         names = {handle, agent_name}
         self._reserved_names |= names
         try:
-            return await self._create_attendee(
+            proof = await self._open_proof_room(handle, agent_name) if mode == "live" else None
+            attendee = await self._create_attendee(
                 name, email, handle, agent_name, mode, profile, contact, autonomy, is_persona
             )
         finally:
             self._reserved_names -= names
+        if proof:
+            self.store.update("rooms", proof["room_id"], created_by=attendee["id"])
+            self.store.kv_set(f"liveproof:{attendee['id']}", proof)
+        rec = self.store.kv_get(onboarding_key) if onboarding_key else None
+        if isinstance(rec, dict) and onboarding_key:
+            rec.update(attendee_id=attendee["id"], expires_at=min(rec["expires_at"], time.time() + REGISTERED_GRACE_S))
+            self.store.kv_set(onboarding_key, rec)
+        return attendee
 
     async def _create_attendee(
         self,
@@ -357,6 +499,7 @@ class Hallway:
             mm_user_id=mm_user["id"],
             mm_password=mm_password,
             is_persona=int(is_persona),
+            agent_verified=int(mode != "live"),  # a Live agent proves it is theirs first: verify_live_agent
             created_at=time.time(),
         )
         if mode in STAND_IN_MODES:
@@ -366,6 +509,7 @@ class Hallway:
                 f"{name}'s agent at {settings.event_name}. Speaks for {name} through Hallway.",
             )
             row.update(switch_agent_id=creds.id, switch_agent_key=creds.key)
+            await self._open_addressing(agent_name, creds.id)
         with self.store.transaction():  # never an attendee without the pass their mode needs
             self.store.insert("attendees", **row)
             if mode == "daypass":
@@ -385,6 +529,82 @@ class Hallway:
         )
         return attendee
 
+    # ------------------------------------------------------ live agent proof
+    # A Live attendee names a Switch agent that Hallway did not register, so
+    # Hallway can't tell from the name whose it is. Until the agent proves it
+    # (by posting a one-time code in a room only it and the host are in, which
+    # only its owner can make it do), it is not invited anywhere, not counted
+    # as this attendee's in any room, and the sync loop ignores it.
+
+    async def _open_proof_room(self, handle: str, agent_name: str) -> dict:
+        """The proof room for a claimed Live agent, and the code it must post
+        there. Fails (as a HallwayError) if Switch has no agent of that name."""
+        name = await self._free_room_name(f"verify-{handle}")
+        self._creating_rooms.add(name)
+        try:
+            asked_ms = int(time.time() * 1000) - 2000
+            try:
+                res = await self._host_create_room(
+                    name, f"Hallway: {agent_name} posts its code here to prove whose it is.", [agent_name], []
+                )
+            except SwitchError as e:
+                if e.status == 400 and "unknown agent" in str(e).lower():
+                    raise HallwayError(
+                        f"This event's Switch server has no agent called '{agent_name}'. "
+                        "Register it in Switch Console first, then use its exact name."
+                    ) from e
+                raise HallwayError("Switch couldn't check that agent just now. Please try again in a minute.") from e
+            channel = await self._wait_channel(res["name"], asked_ms)
+            self.store.upsert(
+                "rooms",
+                update=("name", "title", "kind"),
+                id=res["id"],
+                name=res["name"],
+                title=f"Verify {agent_name}",
+                kind="verify",
+                mm_channel_id=channel["id"] if channel else None,
+                created_by="host",
+                created_at=time.time(),
+            )
+        finally:
+            self._creating_rooms.discard(name)
+        return {"code": f"hallway-verify-{secrets.token_hex(4)}", "room_id": res["id"], "room": res["name"]}
+
+    def live_proof(self, attendee: dict) -> dict | None:
+        """What an unverified Live attendee's agent must do: post `code` in `room`."""
+        if attendee["mode"] != "live" or attendee["agent_verified"]:
+            return None
+        proof: dict | None = self.store.kv_get(f"liveproof:{attendee['id']}")
+        return proof
+
+    async def verify_live_agent(self, attendee: dict) -> bool:
+        """Whether the attendee's Live agent has posted its code (it is then
+        marked verified, and the sync loop pairs it with its person)."""
+        if attendee["mode"] != "live" or attendee["agent_verified"]:
+            return bool(attendee["agent_verified"])
+        proof = self.live_proof(attendee)
+        if not proof:
+            return False
+        try:
+            msgs = await self.switch.read_context(self._host(), proof["room_id"], limit=50)
+        except SwitchError as e:
+            log.warning("live proof for %s: could not read %s: %s", attendee["handle"], proof["room"], e)
+            return False
+        if not any(m["sender_name"] == attendee["agent_name"] and proof["code"] in m["body"] for m in msgs):
+            return False
+        self.store.update("attendees", attendee["id"], agent_verified=1)
+        self.store.db.execute("DELETE FROM kv WHERE key = ?", (f"liveproof:{attendee['id']}",))
+        attendee["agent_verified"] = 1
+        log.info("live agent %s verified for %s", attendee["agent_name"], attendee["handle"])
+        self.store.notice(
+            attendee["id"],
+            "agent_verified",
+            f"Your Switch agent {attendee['agent_name']} is verified. It joins your rooms now.",
+            audience="both",
+            agent=attendee["agent_name"],
+        )
+        return True
+
     @staticmethod
     def _autonomy(given: dict | None) -> dict:
         out = dict(DEFAULT_AUTONOMY)
@@ -398,9 +618,9 @@ class Hallway:
     ) -> dict:
         changes: dict[str, Any] = {}
         if profile is not None:
-            changes["profile"] = {**attendee["profile"], **profile}
+            changes["profile"] = clean_profile({**clean_profile(attendee["profile"], strict=False), **profile})
         if contact is not None:
-            changes["contact"] = contact
+            changes["contact"] = clean_contact(contact)
         if autonomy is not None:
             changes["autonomy"] = self._autonomy({**attendee["autonomy"], **autonomy})
         if changes:
@@ -456,13 +676,17 @@ class Hallway:
         return self.store.need("SELECT * FROM passes WHERE id = ?", p["id"])
 
     async def remove_attendee(self, attendee: dict) -> dict:
-        """Take an attendee out of the event (the organiser's call): their Switch
-        stand-in and Mattermost account are cleaned up where Hallway can, then
-        every row of theirs is deleted, which frees their invite spot. Rooms and
-        messages they were part of stay. Returns what happened to each part."""
+        """Take an attendee out of the event (the organiser's call): the person
+        and their agent leave every room, their Switch stand-in and Mattermost
+        accounts are cleaned up where Hallway can, then every row of theirs is
+        deleted, which frees their invite spot. Messages they posted stay in
+        the rooms. Their handle (and their stand-in's name) is never given out
+        again: Mattermost and Switch would hand the next owner of the name the
+        old account, with its rooms and its messages. Returns what happened."""
         aid = attendee["id"]
         out: dict[str, str] = {}
         self.presence.forget(aid)
+        out["rooms"] = await self._leave_all_rooms(attendee)
         if attendee["mode"] in STAND_IN_MODES and attendee.get("switch_agent_id") and attendee.get("switch_agent_key"):
             try:
                 await self.switch.delete_agent(AgentCreds(attendee["switch_agent_id"], attendee["switch_agent_key"]))
@@ -476,12 +700,27 @@ class Hallway:
             out["switch_agent"] = "not Hallway's (Live mode): left alone" if attendee["mode"] == "live" else "none"
         if attendee.get("mm_user_id"):
             try:
+                await self.mm.retire_user(attendee["mm_user_id"])
+            except (MMError, OSError) as e:
+                log.warning("remove %s: could not free the Mattermost user's email: %s", attendee["handle"], e)
+            try:
                 await self.mm.deactivate_user(attendee["mm_user_id"])
                 out["mattermost_user"] = "deactivated"
             except (MMError, OSError) as e:
                 log.warning("remove %s: could not deactivate Mattermost user: %s", attendee["handle"], e)
                 out["mattermost_user"] = f"left in place: {e}"[:200]
+        bot = await self._agent_mm_user_id(attendee)
+        if attendee["mode"] in STAND_IN_MODES and bot:
+            try:
+                await self.mm.disable_bot(bot)
+                out["agent_mattermost_user"] = "deactivated"
+            except (MMError, OSError) as e:
+                log.warning("remove %s: could not deactivate the agent's bot user: %s", attendee["handle"], e)
+                out["agent_mattermost_user"] = f"left in place: {e}"[:200]
+        retired = [attendee["handle"]] + ([attendee["agent_name"]] if attendee["mode"] in STAND_IN_MODES else [])
         with self.store.transaction():
+            for name in retired:
+                self.store.kv_set(f"retired:{name}", {"attendee_id": aid, "at": time.time()})
             db = self.store.db
             for table, col in (
                 ("sessions", "attendee_id"),
@@ -501,6 +740,38 @@ class Hallway:
         self.store.forget_private(aid)
         log.info("attendee %s removed by the organiser (%s)", attendee["handle"], out)
         return out
+
+    async def _agent_mm_user_id(self, attendee: dict) -> str | None:
+        if not attendee.get("agent_verified", 1):
+            return None  # the name may be somebody else's agent
+        if attendee.get("agent_mm_user_id"):
+            return str(attendee["agent_mm_user_id"])
+        u = await self.mm.user_by_username(attendee["agent_name"])
+        return str(u["id"]) if u else None
+
+    async def _leave_all_rooms(self, attendee: dict) -> str:
+        """Take the person and their agent's bot out of every room's channel.
+        Switch follows the channel's membership, and nothing else does it:
+        deleting a Switch agent leaves its bot in the channels."""
+        users = [u for u in (attendee.get("mm_user_id"), await self._agent_mm_user_id(attendee)) if u]
+        left, failed = 0, 0
+        for room in self.store.all("SELECT * FROM rooms"):
+            try:
+                members = await self.room_members(room)
+            except (MMError, OSError) as e:
+                log.warning("remove %s: could not read the members of %s: %s", attendee["handle"], room["name"], e)
+                failed += 1
+                continue
+            for uid in users:
+                if uid not in members:
+                    continue
+                try:
+                    await self.mm.remove_from_channel(room["mm_channel_id"], uid)
+                    left += 1
+                except (MMError, OSError) as e:
+                    log.warning("remove %s: could not leave %s: %s", attendee["handle"], room["name"], e)
+                    failed += 1
+        return f"left {left} memberships" + (f", {failed} failed (see the log)" if failed else "")
 
     async def announce(self, text: str) -> dict:
         """Post in the lobby as the host agent (the organiser's announcements)."""
@@ -629,6 +900,8 @@ class Hallway:
                 log.warning("add %s to channel of %s: %s", attendee["handle"], room["name"], e)
 
     async def _invite_agent(self, attendee: dict, room: dict, quiet: bool = False) -> None:
+        if not attendee.get("agent_verified", 1):
+            return  # a claimed Live agent nobody has proved is theirs
         # Switch answers {"ok": true} even when the agent's bot can't join (it
         # isn't in the team), so make sure it is when we know its account.
         if attendee.get("agent_mm_user_id"):
@@ -645,6 +918,11 @@ class Hallway:
     async def create_room(
         self, creator: dict, title: str, invite: list[str], kind: str = "group", description: str | None = None
     ) -> dict:
+        title = self.clean_text(title, "title")
+        if not title:
+            raise HallwayError("Give the room a title.")
+        if description is not None:
+            description = self.clean_text(description, "why")
         members = [creator] + [self.resolve(h) for h in invite]
         uniq = {m["id"]: m for m in members}
         members = list(uniq.values())
@@ -652,13 +930,16 @@ class Hallway:
         self._creating_rooms.add(name)
         try:
             asked_ms = int(time.time() * 1000) - 2000
-            res = await self.switch.create_room(
-                self._host(),
-                name,
-                description or title,
-                [m["agent_name"] for m in members],
-                [m["handle"] for m in members],
-            )
+            try:
+                res = await self._host_create_room(
+                    name,
+                    description or title,
+                    [m["agent_name"] for m in members if m["agent_verified"]],
+                    [m["handle"] for m in members],
+                )
+            except SwitchError as e:
+                log.warning("create room %s: %s", name, e)
+                raise HallwayError("Switch couldn't start the room just now. Please try again in a moment.") from e
             channel = await self._wait_channel(res["name"], asked_ms)
             # The room id is Switch's. If sync_once recorded this room while we
             # waited for its channel (it adopts rooms it finds on Switch), a plain
@@ -690,6 +971,24 @@ class Hallway:
                     title=title,
                 )
         return room
+
+    async def _host_create_room(
+        self, name: str, description: str, agent_names: list[str], user_names: list[str]
+    ) -> dict:
+        """Every room is created by the one host agent, and Switch lets an agent
+        create one room at a time ("You are already creating a room"): creates
+        run one at a time here, and a busy answer (a create Switch is still
+        finishing, or another process on the same host agent) is retried."""
+        for attempt in range(HOST_CREATE_TRIES):
+            async with self._serial.hold("host:create_room"):
+                try:
+                    res: dict = await self.switch.create_room(self._host(), name, description, agent_names, user_names)
+                    return res
+                except SwitchError as e:
+                    if "already creating a room" not in str(e) or attempt == HOST_CREATE_TRIES - 1:
+                        raise
+            await asyncio.sleep(HOST_CREATE_BACKOFF_S * (attempt + 1))
+        raise AssertionError("unreachable")
 
     def _room_name_held(self, name: str) -> bool:
         return name in self._creating_rooms or bool(self.store.one("SELECT 1 FROM rooms WHERE name = ?", name))
@@ -727,6 +1026,36 @@ class Hallway:
             raise HallwayError(f"No room '{ref}'. Call list_rooms.")
         return room
 
+    async def privacy_log(self, attendee: dict, limit: int = 30) -> list[dict]:
+        """What the guard caught that this attendee may see: checks in rooms
+        they're in (the excerpt, already redacted), and checks anywhere that
+        caught one of their own private values (no excerpt: the room isn't
+        theirs). Never another room's text."""
+        out: list[dict] = []
+        rooms: dict[str, str | None] = {}  # guard_log.room_id -> room name, if the attendee is in it
+        for r in self.store.all("SELECT * FROM guard_log ORDER BY id DESC LIMIT 1000"):
+            rid = r["room_id"] or ""
+            if rid not in rooms:
+                room = self.store.one("SELECT * FROM rooms WHERE id = ? OR name = ?", rid, rid) if rid else None
+                member = room is not None and attendee["mm_user_id"] in await self.room_members(room)
+                rooms[rid] = room["name"] if room and member else None
+            about_you = f",{attendee['id']}," in (r["about"] or "")
+            if not (rooms[rid] or about_you):
+                continue
+            out.append(
+                {
+                    "outcome": r["outcome"],
+                    "categories": r["categories"],
+                    "room": rooms[rid],
+                    "excerpt": r["excerpt"] if rooms[rid] else None,
+                    "about_you": about_you,
+                    "created_at": r["created_at"],
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
+
     async def require_member(self, attendee: dict, room: dict) -> None:
         if attendee["mm_user_id"] not in await self.room_members(room):
             raise HallwayError(f"You (and {attendee['name']}) are not in #{room['name']}.")
@@ -747,6 +1076,9 @@ class Hallway:
         attendees = self.store.attendees()
         if not attendees:
             return
+        for a in attendees:
+            if not a["agent_verified"]:
+                await self.verify_live_agent(a)
         known = {r["id"] for r in self.store.all("SELECT id FROM rooms")}
         known_names = {r["name"] for r in self.store.all("SELECT name FROM rooms")}
         ours = {a["mm_user_id"] for a in attendees} | {
@@ -785,14 +1117,14 @@ class Hallway:
         except SwitchError as e:
             log.debug("list_all_rooms: %s", e)
         for a in attendees:
-            if not a.get("agent_mm_user_id"):
+            if not a.get("agent_mm_user_id") and a["agent_verified"]:
                 try:
                     u = await self.mm._req("GET", f"/users/username/{a['agent_name']}")
                     self.store.update("attendees", a["id"], agent_mm_user_id=u["id"])
                     a["agent_mm_user_id"] = u["id"]
                 except MMError:
                     pass
-        for room in self.store.all("SELECT * FROM rooms"):
+        for room in self.store.all("SELECT * FROM rooms WHERE kind != 'verify'"):
             members = await self.room_members(room)
             if not members:
                 continue
@@ -874,6 +1206,20 @@ class Hallway:
         raise HallwayError(f"unknown approval kind {kind}")
 
     # --------------------------------------------------------------- messaging
+    def clean_text(self, text: str, field: str) -> str:
+        """Free text that other attendees will read outside a Switch message (a
+        room title, a meeting's time, place or why), within TEXT_LIMITS[field]
+        and with what the privacy guard would redact in a message redacted.
+        Only messages go through Switch's Trust hook; these don't."""
+        text = " ".join(str(text or "").split())
+        limit = TEXT_LIMITS[field]
+        if len(text) > limit:
+            raise HallwayError(f"The {field} is too long: at most {limit} characters.")
+        outcome, findings = guard.scan(text, self.private_matcher())
+        if outcome == "redacted":
+            text = guard.redact(text, findings)
+        return text
+
     def private_values(self) -> list[str]:
         return self.store.private_values()
 
@@ -1000,13 +1346,25 @@ class Hallway:
         other = self.resolve(with_who)
         if other["id"] == attendee["id"]:
             raise HallwayError("You can't meet yourself.")
-        payload = {"with": other["handle"], "time": when, "place": where, "why": why}
+        payload = {
+            "with": other["handle"],
+            "time": self.clean_text(when, "time"),
+            "place": self.clean_text(where, "place"),
+            "why": self.clean_text(why, "why"),
+        }
         if self.needs_approval(attendee, "propose_meeting"):
-            return self.ask(attendee, "propose_meeting", f"Meet {other['name']} at {when}, {where}? ({why})", payload)
+            return self.ask(
+                attendee,
+                "propose_meeting",
+                f"Meet {other['name']} at {payload['time']}, {payload['place']}? ({payload['why']})",
+                payload,
+            )
         return await self._propose(attendee, payload)
 
     async def _propose(self, attendee: dict, p: dict) -> dict:
         other = self.resolve(p["with"])
+        # Again here: an approval made before this check existed holds raw text.
+        p = {**p, **{k: self.clean_text(p[k], k) for k in ("time", "place", "why")}}
         mid = new_id()
         self.store.insert(
             "meetings",
@@ -1219,7 +1577,7 @@ class Hallway:
             other = self.store.need_attendee(
                 id=c["target_id"] if c["requester_id"] == attendee["id"] else c["requester_id"]
             )
-            out.append({"name": other["name"], "handle": other["handle"], **other["contact"]})
+            out.append({"name": other["name"], "handle": other["handle"], **vault(other)})
         return out
 
     # ----------------------------------------------------------- privacy check
@@ -1233,7 +1591,7 @@ class Hallway:
         }
 
     def submit_privacy_check(self, attendee: dict, answers: list[str]) -> dict:
-        private = [v for v in (attendee["contact"] or {}).values() if isinstance(v, str)]
+        private = list(vault(attendee).values())
         leaks = []
         for q, ans in zip(PRIVACY_QUESTIONS, answers, strict=False):  # too few answers fail below
             outcome, findings = guard.scan(ans or "", private)

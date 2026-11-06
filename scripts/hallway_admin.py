@@ -119,8 +119,11 @@ def cmd_remove(c: httpx.Client, a: argparse.Namespace) -> None:
             sys.exit("not removed")
     r = call(c, "DELETE", f"/api/admin/attendees/{a.handle}").json()
     print(f"removed {r['removed']}")
+    print(f"  rooms:           {r.get('rooms', 'none')}")
     print(f"  Switch agent:    {r['switch_agent']}")
     print(f"  Mattermost user: {r.get('mattermost_user', 'none')}")
+    if "agent_mattermost_user" in r:
+        print(f"  agent's bot:     {r['agent_mattermost_user']}")
     if r["spots_left"] is not None:
         print(f"  spots left:      {r['spots_left']}")
 

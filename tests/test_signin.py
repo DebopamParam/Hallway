@@ -320,3 +320,66 @@ async def test_app_refuses_to_start_with_dev_links_on_public_url(monkeypatch):
     with pytest.raises(RuntimeError, match="SIGNIN_MODE=dev"):
         async with main.lifespan(main.app):
             pass
+
+
+# ---------------------------------------------- one email, two onboardings (QA #0)
+async def test_second_onboarding_of_an_email_cannot_enter_the_account(make_client, monkeypatch, hallway):
+    """Browser A opens a demo link for an email and waits on onboarding; the real
+    owner B gets another link, joins and fills the vault. A's register must not
+    hand it B's account."""
+    use(monkeypatch, signin_mode="demo")
+    attacker, owner = make_client(), make_client()
+    await sign_in(attacker, "vic@example.com")
+    await sign_in(owner, "vic@example.com")
+    r = await owner.post("/api/register", json={"name": "Vic Owner", "contact": {"phone": "+91 99999 00001"}})
+    assert r.status_code == 200
+    r = await attacker.post("/api/register", json={"name": "Vic Attacker"})
+    assert r.status_code == 409 and r.json()["code"] == "already_joined"
+    assert "99999" not in r.text
+    assert (await attacker.get("/api/me")).status_code == 401
+    assert len(hallway.store.attendees()) == 1
+
+
+async def test_join_link_opened_after_the_email_joined_is_not_a_sign_in(make_client, monkeypatch):
+    use(monkeypatch, signin_mode="demo")
+    attacker, owner = make_client(), make_client()
+    r = await attacker.post("/api/auth/start", json={"email": "vic@example.com"})
+    held = path_of(r.json()["dev_link"])  # not opened yet
+    await register(owner, "Vic Owner", email="vic@example.com")
+    r = await attacker.get(held)
+    assert r.is_redirect and "joined=1" in r.headers["location"]
+    assert (await attacker.get("/api/me")).status_code == 401
+
+
+async def test_onboarding_session_expires(client, hallway):
+    await sign_in(client, "asha@example.com")
+    key = f"pre:{main.token_hash(client.cookies.get('hw_session'))}"
+    rec = hallway.store.kv_get(key)
+    assert rec["expires_at"] <= time.time() + main.ONBOARDING_TTL_S
+    hallway.store.kv_set(key, {**rec, "expires_at": time.time() - 1})
+    assert (await client.get("/api/me")).status_code == 401
+    assert (await client.post("/api/register", json={"name": "Asha Rao"})).status_code == 401
+
+
+# ------------------------------------------ registration response lost (QA #18)
+async def test_registration_whose_response_was_lost_signs_in_on_return(client, monkeypatch, hallway):
+    """The person left during the slow registration: the account was made but
+    the new cookie never arrived. Their onboarding cookie gets them in."""
+    use(monkeypatch, signin_mode="demo")
+    await sign_in(client, "asha@example.com")
+    pre = client.cookies.get("hw_session")
+    assert (await client.post("/api/register", json={"name": "Asha Rao"})).status_code == 200
+    client.cookies.clear()
+    client.cookies.set("hw_session", pre)  # as if the response never arrived
+    r = await client.get("/api/me")
+    assert r.status_code == 200 and r.json()["handle"] == "asha"
+    fresh = r.cookies.get("hw_session")
+    assert fresh and fresh != pre
+    client.cookies.clear()
+    client.cookies.set("hw_session", fresh)
+    assert (await client.get("/api/me")).json()["handle"] == "asha"
+    # The onboarding cookie worked once.
+    client.cookies.clear()
+    client.cookies.set("hw_session", pre)
+    assert (await client.post("/api/register", json={"name": "Asha Rao"})).status_code == 401
+    assert len(hallway.store.attendees()) == 1

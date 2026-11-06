@@ -108,6 +108,25 @@ class MMClient:
         await self._req("DELETE", f"/users/{user_id}")
         self._user_cache.pop(user_id, None)
 
+    async def retire_user(self, user_id: str) -> None:
+        """Free a removed attendee's email (its account keeps its posts, under
+        a placeholder address), so the same person can join again as a new user."""
+        await self._req("PUT", f"/users/{user_id}/patch", body={"email": f"removed-{user_id}@hallway.invalid"})
+        self._user_cache.pop(user_id, None)
+
+    async def disable_bot(self, user_id: str) -> None:
+        """Deactivate an agent's bot account (Switch leaves it active when the
+        agent is deleted)."""
+        await self._req("POST", f"/bots/{user_id}/disable")
+        self._user_cache.pop(user_id, None)
+
+    async def user_by_username(self, username: str) -> dict | None:
+        try:
+            user: dict = await self._req("GET", f"/users/username/{username}")
+        except MMError:
+            return None
+        return user
+
     async def ensure_team_capacity(self, seats: int) -> int:
         """Raise Mattermost's per-team user cap to at least `seats`; returns the cap."""
         cfg = await self._req("GET", "/config")
@@ -148,6 +167,9 @@ class MMClient:
 
     async def add_to_channel(self, channel_id: str, user_id: str) -> None:
         await self._req("POST", f"/channels/{channel_id}/members", body={"user_id": user_id})
+
+    async def remove_from_channel(self, channel_id: str, user_id: str) -> None:
+        await self._req("DELETE", f"/channels/{channel_id}/members/{user_id}")
 
     async def posts(self, channel_id: str, since_ms: int | None = None, per_page: int = 100) -> list[dict]:
         params: dict[str, Any] = {"per_page": per_page}

@@ -3,7 +3,7 @@
 from .conftest import mcp_call
 
 ASHA_CONTACT = {"phone": "+91 98111 22233", "email": "asha.private@juspay.in"}
-BO_CONTACT = {"phone": "+91 90000 11111", "telegram": "bo_secret_tg"}
+BO_CONTACT = {"phone": "+91 90000 11111", "linkedin": "linkedin.com/in/bo_secret_tg"}
 SECRETS = ["98111", "22233", "asha.private", "90000", "11111", "bo_secret_tg"]
 
 

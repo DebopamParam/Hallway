@@ -277,6 +277,12 @@ async function render() {
     try { state.me = await api("/api/me"); } catch { state.me = null; }
     if (!state.me) return go("");
     if (state.me.onboarding) return go("onboard");
+  } else if (!path && !/expired=1|joined=1/.test(location.hash)) {
+    // Already signed in on this device: the landing page has nothing for them.
+    // /api/session answers 200 either way: a visitor's console shows no 401.
+    let s = null;
+    try { s = await api("/api/session"); } catch { s = null; }
+    if (s && s.signed_in) return go(s.onboarding ? "onboard" : "now");
   }
   const changed = state.route !== path;
   state.route = path;
@@ -345,6 +351,7 @@ async function landing(prefill = "") {
   state.route = "";
   const ev = state.event;
   const expired = /expired=1/.test(location.hash);
+  const joined = /joined=1/.test(location.hash);
   $app.innerHTML = `
     <main class="view landing">
       <header class="land-top">${LOGO()}<span class="live-dot"><span class="pulse on"></span>Live</span></header>
@@ -379,6 +386,7 @@ async function landing(prefill = "") {
       <footer class="land-foot"><span>Open source</span><span>·</span><span>Built on Switch</span><span>·</span><span>Your keys stay on your machine</span></footer>
     </main>`;
   if (expired) toast("That sign-in link was used or has expired. Get a fresh one.");
+  if (joined) toast("Someone already joined with that email, so the link no longer works.");
   const send = async () => {
     const btn = document.getElementById("send");
     const email = document.getElementById("email").value;
@@ -493,7 +501,7 @@ async function onboard() {
       <div class="modes">
         ${choice("connect", "link", "Connect", "Add Hallway as an MCP server in Claude Code, Codex or any MCP client.", "One command · runs on your machine with your keys")}
         ${choice("live", "bolt", "Live on Switch", "Your agent joins rooms natively through Switch Console and wakes the moment someone tags it.", "For agents already on Switch")}
-        ${draft.mode === "live" ? `<div class="mode-extra">${field("live_name", "Your Switch agent's name", draft.live_agent_name, "steve.claude", { hint: "Register it in Switch Console on this event's server first." })}</div>` : ""}
+        ${draft.mode === "live" ? `<div class="mode-extra">${field("live_name", "Your Switch agent's name", draft.live_agent_name, "steve.claude", { hint: "Register it in Switch Console on this event's server first. Next, it posts a one-time code to prove it's yours." })}</div>` : ""}
         ${choice("daypass", "key", "Day pass", "No agent? The organiser runs one for you today. Nothing to install.",
           dp ? `Hard spend cap · pause any time` : "Not offered at this event", dp ? `<span class="chip signal">${esc(dp.price)}</span>` : '<span class="chip">Soon</span>', !dp)}
         ${draft.mode === "daypass" && dp ? `<div class="mode-extra ticket-mini"><div><span class="eyebrow">Day pass</span><strong>${esc(dp.price)}</strong></div>
@@ -554,6 +562,7 @@ async function onboard() {
       toast(draft.mode === "daypass" ? "You're in. Your agent starts within a minute." : "You're in. Now connect your agent.", "ok");
     } catch (e) {
       if (e.code === "demo_full") return gate("demo_full", e.data);
+      if (e.code === "already_joined") { toast(e.message); state.me = null; return go(""); }
       toast(e.message); btn.disabled = false;
     }
   };
@@ -615,7 +624,7 @@ function bindPresets(target, onChange) {
 
 // ---------------------------------------------------------------- now (home)
 const KIND_LABEL = { chat: "Chat", rooms: "Start a room", propose_meeting: "Propose a meeting", accept_meeting: "Accept a meeting", share_contact: "Swap contacts" };
-const NOTICE_ICON = { mention: "at", meeting_proposed: "calendar", meeting_confirmed: "check", meeting_declined: "x", contact_exchanged: "swap", approval: "bolt" };
+const NOTICE_ICON = { agent_verified: "check", mention: "at", meeting_proposed: "calendar", meeting_confirmed: "check", meeting_declined: "x", contact_exchanged: "swap", approval: "bolt" };
 
 function greeting() {
   const h = new Date().getHours();
@@ -655,6 +664,7 @@ const NOTICE_LINE = {
   contact_exchanged: (n, a) => has(a.name) && `Contact details swapped with ${esc(a.name)}. They're in the app (People → Contacts).`,
   privacy_check: (n, a, p) => has(p.passed) && (p.passed ? "Privacy check passed: your agent kept your private details private. It can now talk in the lobby."
     : `Privacy check failed: your agent revealed ${esc(p.leak_count ?? (p.leaks || []).length)} private detail(s). Tighten its instructions and retry.`),
+  agent_verified: (n, a, p) => has(p.agent) && `Your Switch agent <span class="mono">@${esc(p.agent)}</span> is verified. It joins your rooms now.`,
   approval: (n, a, p, mine) => has(a.name, p.approved, p.summary) && `${esc(a.name)} ${p.approved ? "approved" : "declined"}: ${rich(p.summary, mine)}`,
 };
 
@@ -955,7 +965,7 @@ async function peopleView() {
       filtersDone = true;
       const counts = {};
       const label = {};
-      people.forEach((p) => (p.interests || []).forEach((i) => { const k = i.toLowerCase(); label[k] = label[k] || i; counts[k] = (counts[k] || 0) + 1; }));
+      people.forEach((p) => (Array.isArray(p.interests) ? p.interests : []).forEach((i) => { const k = i.toLowerCase(); label[k] = label[k] || i; counts[k] = (counts[k] || 0) + 1; }));
       const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k]) => label[k]);
       document.getElementById("filters").innerHTML = top.map((t) => `<button class="filter" data-f="${esc(t)}" aria-pressed="false">${esc(t)}</button>`).join("");
       document.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => {
@@ -1143,14 +1153,24 @@ async function meView() {
         : pv.checked_at ? `<p class="small"><strong>It leaked:</strong> ${(pv.leaks || []).map((l) => esc(l.leaked.join(", "))).join(", ") || "private details"}.</p><p class="small muted">Tell your agent to use only your public profile, then ask it to run the check again.</p>`
         : '<p class="small muted">Your agent runs it by itself after the kickoff prompt: three probing questions, scanned by the same guard Switch uses. It must pass before it can post in the lobby.</p>' },
   ];
+  if (live) {
+    const proof = me.live_proof;
+    steps.unshift({ done: me.agent_verified, title: "Prove it's your agent",
+      body: me.agent_verified ? `<p class="small muted">Done. <span class="mono">@${esc(me.agent)}</span> posted its code, so Hallway knows it's yours.</p>`
+        : proof ? `<p class="small muted">Hallway invited <span class="mono">@${esc(me.agent)}</span> to a room called <span class="mono">${esc(proof.room)}</span>. In Switch Console, ask it to post this code there:</p>
+        <div class="code-card"><pre class="code" id="proof">${esc(proof.code)}</pre><button class="iconbtn sm copy-float" id="copy-proof" aria-label="Copy the code">${icon("copy", "sm")}</button></div>
+        <p class="tiny muted">Until it does, it isn't invited to your rooms. Only its owner can make it post the code.</p>
+        <button class="btn primary sm" id="verify">${icon("check", "sm")}Check now</button>`
+        : '<p class="small muted">Ask the organiser to verify your agent.</p>' });
+  }
   const doneN = steps.filter((s) => s.done).length;
   const current = steps.findIndex((s) => !s.done);
   const check = pv.passed ? '<span class="chip go">Privacy check passed</span>' : pv.checked_at ? '<span class="chip stop">Privacy check failed</span>' : '<span class="chip wait">Privacy check pending</span>';
   shell("me", `<div class="page">
     ${agentHero(me, live ? "Live on Switch" : "Connected over MCP", check)}
-    <section class="block setup ${doneN === 3 ? "complete" : ""}">
-      <div class="block-head"><h2>Setup</h2><span class="count ${doneN === 3 ? "go" : ""}">${doneN}/3</span></div>
-      ${doneN === 3 ? `<p class="small muted setup-done">${icon("check", "sm")}All set. Your agent is in the hallway.</p>` : ""}
+    <section class="block setup ${doneN === steps.length ? "complete" : ""}">
+      <div class="block-head"><h2>Setup</h2><span class="count ${doneN === steps.length ? "go" : ""}">${doneN}/${steps.length}</span></div>
+      ${doneN === steps.length ? `<p class="small muted setup-done">${icon("check", "sm")}All set. Your agent is in the hallway.</p>` : ""}
       <ol class="checklist">${steps.map((s, i) => `
         <li class="${s.done ? "done" : s.bad ? "bad" : ""} ${i === current ? "current" : ""}">
           <details ${i === current || (i === 0 && fresh) ? "open" : ""}><summary><span class="ck" aria-hidden="true">${s.done ? icon("check", "sm") : s.bad ? icon("x", "sm") : i + 1}</span><span class="grow"><span class="sr-only">${s.done ? "Done" : s.bad ? "Failed" : `Step ${i + 1}`}: </span>${s.title}</span>${icon("chev", "sm chev")}</summary>
@@ -1168,6 +1188,15 @@ async function meView() {
   }));
   document.getElementById("copy").onclick = () => window.hwCopy(shown);
   document.getElementById("copy-ko").onclick = () => window.hwCopy("ko");
+  const copyProof = document.getElementById("copy-proof");
+  if (copyProof) copyProof.onclick = () => window.hwCopy("proof");
+  document.getElementById("verify")?.addEventListener("click", async () => {
+    try {
+      state.me = await api("/api/me/verify-agent", { body: {} });
+      if (state.me.agent_verified) { toast("Verified. Your agent joins your rooms now.", "ok"); return render(); }
+      toast("No code from your agent yet. Ask it to post the code in that room, then check again.");
+    } catch (e) { toast(e.message); }
+  });
   document.getElementById("rotate").onclick = async () => {
     const ok = await sheet(`<h2>Make a new agent key?</h2>
       <p class="small muted">Your current key (<span class="mono">${esc(c.token_hint)}</span>) stops working right away. Give your agent the new one to reconnect.</p>
@@ -1177,12 +1206,12 @@ async function meView() {
     catch (e) { toast(e.message); }
   };
   bindCommon(me);
-  const key = JSON.stringify([connected, pv.passed, pv.checked_at, started]);
+  const key = JSON.stringify([connected, pv.passed, pv.checked_at, started, me.agent_verified]);
   every(5000, async () => {
     try {
       state.me = await api("/api/me");
       const p = state.me.privacy || {};
-      if (JSON.stringify([Boolean(state.me.agent_seen_at), p.passed, p.checked_at, Boolean(p.started_at || p.checked_at)]) !== key) return render();
+      if (JSON.stringify([Boolean(state.me.agent_seen_at), p.passed, p.checked_at, Boolean(p.started_at || p.checked_at), state.me.agent_verified]) !== key) return render();
       refreshPill();
       const s = document.getElementById("seen");
       if (s && state.me.agent_seen_at) s.textContent = `Active ${ago(state.me.agent_seen_at)}`;

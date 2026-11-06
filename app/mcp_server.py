@@ -3,6 +3,7 @@ client) works the event. One bearer token per attendee, from the Connect page.
 """
 
 import functools
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -14,6 +15,9 @@ from . import metrics, obs
 from .config import settings
 from .core import AUTONOMY_KEYS, Hallway, HallwayError, public_profile
 from .ratelimit import limiter
+from .switch import SwitchError
+
+log = logging.getLogger("hallway")
 
 INSTRUCTIONS = f"""You are attending {settings.event_name} on behalf of your human, through Hallway.
 Hallway is an event hallway where every attendee is a person plus their agent ("Steve" and "Steve (agent)").
@@ -102,6 +106,9 @@ async def _run[T](
         return _rate_limited(me, outreach) or await fn(me, *args, **kwargs)
     except HallwayError as e:
         return {"error": str(e)}
+    except SwitchError as e:
+        log.warning("mcp: %s", e)
+        return {"error": "Switch couldn't do that just now. Please try again in a moment."}
 
 
 def _outcome(result: object) -> str:
@@ -198,12 +205,13 @@ async def create_room(ctx: Context, title: str, invite: list[str]) -> dict:
     """Start a room and invite attendees by handle. Each invitee's person AND agent join."""
 
     async def f(me: dict) -> dict:
+        clean = _hw().clean_text(title, "title")
         if _hw().needs_approval(me, "rooms"):
             names = ", ".join(invite)
             return _hw().ask(
-                me, "create_room", f'Start a room "{title}" with {names}?', {"title": title, "invite": invite}
+                me, "create_room", f'Start a room "{clean}" with {names}?', {"title": clean, "invite": invite}
             )
-        room = await _hw().create_room(me, title, invite)
+        room = await _hw().create_room(me, clean, invite)
         return {"status": "created", "room": room["name"]}
 
     return await _run(ctx, f, outreach=True)

@@ -202,13 +202,36 @@ def new_mcp_token() -> str:
     return "hw_" + secrets.token_urlsafe(24)
 
 
+# The private contact vault: the only fields the app offers. Each value must
+# look like what it says, so the guard (which redacts every attendee's values
+# in every message) can't be fed ordinary words or unbounded numbers of values.
+CONTACT_FIELDS = ("email", "phone", "linkedin")
+_CONTACT_SHAPE = {
+    "email": re.compile(r"[^@\s]+@[^@\s]+\.[^@\s.]+"),
+    "phone": re.compile(r"\+?[\d\s().-]+"),
+    "linkedin": re.compile(r"(?:https?://)?(?:[\w-]+\.)+[a-z]{2,}(?:/\S*)?", re.IGNORECASE),
+}
+
+
+def contact_value_ok(field: str, value: object) -> bool:
+    if not isinstance(value, str) or not 0 < len(value.strip()) <= 200 or field not in _CONTACT_SHAPE:
+        return False
+    v = value.strip()
+    if field == "phone" and not 7 <= len(re.sub(r"\D", "", v)) <= 15:
+        return False
+    return bool(_CONTACT_SHAPE[field].fullmatch(v))
+
+
 def contact_private_values(contact: dict | None) -> list[str]:
     """The strings in an attendee's private contact fields that the guard must
     never let through: each value of 5+ characters, and for a phone also its
-    last 10 digits (so "+91 98111 22233" also catches "9811122233")."""
+    last 10 digits (so "+91 98111 22233" also catches "9811122233"). Only the
+    vault's fields, shaped as contact_value_ok says, count, even in a row
+    stored before those were checked."""
     vals: list[str] = []
-    for v in (contact or {}).values():
-        if isinstance(v, str) and len(v.strip()) >= 5:
+    for k in CONTACT_FIELDS:
+        v = (contact or {}).get(k) if isinstance(contact, dict) else None
+        if isinstance(v, str) and len(v.strip()) >= 5 and contact_value_ok(k, v):
             vals.append(v.strip())
             digits = re.sub(r"\D", "", v)
             if len(digits) >= 8:
@@ -439,11 +462,31 @@ def _legacy_notice_fields(db: sqlite3.Connection, n: dict) -> dict | None:
     return None
 
 
+def _m5_live_agent_proof(db: sqlite3.Connection) -> None:
+    """4 -> 5: `agent_verified`, whether a Live attendee proved their Switch
+    agent is theirs (it posted a one-time code). Stand-ins are Hallway's own,
+    so verified. Live agents bound before this proved nothing: they start
+    unverified and are offered the check."""
+    if "agent_verified" not in {r[1] for r in db.execute("PRAGMA table_info(attendees)")}:
+        db.execute("ALTER TABLE attendees ADD COLUMN agent_verified INTEGER NOT NULL DEFAULT 1")
+    db.execute("UPDATE attendees SET agent_verified = 0 WHERE mode = 'live'")
+
+
+def _m6_guard_log_about(db: sqlite3.Connection) -> None:
+    """5 -> 6: guard_log.about, the attendees whose private values a check
+    caught (",id1,id2,"), so each can see what was caught about them and
+    nobody else's. Older rows are about nobody."""
+    if "about" not in {r[1] for r in db.execute("PRAGMA table_info(guard_log)")}:
+        db.execute("ALTER TABLE guard_log ADD COLUMN about TEXT")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m1_base_schema,
     _m2_hash_tokens,
     _m3_indexes,
     _m4_structured_notices,
+    _m5_live_agent_proof,
+    _m6_guard_log_about,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -606,6 +649,15 @@ class Store:
             self._private, self._private_read_at = fresh, now
         return [v for vals in self._private.values() for v in vals]
 
+    def private_owners(self, texts: list[str]) -> list[str]:
+        """The attendees one of whose private values is in one of `texts` (the
+        guard's findings)."""
+        self.private_values()
+        found = [t.lower() for t in texts]
+        return sorted(
+            aid for aid, vals in (self._private or {}).items() if any(v.lower() in t for v in vals for t in found)
+        )
+
     def kv_get(self, key: str) -> Any:
         row = self.db.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
         return json.loads(row[0]) if row else None
@@ -621,11 +673,11 @@ class Store:
         row = self.db.execute("DELETE FROM kv WHERE key = ? RETURNING value", (key,)).fetchone()
         return json.loads(row[0]) if row else None
 
-    def kv_purge(self, prefix: str, older_than: float) -> None:
-        """Drop `prefix*` records whose JSON `at` is before `older_than`."""
+    def kv_purge(self, prefix: str, older_than: float, field: str = "at") -> None:
+        """Drop `prefix*` records whose JSON `field` is before `older_than`."""
         self.db.execute(
-            "DELETE FROM kv WHERE key LIKE ? ESCAPE '\\' AND json_extract(value, '$.at') < ?",
-            (prefix.replace("%", r"\%").replace("_", r"\_") + "%", older_than),
+            "DELETE FROM kv WHERE key LIKE ? ESCAPE '\\' AND json_extract(value, ?) < ?",
+            (prefix.replace("%", r"\%").replace("_", r"\_") + "%", f"$.{field}", older_than),
         )
 
     # convenience

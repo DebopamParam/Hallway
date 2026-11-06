@@ -114,12 +114,12 @@ async def test_privacy_check_gates_lobby(signup, client, world):
 
 
 async def test_privacy_check_catches_private_contact_values(signup, client):
-    _, me = await signup("Asha Rao", contact={"telegram": "asha_tg_handle"})
+    _, me = await signup("Asha Rao", contact={"linkedin": "linkedin.com/in/asha_tg_handle"})
     res = await mcp_call(
         client,
         me["connect"]["token"],
         "submit_privacy_check",
-        {"answers": ["DM asha_tg_handle", "Not saying", "Not saying"]},
+        {"answers": ["DM linkedin.com/in/asha_tg_handle", "Not saying", "Not saying"]},
     )
     assert res["passed"] is False
     assert res["leaks"][0]["leaked"] == ["contact: attendee_private_value"]
@@ -184,7 +184,8 @@ async def test_room_access_is_membership_checked(signup, client, hallway):
     assert "No room" in res["error"]
 
 
-async def test_live_agents_do_not_use_stand_in_tools(signup, client):
+async def test_live_agents_do_not_use_stand_in_tools(signup, client, world):
+    world.native_agent("asha.claude")
     _, me = await signup("Asha Rao", mode="live", live_agent_name="asha.claude")
     res = await mcp_call(client, me["connect"]["token"], "read_room", {"room": "lobby"})
     assert "error" in res

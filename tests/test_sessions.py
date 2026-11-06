@@ -6,6 +6,7 @@ import hashlib
 import sqlite3
 import time
 
+from app import core
 from app import store as store_mod
 from app.store import Store
 
@@ -105,10 +106,16 @@ async def test_session_has_an_absolute_cap(client, hallway):
 async def test_onboarding_token_is_hashed_and_retired(client, hallway):
     await sign_in(client, "asha@example.com")
     pre = client.cookies.get("hw_session")
-    assert hallway.store.kv_get(f"pre:{sha(pre)}") == "asha@example.com"
+    assert hallway.store.kv_get(f"pre:{sha(pre)}")["email"] == "asha@example.com"
     assert hallway.store.kv_get(f"pre:{pre}") is None
     await client.post("/api/register", json={"name": "Asha Rao"})
     assert client.cookies.get("hw_session") != pre
+    # Kept for a few minutes in case the response was lost (QA #18), then single use.
+    rec = hallway.store.kv_get(f"pre:{sha(pre)}")
+    assert rec["attendee_id"] == hallway.store.attendee(handle="asha")["id"]
+    assert rec["expires_at"] <= time.time() + core.REGISTERED_GRACE_S
+    client.cookies.set("hw_session", pre)
+    assert (await client.get("/api/me")).json()["handle"] == "asha"
     assert hallway.store.kv_get(f"pre:{sha(pre)}") is None
     client.cookies.set("hw_session", pre)
     assert (await client.get("/api/me")).status_code == 401
@@ -244,3 +251,11 @@ def test_fresh_db_is_current(tmp_path):
     assert s.db.execute("PRAGMA user_version").fetchone()[0] == store_mod.SCHEMA_VERSION
     assert "session_token" not in {r[1] for r in s.db.execute("PRAGMA table_info(attendees)")}
     s.db.close()
+
+
+async def test_session_state_never_401s(client, signup):
+    """The landing page asks it to send a signed-in attendee into the app (QA #17)."""
+    r = await client.get("/api/session")
+    assert r.status_code == 200 and r.json() == {"signed_in": False, "onboarding": False}
+    pc, _ = await signup("Asha Rao")
+    assert (await pc.get("/api/session")).json() == {"signed_in": True, "onboarding": False}

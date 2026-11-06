@@ -313,15 +313,45 @@ class Finding:
     severity: str = "high"
 
 
+def _trie_pattern(values: Iterable[str]) -> str:
+    """One regex for many strings, shaped as a trie (`ab(?:c|d)`), so a scan
+    tries each position against a branch per character, not against every
+    value in turn: its cost no longer grows with the number of values."""
+    trie: dict = {}
+    for v in values:
+        node = trie
+        for ch in v.lower():
+            node = node.setdefault(ch, {})
+        node[""] = {}
+
+    def build(node: dict) -> str:
+        branches = [re.escape(ch) + build(child) for ch, child in sorted(node.items()) if ch]
+        if not branches:
+            return ""
+        body = branches[0] if len(branches) == 1 else "(?:" + "|".join(branches) + ")"
+        return f"(?:{body})?" if "" in node else body
+
+    return build(trie)
+
+
 class PrivateMatcher:
     """Attendees' private contact values, compiled into one case-insensitive
-    pattern. Build it once per change of the values (Hallway caches it)."""
+    pattern. Build it once per change of the values (Hallway caches it).
+
+    A value matches as a whole word only (`(?<!\\w)...(?!\\w)`), except a digits-
+    only value (a phone's last 10 digits), which also matches inside a longer
+    number such as "+919811122233"."""
 
     MIN_LEN = 5
 
     def __init__(self, values: Iterable[str]):
         self.values = sorted({v.strip() for v in values if v and len(v.strip()) >= self.MIN_LEN}, key=len, reverse=True)
-        self.pattern = re.compile("|".join(re.escape(v) for v in self.values), re.IGNORECASE) if self.values else None
+        digits = [v for v in self.values if v.isdigit()]
+        words = [v for v in self.values if not v.isdigit()]
+        parts = ([rf"(?<!\w)(?:{_trie_pattern(words)})(?!\w)"] if words else []) + (
+            [_trie_pattern(digits)] if digits else []
+        )
+        self.pattern = re.compile("|".join(parts), re.IGNORECASE) if parts else None
 
     def finditer(self, content: str) -> Iterable[tuple[int, int]]:
         if self.pattern is not None:

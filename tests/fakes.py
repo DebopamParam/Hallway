@@ -58,6 +58,10 @@ class World:
             self.users[u["id"]] = u
         return u
 
+    def native_agent(self, name: str) -> dict:
+        """An agent someone registered in Switch Console: Hallway holds no key for it."""
+        return self.add_user(name, is_bot=True, first_name=name)
+
     def channel_for_room(self, room_id: str) -> dict:
         if room_id not in self.rooms:
             raise SwitchError(404, f"no room {room_id}")
@@ -88,6 +92,7 @@ class World:
 class FakeSwitch:
     def __init__(self, world: World) -> None:
         self.w = world
+        self.creating: set[str] = set()  # agents with a create_room in flight
 
     async def close(self) -> None:
         pass
@@ -108,7 +113,15 @@ class FakeSwitch:
         existing = next((k for k, a in self.w.agents.items() if a["name"] == name), None)
         aid = existing or f"ag_{name}"
         key = f"key_{name}_{next(_ids)}"  # overwrite=True rotates the key
-        self.w.agents[aid] = {"id": aid, "name": name, "display_name": display_name, "key": key}
+        # A new agent answers its owner only (Switch 0.31.0's default for new agents).
+        addressing = self.w.agents.get(aid, {}).get("addressing", "owner_and_owner_agents")
+        self.w.agents[aid] = {
+            "id": aid,
+            "name": name,
+            "display_name": display_name,
+            "key": key,
+            "addressing": addressing,
+        }
         self.w.add_user(name, is_bot=True, first_name=display_name)
         return AgentCreds(aid, key)
 
@@ -118,6 +131,19 @@ class FakeSwitch:
         await asyncio.sleep(0)
         host = self._agent(agent)
         self.w.calls.append(("create_room", {"name": name, "agents": agent_names, "users": user_names}))
+        unknown = [n for n in agent_names if not (self.w.user_by_name(n) or {}).get("is_bot")]
+        if unknown:  # what Switch 0.31.0 answers
+            raise SwitchError(400, f'{{"detail":"Unknown agents: {", ".join(unknown)}"}}')
+        # Switch 0.31.0 lets an agent create one room at a time.
+        if agent.id in self.creating:
+            raise SwitchError(
+                400, '{"detail":"You are already creating a room. Wait for it to finish, then try again."}'
+            )
+        self.creating.add(agent.id)
+        try:
+            await asyncio.sleep(0.002)
+        finally:
+            self.creating.discard(agent.id)
         cid = f"ch{next(_ids)}"
         rid = f"room{next(_ids)}"
         ch = {
@@ -175,9 +201,7 @@ class FakeSwitch:
     async def delete_agent(self, agent: AgentCreds) -> None:
         a = self._agent(agent)
         self.w.calls.append(("delete_agent", a["name"]))
-        del self.w.agents[agent.id]
-        for ch in self.w.channels.values():
-            ch["members"].discard(f"u_{a['name']}")
+        del self.w.agents[agent.id]  # like Switch: its bot stays active and in its channels
 
     async def read_context(
         self, agent: AgentCreds, room_id: str, since: str | None = None, limit: int = 50
@@ -209,6 +233,15 @@ class FakeSwitch:
         return [{"id": rid, "name": self.w.channels[cid]["name"]} for rid, cid in self.w.rooms.items()]
 
     async def op(self, agent: AgentCreds, op_name: str, /, **args: Any) -> Any:
+        caller = self._agent(agent)
+        self.w.calls.append(("op", op_name, caller["name"], args))
+        if op_name == "update_agent_detail":
+            if args["agent_id"] == caller["id"]:  # refuse_managing_self
+                raise SwitchError(400, '{"detail":"An agent cannot manage itself."}')
+            target = self.w.agents[args["agent_id"]]
+            if "addressing" in args:
+                target["addressing"] = args["addressing"]
+            return {"name": target["name"], "addressing": target["addressing"]}
         raise SwitchError(400, f"FakeSwitch has no generic op {op_name}")
 
 
@@ -242,7 +275,10 @@ class FakeMM:
     async def create_user(self, username: str, email: str, first_name: str) -> tuple[dict, str]:
         await asyncio.sleep(0)
         self.w.calls.append(("mm_create_user", username))
+        if any(u["email"] == email and u["username"] != username for u in self.w.users.values()):
+            raise MMError("POST /users: 400 An account with that email already exists.")
         u = self.w.add_user(username, first_name=first_name, email=email)
+        u.pop("delete_at", None)  # MMClient.create_user reactivates a deactivated user it reuses
         password = f"pw-{username}-{next(_ids)}"
         self.passwords[u["id"]] = password
         return u, password
@@ -255,6 +291,18 @@ class FakeMM:
             raise MMError(f"DELETE /users/{user_id}: 404")
         self.w.calls.append(("mm_deactivate_user", user_id))
         self.w.users[user_id]["delete_at"] = _ms()
+
+    async def retire_user(self, user_id: str) -> None:
+        self.w.users[user_id]["email"] = f"removed-{user_id}@hallway.invalid"
+
+    async def disable_bot(self, user_id: str) -> None:
+        if not self.w.users.get(user_id, {}).get("is_bot"):
+            raise MMError(f"POST /bots/{user_id}/disable: 404")
+        self.w.calls.append(("mm_disable_bot", user_id))
+        self.w.users[user_id]["delete_at"] = _ms()
+
+    async def user_by_username(self, username: str) -> dict | None:
+        return self.w.user_by_name(username)
 
     async def ensure_team_capacity(self, seats: int) -> int:
         return seats
@@ -279,6 +327,10 @@ class FakeMM:
 
     async def add_to_channel(self, channel_id: str, user_id: str) -> None:
         self.w.channels[channel_id]["members"].add(user_id)
+
+    async def remove_from_channel(self, channel_id: str, user_id: str) -> None:
+        self.w.calls.append(("mm_remove_from_channel", (channel_id, user_id)))
+        self.w.channels[channel_id]["members"].discard(user_id)
 
     async def posts(self, channel_id: str, since_ms: int | None = None, per_page: int = 100) -> list[dict]:
         posts = [p for p in self.w.channels[channel_id]["posts"] if not since_ms or p["create_at"] > since_ms]
