@@ -465,6 +465,22 @@ async function landing(prefill = "") {
 const draft = { step: 1, name: "", profile: { interests: [], talks: [], links: {} }, contact: {}, mode: "connect",
   live_agent_name: "", autonomy: { chat: "auto", rooms: "ask", propose_meeting: "ask", accept_meeting: "ask", share_contact: "ask" } };
 const STEPS = ["You", "Private", "Agent", "Rules"];
+// The draft lives in this tab's sessionStorage, for this email only, so a
+// reload or an evicted tab picks up where it was. Gone once registered.
+const DRAFT_KEY = "hw-onboard";
+let draftFor = null;  // the email whose saved draft is already in `draft`
+function loadDraft(email) {
+  if (draftFor === email) return;
+  draftFor = email;
+  try {
+    const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || "null");
+    if (d && d.email === email) Object.assign(draft, d.draft);
+  } catch { /* private mode or bad JSON: start fresh */ }
+}
+function keepDraft(email) {
+  try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ email, draft })); } catch { /* private mode */ }
+}
+function dropDraft() { try { sessionStorage.removeItem(DRAFT_KEY); } catch { /* private mode */ } }
 
 function badgeCard(p, { preview = false } = {}) {
   const name = p.name || "Your name";
@@ -480,9 +496,16 @@ function badgeCard(p, { preview = false } = {}) {
     </div></div>`;
 }
 
-async function onboard() {
+async function onboard(step) {
   try { state.me = await api("/api/me"); } catch { return go(""); }
   if (!state.me.onboarding) return go("now");
+  const email = state.me.email;
+  loadDraft(email);
+  // Each step is its own history entry (#/onboard/2), so browser Back steps back.
+  draft.step = Math.min(Math.max(Number(step) || draft.step || 1, 1), 4);
+  if (draft.step > 1 && !draft.name) draft.step = 1;
+  if (Number(step) !== draft.step) history.replaceState(null, "", `#/onboard/${draft.step}`);
+  keepDraft(email);
   const s = draft.step;
   const field = (id, label, value, placeholder, { hint = "", type = "text", ac = "" } = {}) => `
     <div class="fieldset"><label class="field" for="${id}">${label}</label><input id="${id}" type="${type}" value="${esc(value)}" placeholder="${placeholder}" ${ac ? `autocomplete="${ac}"` : ""}>${hint ? `<div class="hint">${hint}</div>` : ""}</div>`;
@@ -554,8 +577,8 @@ async function onboard() {
   </main>`;
   $app.querySelector(".view").classList.add("enter");
   window.scrollTo(0, 0);
-  bindAutonomy(draft.autonomy);
-  bindPresets(draft.autonomy);
+  bindAutonomy(draft.autonomy, () => keepDraft(email));
+  bindPresets(draft.autonomy, () => keepDraft(email));
   const v = (id) => document.getElementById(id)?.value?.trim() ?? "";
   const save = () => {
     if (s === 1) {
@@ -568,7 +591,9 @@ async function onboard() {
     }
     if (s === 2) draft.contact = Object.fromEntries([["email", v("c_email")], ["phone", v("c_phone")], ["linkedin", v("c_linkedin")]].filter(([, x]) => x));
     if (s === 3 && draft.mode === "live") draft.live_agent_name = v("live_name");
+    keepDraft(email);
   };
+  document.querySelector(".ob-body").addEventListener("input", save);
   if (s === 1) {
     const preview = document.getElementById("badge-preview");
     const live = () => {
@@ -578,16 +603,17 @@ async function onboard() {
     ["name", "role", "company", "here_for", "interests"].forEach((id) => document.getElementById(id).addEventListener("input", live));
   }
   document.querySelectorAll('input[name="mode"]').forEach((r) => (r.onchange = () => { save(); draft.mode = r.value; onboard(); }));
-  document.getElementById("back")?.addEventListener("click", () => { save(); draft.step--; onboard(); });
+  document.getElementById("back")?.addEventListener("click", () => { save(); go(`onboard/${s - 1}`); });
   document.getElementById("next").onclick = async () => {
     save();
     if (s === 1 && !draft.name) { toast("Add your name first"); document.getElementById("name").focus(); return; }
-    if (s < 4) { draft.step++; return onboard(); }
+    if (s < 4) return go(`onboard/${s + 1}`);
     const btn = document.getElementById("next");
     btn.disabled = true;
     try {
       state.me = keepKey(await api("/api/register", { body: { name: draft.name, profile: draft.profile, contact: draft.contact,
         autonomy: draft.autonomy, mode: draft.mode, live_agent_name: draft.live_agent_name || null } }));
+      dropDraft();
       go("me");
       toast(draft.mode === "daypass" ? "You're in. Your agent starts within a minute." : "You're in. Now connect your agent.", "ok");
     } catch (e) {
