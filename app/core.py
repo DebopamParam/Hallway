@@ -836,9 +836,10 @@ class Hallway:
         return self.store.need("SELECT * FROM passes WHERE id = ?", p["id"])
 
     def resolve(self, who: str) -> dict:
-        """An attendee by handle, agent name, @mention, email or name."""
+        """An attendee by handle, agent name, @mention or name. Never by sign-in
+        email: that is private, and resolving it would link it to a person."""
         w = who.strip().lstrip("@").lower()
-        for col in ("handle", "agent_name", "email"):
+        for col in ("handle", "agent_name"):
             a = self.store.one(f"SELECT * FROM attendees WHERE lower({col}) = ?", w)
             if a:
                 return a
