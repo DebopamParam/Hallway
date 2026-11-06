@@ -5,6 +5,7 @@
 Read-only unless the tour says otherwise. Needs ffmpeg."""
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -13,24 +14,23 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
-BASE = "http://localhost:8787"
+BASE = os.environ.get("HALLWAY_URL", "http://localhost:8787")
 
 
 def tour_tabs(page):
-    for tab in ("lobby", "inbox", "people", "rooms", "me"):
+    for tab in ("now", "lobby", "people", "rooms", "me"):
         page.click(f"[data-tab='{tab}']")
         page.wait_for_timeout(1600)
         if tab == "people":
             page.mouse.wheel(0, 500)
             page.wait_for_timeout(900)
         if tab == "me":
-            for c in ("cx", "ko", "cc"):
-                page.click(f"#ctabs [data-c='{c}']")
-                page.wait_for_timeout(700)
+            page.mouse.wheel(0, 700)
+            page.wait_for_timeout(1200)
 
 
 def tour_inbox(page):
-    page.click("[data-tab='inbox']")
+    page.click("[data-tab='now']")
     page.wait_for_timeout(1500)
     button = page.locator("[data-meet][data-v='1'], [data-decide][data-v='1']").first
     if button.count():
@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory() as tmp, sync_playwright() as p:
                               color_scheme="dark" if a.dark else "light")
     ctx.add_cookies([{"name": "hw_session", "value": session, "url": BASE}])
     page = ctx.new_page()
-    page.goto(BASE + "/#/lobby")
+    page.goto(BASE + "/#/now")
     page.wait_for_timeout(1500)
     TOURS[a.tour](page)
     video = page.video.path()

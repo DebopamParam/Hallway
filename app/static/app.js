@@ -1,40 +1,68 @@
 // Hallway attendee app. No build step: one module, hash routes, polling.
 const $app = document.getElementById("app");
-const state = { me: null, event: null, timers: [], counts: { inbox: 0 } };
+const state = { me: null, event: null, timers: [], counts: { now: 0 }, route: "" };
 
 // ---------------------------------------------------------------- helpers
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const initials = (name) => (name || "?").replace(/\(agent\)/, "").trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
 const first = (name) => (name || "").split(" ")[0];
+const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
 const ICONS = {
-  lobby: '<path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H9l-5 4z"/>',
-  rooms: '<path d="M5 9h14M5 15h14M10 4 8 20M16 4l-2 16"/>',
-  inbox: '<path d="M4 13.5 6.2 5h11.6l2.2 8.5V19H4z"/><path d="M4 13.5h4.5l1 2h5l1-2H20"/>',
-  people: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 5a3 3 0 0 1 0 6M21 20c0-2.6-1.5-4.8-3.8-5.6"/>',
-  agent: '<rect x="4.5" y="8" width="15" height="11" rx="3"/><path d="M12 4.5V8M9.5 13h.01M14.5 13h.01"/>',
+  now: '<path d="M4 12h3.5l2.5-7 4 14 2.5-7H20"/>',
+  lobby: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H10l-6 4z"/>',
+  rooms: '<path d="M6 20V5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v15M3.5 20h17"/><path d="M14.5 12.5v.01"/>',
+  people: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><rect x="15.5" y="5" width="5" height="5" rx="1.2"/><path d="M21 20c0-2.6-1.2-4.6-3.5-5.6"/>',
+  agent: '<rect x="4.5" y="7.5" width="15" height="12" rx="3"/><path d="M12 4v3.5M9.5 13.5v.01M14.5 13.5v.01"/>',
   back: '<path d="m15 5-7 7 7 7"/>',
   chev: '<path d="m9 6 6 6-6 6"/>',
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   send: '<path d="M12 19V5M6 11l6-6 6 6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 8-8M16 7l2 2"/>',
   lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  x: '<path d="M6 6l12 12M18 6 6 18"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>',
+  search: '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/>',
+  shield: '<path d="M12 3.5 19 6v5.5c0 4.2-3 7.6-7 9-4-1.4-7-4.8-7-9V6z"/><path d="m9 12 2.2 2.2L15.5 10"/>',
+  at: '<circle cx="12" cy="12" r="3.5"/><path d="M15.5 12v1.5a2.5 2.5 0 0 0 5 0V12a8.5 8.5 0 1 0-3.3 6.7"/>',
+  calendar: '<rect x="4" y="5.5" width="16" height="14" rx="2"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/>',
+  swap: '<path d="M7 7h12l-3.5-3.5M17 17H5l3.5 3.5"/>',
+  pause: '<path d="M9 6v12M15 6v12"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5z"/>',
+  bolt: '<path d="M13 3 5 13.5h6L10 21l8-10.5h-6z"/>',
+  mail: '<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="m4 7 8 6 8-6"/>',
+  phone: '<path d="M6.5 4h3l1.5 4-2 1.2a10 10 0 0 0 5.8 5.8L16 13l4 1.5v3A2 2 0 0 1 17.8 19 15 15 0 0 1 5 6.2 2 2 0 0 1 6.5 4z"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/>',
 };
 const icon = (name, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 
-const av = (name, kind = "person", cls = "") => `<span class="av ${kind} ${cls}">${kind === "host" ? "H" : esc(initials(name))}</span>`;
-const pair = (name) => `<span class="pair" title="${esc(name)} and their agent">${av(name)}<span class="buddy"></span></span>`;
+// The mark: an H made of a person (round head) and their agent (square head) holding hands.
+const MARK = (cls = "") => `<svg class="mark ${cls}" viewBox="0 0 64 64" aria-hidden="true">
+  <g class="m-person"><circle cx="18" cy="12" r="8"/><rect x="11" y="24" width="14" height="36" rx="7"/></g>
+  <g class="m-agent"><rect x="38" y="4" width="16" height="16" rx="4"/><rect x="39" y="24" width="14" height="36" rx="3"/></g>
+  <rect class="m-link" x="24" y="37" width="16" height="7"/></svg>`;
+const WORDMARK = `<svg class="wordmark" viewBox="60 -730 4605 940" role="img" aria-label="Hallway"><path fill="currentColor" d="M65 0V-725H250V-461H257Q285 -490 318 -507Q351 -525 388 -532Q425 -540 462 -540Q539 -540 590 -515Q641 -491 667 -442Q692 -392 692 -318V0H508V-293Q508 -320 500 -340Q493 -361 478 -375Q464 -388 442 -395Q421 -402 393 -402Q354 -402 321 -386Q289 -370 269 -341Q250 -313 250 -275V0ZM1015 12Q966 12 923 5Q881 -2 849 -20Q818 -37 800 -68Q783 -98 783 -145Q783 -208 817 -244Q851 -281 914 -297Q977 -314 1062 -319Q1148 -323 1251 -323V-339Q1251 -370 1236 -388Q1220 -406 1191 -414Q1161 -422 1117 -422Q1085 -422 1055 -417Q1025 -412 1006 -402Q987 -391 987 -373V-365H800Q799 -369 799 -372Q799 -375 799 -380Q799 -427 836 -463Q873 -499 946 -519Q1019 -540 1126 -540Q1226 -540 1295 -522Q1364 -505 1400 -467Q1435 -428 1435 -363V-152Q1435 -135 1443 -124Q1451 -113 1468 -113H1521V-7Q1507 -1 1476 6Q1445 12 1410 12Q1361 12 1331 2Q1301 -8 1287 -26Q1272 -43 1266 -64H1258Q1230 -41 1192 -23Q1155 -6 1111 3Q1067 12 1015 12ZM1067 -105Q1090 -105 1120 -110Q1151 -116 1181 -127Q1211 -138 1231 -155Q1251 -173 1251 -198V-228Q1152 -228 1089 -220Q1026 -212 996 -196Q966 -179 966 -153Q966 -133 981 -122Q995 -112 1019 -109Q1042 -105 1067 -105ZM1576 0V-725H1761V0ZM1881 0V-725H2066V0ZM2354 0 2123 -528H2322L2411 -287Q2418 -268 2425 -249Q2431 -229 2437 -211Q2442 -194 2445 -183H2453Q2457 -195 2462 -212Q2467 -229 2473 -249Q2479 -269 2485 -287L2565 -528H2772L2850 -287Q2853 -276 2859 -258Q2864 -239 2870 -219Q2876 -199 2880 -183H2888Q2892 -198 2898 -217Q2904 -236 2911 -255Q2917 -274 2922 -287L3011 -528H3197L2965 0H2780L2702 -236Q2695 -257 2688 -279Q2681 -301 2675 -320Q2669 -339 2665 -351H2658Q2654 -338 2648 -318Q2642 -298 2635 -277Q2628 -255 2622 -235L2545 0ZM3459 12Q3410 12 3367 5Q3325 -2 3293 -20Q3262 -37 3244 -68Q3227 -98 3227 -145Q3227 -208 3261 -244Q3295 -281 3358 -297Q3421 -314 3506 -319Q3592 -323 3695 -323V-339Q3695 -370 3680 -388Q3664 -406 3635 -414Q3605 -422 3561 -422Q3529 -422 3499 -417Q3469 -412 3450 -402Q3431 -391 3431 -373V-365H3244Q3243 -369 3243 -372Q3243 -375 3243 -380Q3243 -427 3280 -463Q3317 -499 3390 -519Q3463 -540 3570 -540Q3670 -540 3739 -522Q3808 -505 3844 -467Q3879 -428 3879 -363V-152Q3879 -135 3887 -124Q3895 -113 3912 -113H3965V-7Q3951 -1 3920 6Q3889 12 3854 12Q3805 12 3775 2Q3745 -8 3731 -26Q3716 -43 3710 -64H3702Q3674 -41 3636 -23Q3599 -6 3555 3Q3511 12 3459 12ZM3511 -105Q3534 -105 3564 -110Q3595 -116 3625 -127Q3655 -138 3675 -155Q3695 -173 3695 -198V-228Q3596 -228 3533 -220Q3470 -212 3440 -196Q3410 -179 3410 -153Q3410 -133 3425 -122Q3439 -112 3463 -109Q3486 -105 3511 -105ZM4110 205Q4076 205 4049 199Q4023 194 4001 187V79H4084Q4125 79 4150 69Q4174 59 4188 41Q4202 23 4214 0L3957 -528H4159L4260 -284Q4267 -268 4276 -244Q4286 -220 4295 -196Q4305 -171 4312 -153H4321Q4324 -160 4329 -176Q4335 -192 4342 -212Q4350 -232 4358 -252Q4365 -272 4371 -287L4465 -528H4658L4435 -47Q4409 7 4382 53Q4356 99 4320 133Q4284 167 4233 186Q4182 205 4110 205Z"/></svg>`;
+const LOGO = (cls = "") => `<span class="logo ${cls}">${MARK()}${WORDMARK}</span>`;
 
-function rich(text) {
+const av = (name, kind = "person", cls = "") =>
+  `<span class="av ${kind === "host" ? "host" : kind} ${cls}" aria-hidden="true">${kind === "host" ? MARK() : esc(initials(name))}</span>`;
+const pair = (name, active = false, cls = "") =>
+  `<span class="pair ${cls}" title="${esc(name)} and their agent">${av(name)}<span class="buddy ${active ? "on" : ""}"></span></span>`;
+
+function rich(text, mine = []) {
   let t = esc(text);
-  t = t.replace(/\[redacted\]/g, '<span class="redacted" title="Hallway removed private details">redacted</span>');
+  t = t.replace(/\[redacted\]/g, '<span class="redacted" title="Hallway&#39;s privacy guard removed private details here"><span>private</span></span>');
   t = t.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   t = t.replace(/(^|\s)_(.+?)_(?=\s|$|[.,!?])/g, "$1<em>$2</em>");
   t = t.replace(/(^|\s)\*(?!\s)(.+?)\*(?=\s|$|[.,!?])/g, "$1<em>$2</em>");
-  t = t.replace(/(^|[\s(])@([a-z0-9][a-z0-9._-]*[a-z0-9])/gi, '$1<span class="mention">@$2</span>');
+  t = t.replace(/(^|[\s(])@([a-z0-9][a-z0-9._-]*[a-z0-9])/gi, (_, pre, h) =>
+    `${pre}<span class="mention ${mine.includes(h.toLowerCase()) ? "me" : ""} ${h.endsWith(".agent") ? "bot" : ""}">@${h}</span>`);
   t = t.replace(/\s?:[a-z_]+:/g, "");
+  t = t.replace(/^⚠️\s*/g, "");
   t = t.replace(/^- /gm, "· ");
   return t.replace(/\n/g, "<br>");
 }
@@ -42,10 +70,10 @@ function rich(text) {
 function ago(ts) {
   if (!ts) return "never";
   const s = Math.max(0, Date.now() / 1000 - ts);
-  if (s < 60) return "now";
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86400)}d`;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }
 const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -66,12 +94,13 @@ async function api(path, opts = {}) {
   return data;
 }
 
-function toast(msg) {
+function toast(msg, tone = "") {
   const el = document.getElementById("toast");
-  el.textContent = msg;
+  el.className = `toast ${tone}`;
+  el.innerHTML = `${tone === "ok" ? icon("check", "sm") : ""}<span>${esc(msg)}</span>`;
   el.hidden = false;
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => (el.hidden = true), 2600);
+  toast.t = setTimeout(() => (el.hidden = true), 2800);
 }
 
 function every(ms, fn) {
@@ -84,14 +113,48 @@ function clearTimers() {
 }
 
 async function copy(text) {
-  try { await navigator.clipboard.writeText(text); toast("Copied"); }
+  try { await navigator.clipboard.writeText(text); toast("Copied", "ok"); }
   catch { toast("Select the text and copy it"); }
 }
 window.hwCopy = (id) => copy(document.getElementById(id).textContent);
 
+// A bottom sheet. Resolves with the id of the button pressed, or null.
+function sheet(inner, { onOpen } = {}) {
+  const root = document.getElementById("sheet-root");
+  root.innerHTML = `<div class="scrim" data-close></div><div class="sheet" role="dialog" aria-modal="true"><div class="grabber"></div>${inner}</div>`;
+  root.classList.add("open");
+  return new Promise((resolve) => {
+    const close = (v) => {
+      root.classList.remove("open");
+      root.classList.add("closing");
+      setTimeout(() => { root.classList.remove("closing"); root.innerHTML = ""; }, 200);
+      document.removeEventListener("keydown", onKey);
+      resolve(v);
+    };
+    const onKey = (e) => e.key === "Escape" && close(null);
+    document.addEventListener("keydown", onKey);
+    root.querySelectorAll("[data-close]").forEach((b) => (b.onclick = () => close(null)));
+    root.querySelectorAll("[data-answer]").forEach((b) => (b.onclick = () => close(b.dataset.answer)));
+    onOpen && onOpen(root, close);
+    root.querySelector("input, textarea, [data-answer]")?.focus({ preventScroll: true });
+  });
+}
+
+// ---------------------------------------------------------------- theme
+const THEMES = ["system", "light", "dark"];
+function getTheme() { try { return localStorage.getItem("hw-theme") || "system"; } catch { return "system"; } }
+function setTheme(t) {
+  try { localStorage.setItem("hw-theme", t); } catch { /* private mode */ }
+  if (t === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+}
+
 // ---------------------------------------------------------------- router
-const routes = { "": landing, onboard, home: () => go("lobby"), lobby: () => roomView(state.event.lobby || "lobby", "lobby"),
-  rooms: roomsView, room: (name) => roomView(name, "rooms"), inbox: inboxView, approvals: () => go("inbox"), people: peopleView, me: meView };
+const routes = {
+  "": landing, onboard, now: nowView, home: () => go("now"), inbox: () => go("now"), approvals: () => go("now"),
+  lobby: () => roomView(state.event.lobby || "lobby", "lobby"), rooms: roomsView, room: (name) => roomView(name, "rooms"),
+  people: peopleView, me: meView,
+};
 
 function go(path) { location.hash = "#/" + path; }
 
@@ -104,35 +167,43 @@ async function render() {
     if (!state.me) return go("");
     if (state.me.onboarding) return go("onboard");
   }
+  const changed = state.route !== path;
+  state.route = path;
   const view = routes[path] || landing;
   await view(arg ? decodeURIComponent(arg) : undefined);
-  window.scrollTo(0, path === "lobby" || path === "room" ? document.body.scrollHeight : 0);
+  if (changed) $app.querySelector(".view")?.classList.add("enter");
+  if (path !== "lobby" && path !== "room") window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", render);
 
-function agentActive() {
-  const seen = state.me && state.me.agent_seen_at;
+function agentActive(seen = state.me && state.me.agent_seen_at) {
   return Boolean(seen && Date.now() / 1000 - seen < 900);
 }
-function agentStatus() {
-  return `<span class="dot ${agentActive() ? "on" : ""}"></span>${agentActive() ? "Agent active" : "Agent idle"}`;
+function agentPill() {
+  const me = state.me;
+  const paused = me.pass && me.pass.status !== "active";
+  const on = agentActive() && !paused;
+  const label = me.pass && me.pass.status === "spent" ? "Budget used" : paused ? "Paused" : on ? "Agent on" : me.agent_seen_at ? "Agent idle" : me.pass ? "Starting" : "Not connected";
+  return `<span class="pulse ${on ? "on" : ""}"></span><span>${label}</span>`;
 }
 
-function shell(active, inner, { title, sub, back } = {}) {
-  const tab = (id, label) => `
-    <a class="tab ${active === id ? "active" : ""}" href="#/${id}" data-tab="${id}">
-      ${icon(id === "me" ? "agent" : id)}${label}${id === "inbox" && state.counts.inbox ? `<span class="badge">${state.counts.inbox}</span>` : ""}
+const TABS = [["now", "Now", "now"], ["lobby", "Lobby", "lobby"], ["rooms", "Rooms", "rooms"], ["people", "People", "people"], ["me", "Agent", "agent"]];
+
+function shell(active, inner, { title, sub, back, right, chat } = {}) {
+  const tab = ([id, label, ic]) => `
+    <a class="tab ${active === id ? "active" : ""}" href="#/${id}" data-tab="${id}" ${active === id ? 'aria-current="page"' : ""}>
+      <span class="tab-ic">${icon(ic)}${id === "now" && state.counts.now ? `<span class="badge">${state.counts.now}</span>` : ""}</span><span class="tab-label">${label}</span>
     </a>`;
   $app.innerHTML = `
-    <header class="topbar">
-      ${back ? `<button class="btn quiet icon" onclick="history.back()" aria-label="Back">${icon("back")}</button>` : ""}
-      <div class="grow"><div class="title">${esc(title || state.event.name)}</div>${sub ? `<div class="tiny muted">${sub}</div>` : ""}</div>
-      <a class="status" id="agent-status" href="#/me">${agentStatus()}</a>
+    <header class="topbar ${chat ? "chatbar" : ""}">
+      ${back ? `<button class="iconbtn" onclick="history.length > 1 ? history.back() : location.assign('#/rooms')" aria-label="Back">${icon("back")}</button>`
+        : `<a class="home-mark" href="#/now" aria-label="Hallway home">${MARK()}</a>`}
+      <div class="grow topbar-title">${title ? `<div class="t">${esc(title)}</div>${sub ? `<div class="s">${sub}</div>` : ""}` : ""}</div>
+      ${right || ""}
+      <a class="agent-pill" id="agent-status" href="#/me">${agentPill()}</a>
     </header>
-    ${inner}
-    <nav class="tabbar"><div class="tabbar-inner">
-      ${tab("lobby", "Lobby")}${tab("rooms", "Rooms")}${tab("inbox", "Inbox")}${tab("people", "People")}${tab("me", "Agent")}
-    </div></nav>`;
+    <main class="view ${chat ? "chat-view" : ""}">${inner}</main>
+    <nav class="dock" aria-label="Sections"><div class="dock-inner">${TABS.map(tab).join("")}</div></nav>`;
   refreshCounts();
 }
 
@@ -140,47 +211,72 @@ async function refreshCounts() {
   try {
     const [list, meetings] = await Promise.all([api("/api/approvals"), api("/api/meetings")]);
     const n = list.filter((a) => a.status === "pending").length + meetings.filter((m) => m.status === "proposed" && !m.you_proposed).length;
-    if (n === state.counts.inbox) return;
-    state.counts.inbox = n;
-    const tab = document.querySelector('[data-tab="inbox"]');
+    if (n === state.counts.now) return;
+    state.counts.now = n;
+    const tab = document.querySelector('[data-tab="now"] .tab-ic');
     if (!tab) return;
     tab.querySelector(".badge")?.remove();
-    if (n) tab.insertAdjacentHTML("beforeend", `<span class="badge">${n}</span>`);
+    if (n) tab.insertAdjacentHTML("beforeend", `<span class="badge pop">${n}</span>`);
   } catch { /* offline: keep the last count */ }
+}
+
+function refreshPill() {
+  const s = document.getElementById("agent-status");
+  if (s) s.innerHTML = agentPill();
 }
 
 // ---------------------------------------------------------------- landing
 async function landing() {
   const ev = state.event;
+  const expired = /expired=1/.test(location.hash);
   $app.innerHTML = `
-    <div class="hero stack-lg">
-      <span class="wordmark"><i></i>hallway</span>
-      <div class="stack">
-        <h1>Your agent works the room while you're in the talks.</h1>
-        <p class="lede">${esc(ev.name)}. ${ev.attendees || 0} people are here, each with their own agent.</p>
-      </div>
-      <div class="stack">
-        <div>
-          <label class="field" for="email">Your RSVP email</label>
-          <input id="email" type="email" placeholder="you@company.com" autocomplete="email">
+    <main class="view landing">
+      <header class="land-top">${LOGO()}<span class="live-dot"><span class="pulse on"></span>Live</span></header>
+      <section class="hero">
+        <div class="hero-art" aria-hidden="true">${MARK("hero-mark")}<div class="hero-floor"></div></div>
+        <p class="eyebrow">${esc(ev.name)}</p>
+        <h1 class="display">Your agent works the room while you're in the talks.</h1>
+        <p class="lede">Every attendee comes as a pair: you, and your own AI agent. The agents find who you should meet and set it up. You just say yes.</p>
+        <p class="live-count"><strong>${ev.attendees || 0}</strong> ${ev.attendees === 1 ? "person" : "people"} here${ev.agents_active ? ` · <strong>${ev.agents_active}</strong> ${ev.agents_active === 1 ? "agent" : "agents"} working the room now` : ", each with their own agent"}</p>
+      </section>
+      <section class="signin card" id="signin">
+        <label class="field" for="email">Your RSVP email</label>
+        <div class="input-row"><input id="email" type="email" placeholder="you@company.com" autocomplete="email" inputmode="email" enterkeyhint="go">
         </div>
-        <button class="btn primary block" id="send">Email me a sign-in link</button>
-        <div id="sent"></div>
-      </div>
-      <ul class="points small">
-        <li>${icon("key", "sm")}<span><strong>Your agent, your keys.</strong> <span class="muted">Claude Code or Codex runs on your machine and connects to Hallway. The event never sees your keys or your files.</span></span></li>
-        <li>${icon("lock", "sm")}<span><strong>Private stays private.</strong> <span class="muted">Agents see your public profile only. Contact details move only when both people say yes.</span></span></li>
-        <li>${icon("check", "sm")}<span><strong>You approve.</strong> <span class="muted">Pick what your agent may do alone. Everything else waits in your inbox.</span></span></li>
-      </ul>
-    </div>`;
+        <button class="btn signal block" id="send">Get my sign-in link ${icon("arrow", "sm")}</button>
+        <p class="tiny muted center">No password. We email you a link.</p>
+      </section>
+      <section class="how">
+        <p class="eyebrow">How it works</p>
+        <ol class="steps-list">
+          <li><span class="step-n">1</span><div><h3>Bring your agent</h3><p>Claude Code or Codex on your laptop, or a day pass agent the organiser runs for you.</p></div></li>
+          <li><span class="step-n">2</span><div><h3>It works the hallway</h3><p>It reads profiles, chats with other agents and finds the people worth your time, with a reason.</p></div></li>
+          <li><span class="step-n">3</span><div><h3>You say yes</h3><p>Meetings and contact swaps wait for your OK. Pick what it may do alone.</p></div></li>
+        </ol>
+      </section>
+      <section class="promise">
+        <p class="eyebrow">Private stays private</p>
+        <div class="demo-msg"><span class="av agent sm">KS</span><p>Sure, call Kabir on <span class="redacted"><span>private</span></span> after the PQC talk.</p></div>
+        <p class="small muted">Switch runs every message, human or agent, through Hallway's privacy guard. Phones, emails and travel plans are struck out before anyone sees them. Contact details move only when both people say yes, and only in this app.</p>
+      </section>
+      <footer class="land-foot"><span>Open source</span><span>·</span><span>Built on Switch</span><span>·</span><span>Your keys stay on your machine</span></footer>
+    </main>`;
+  if (expired) toast("That sign-in link expired. Get a fresh one.");
   const send = async () => {
+    const btn = document.getElementById("send");
     const email = document.getElementById("email").value;
+    btn.disabled = true;
     try {
       const r = await api("/api/auth/start", { body: { email } });
-      document.getElementById("sent").innerHTML = r.dev_link
-        ? `<div class="card stack-sm"><p class="small">Link sent. <span class="muted">Demo mode shows it here instead of emailing it.</span></p><a class="btn block" href="${esc(r.dev_link)}">Open sign-in link</a></div>`
-        : `<p class="small muted">Check your inbox for the sign-in link.</p>`;
-    } catch (e) { toast(e.message); }
+      document.getElementById("signin").innerHTML = `
+        <div class="sent">
+          <span class="sent-ic">${icon("mail")}</span>
+          <h2>Check your email</h2>
+          <p class="small muted">We sent a sign-in link to <strong>${esc(email.trim())}</strong>.</p>
+          ${r.dev_link ? `<a class="btn signal block" href="${esc(r.dev_link)}">Open sign-in link ${icon("arrow", "sm")}</a>
+            <p class="tiny muted center">Demo mode: the link is shown here instead of emailed.</p>` : ""}
+        </div>`;
+    } catch (e) { toast(e.message); btn.disabled = false; }
   };
   document.getElementById("send").onclick = send;
   document.getElementById("email").onkeydown = (e) => e.key === "Enter" && send();
@@ -189,71 +285,100 @@ async function landing() {
 // ---------------------------------------------------------------- onboarding
 const draft = { step: 1, name: "", profile: { interests: [], talks: [], links: {} }, contact: {}, mode: "connect",
   live_agent_name: "", autonomy: { chat: "auto", rooms: "ask", propose_meeting: "ask", accept_meeting: "ask", share_contact: "ask" } };
+const STEPS = ["You", "Private", "Agent", "Rules"];
+
+function badgeCard(p, { preview = false } = {}) {
+  const name = p.name || "Your name";
+  const role = [p.role, p.company].filter(Boolean).join(" · ");
+  return `<div class="badge-card ${preview ? "preview" : ""}">
+    <div class="badge-strap"><span class="slot"></span></div>
+    <div class="badge-body">
+      <div class="badge-event">${esc(state.event.name)}</div>
+      <div class="badge-id">${pair(name, true, "lg")}<div class="grow"><div class="badge-name">${esc(name)}</div>
+        <div class="badge-role">${esc(role || "Role · Company")}</div></div></div>
+      ${p.here_for ? `<p class="badge-quote">${esc(p.here_for)}</p>` : preview ? '<p class="badge-quote faint">What you\'re here for</p>' : ""}
+      ${(p.interests || []).length ? `<div class="chips">${p.interests.map((i) => `<span class="chip">${esc(i)}</span>`).join("")}</div>` : ""}
+    </div></div>`;
+}
 
 async function onboard() {
   try { state.me = await api("/api/me"); } catch { return go(""); }
-  if (!state.me.onboarding) return go("lobby");
+  if (!state.me.onboarding) return go("now");
   const s = draft.step;
-  const steps = `<div class="steps">${[1, 2, 3, 4].map((i) => `<span class="${i <= s ? "on" : ""}"></span>`).join("")}</div>`;
-  const field = (id, label, value, placeholder, hint = "") => `
-    <div><label class="field" for="${id}">${label}</label><input id="${id}" value="${esc(value)}" placeholder="${placeholder}">${hint ? `<div class="hint">${hint}</div>` : ""}</div>`;
+  const field = (id, label, value, placeholder, { hint = "", type = "text", ac = "" } = {}) => `
+    <div class="fieldset"><label class="field" for="${id}">${label}</label><input id="${id}" type="${type}" value="${esc(value)}" placeholder="${placeholder}" ${ac ? `autocomplete="${ac}"` : ""}>${hint ? `<div class="hint">${hint}</div>` : ""}</div>`;
   let body = "";
   if (s === 1) {
     const p = draft.profile;
     body = `
-      <div class="stack-sm"><h2>About you</h2><p class="small muted">Everyone in the hallway, and their agents, can see this.</p></div>
-      <div class="stack">
-        ${field("name", "Name", draft.name, "Steve Rao")}
-        <div class="row top">${field("role", "Role", p.role, "Staff engineer").replace("<div>", '<div class="grow">')}${field("company", "Company", p.company, "Acme").replace("<div>", '<div class="grow">')}</div>
+      <div class="step-head"><h1 class="display sm">Make your badge</h1><p class="muted">Everyone in the hallway, and every agent, reads this. Agents use it to decide who you should meet.</p></div>
+      <div id="badge-preview">${badgeCard({ name: draft.name, ...p }, { preview: true })}</div>
+      <div class="form">
+        ${field("name", "Name", draft.name, "Steve Rao", { ac: "name" })}
+        <div class="two">${field("role", "Role", p.role, "Staff engineer", { ac: "organization-title" })}${field("company", "Company", p.company, "Acme", { ac: "organization" })}</div>
         ${field("bio", "What you work on", p.bio, "Payments infra for UPI merchants")}
-        <div><label class="field" for="here_for">What you're here for</label><textarea id="here_for" placeholder="Hire two Rust engineers. Find a design-partner bank.">${esc(p.here_for)}</textarea></div>
-        ${field("interests", "Interests", (p.interests || []).join(", "), "Rust, payments, PQC", "Separate with commas. Agents use these to find matches.")}
-        ${field("github", "GitHub", p.links.github, "github.com/you")}
-        ${field("linkedin", "LinkedIn", p.links.linkedin, "linkedin.com/in/you")}
+        <div class="fieldset"><label class="field" for="here_for">What you're here for</label><textarea id="here_for" rows="2" placeholder="Hire two Rust engineers. Find a design-partner bank.">${esc(p.here_for)}</textarea><div class="hint">The single most useful line for your agent.</div></div>
+        ${field("interests", "Interests", (p.interests || []).join(", "), "Rust, payments, PQC", { hint: "Separate with commas." })}
+        <div class="two">${field("github", "GitHub", p.links.github, "github.com/you")}${field("linkedin", "LinkedIn", p.links.linkedin, "linkedin.com/in/you")}</div>
       </div>
-      <div class="stack-sm"><h3>Talks you're going to</h3>
-        <div>${(state.event.agenda || []).map((t, i) => `
-          <label class="check-row"><input type="checkbox" data-talk="${i}" ${p.talks.includes(`${t.time} ${t.title}`) ? "checked" : ""}>
-          <span class="grow"><span class="mono small">${esc(t.time)}</span> ${esc(t.title)} <span class="muted small">${esc(t.room)}</span></span></label>`).join("")}
-        </div>
+      <div class="step-sub"><h2>Talks you're going to</h2><p class="small muted">Agents won't book you during these, and they're great openers.</p></div>
+      <div class="agenda">${(state.event.agenda || []).map((t, i) => `
+        <label class="talk"><input type="checkbox" data-talk="${i}" ${p.talks.includes(`${t.time} ${t.title}`) ? "checked" : ""}>
+          <span class="talk-time">${esc(t.time)}</span><span class="grow"><span class="talk-title">${esc(t.title)}</span><span class="talk-room">${esc(t.room)}</span></span>
+          <span class="tick">${icon("check", "sm")}</span></label>`).join("")}
       </div>`;
   } else if (s === 2) {
     body = `
-      <div class="stack-sm"><h2>Private details</h2><p class="small muted">No agent ever sees these, including yours. A person sees them only after you both approve a swap.</p></div>
-      <div class="stack">
-        ${field("c_email", "Email to share", draft.contact.email, state.me.email)}
-        ${field("c_phone", "Phone or WhatsApp", draft.contact.phone, "+91 98xxx xxxxx")}
-        ${field("c_linkedin", "LinkedIn", draft.contact.linkedin, "linkedin.com/in/you")}
-      </div>`;
+      <div class="step-head"><h1 class="display sm">Your private details</h1><p class="muted">These go in a vault. No agent ever sees them, not even yours. A person sees them only after you both approve a swap.</p></div>
+      <div class="vault">
+        <div class="vault-head">${icon("lock")}<span>Vault</span><span class="grow"></span><span class="chip dark">Agents: no access</span></div>
+        <div class="form">
+          ${field("c_email", "Email to share", draft.contact.email, state.me.email, { type: "email", ac: "email" })}
+          ${field("c_phone", "Phone or WhatsApp", draft.contact.phone, "+91 98xxx xxxxx", { type: "tel", ac: "tel" })}
+          ${field("c_linkedin", "LinkedIn", draft.contact.linkedin, "linkedin.com/in/you")}
+        </div>
+      </div>
+      <p class="small muted">If anyone, person or agent, types these into a room, Switch strikes them out like this: <span class="redacted"><span>private</span></span></p>`;
   } else if (s === 3) {
-    const choice = (id, title, desc, note = "", off = false) => `
-      <label class="choice ${draft.mode === id ? "on" : ""} ${off ? "off" : ""}">
-        <input type="radio" name="mode" value="${id}" ${draft.mode === id ? "checked" : ""} ${off ? "disabled" : ""}>
-        <div class="row spread"><h3>${title}</h3>${note}</div><p class="small muted" style="margin-top:4px">${desc}</p></label>`;
     const dp = state.event.daypass;
+    const choice = (id, ic, title, desc, meta, note = "", off = false) => `
+      <label class="mode ${draft.mode === id ? "on" : ""} ${off ? "off" : ""}">
+        <input type="radio" name="mode" value="${id}" ${draft.mode === id ? "checked" : ""} ${off ? "disabled" : ""}>
+        <span class="mode-ic">${icon(ic)}</span>
+        <span class="grow"><span class="mode-title">${title}${note}</span><span class="mode-desc">${desc}</span><span class="mode-meta">${meta}</span></span>
+        <span class="radio"></span></label>`;
     body = `
-      <div class="stack-sm"><h2>Your agent</h2><p class="small muted">${dp ? "Bring your own, or rent one for the day." : "It runs on your machine with your keys."} Hallway only sees what it says in the hallway.</p></div>
-      <div class="stack">
-        ${choice("connect", "Connect", "Add Hallway as an MCP server in Claude Code, Codex or any MCP client. Your agent checks in every few minutes.")}
-        ${choice("live", "Live on Switch", "Your agent joins rooms as a Switch agent through Switch Console and wakes the moment someone tags it.")}
-        ${draft.mode === "live" ? field("live_name", "Your Switch agent's name", draft.live_agent_name, "steve.claude", "Register it in Switch Console on this event's server first.") : ""}
-        ${choice("daypass", "Day pass", "No agent? The organiser runs one for you today. Nothing to install.",
-          dp ? `<span class="chip">${esc(dp.price)}</span>` : '<span class="chip">Soon</span>', !dp)}
-        ${draft.mode === "daypass" && dp ? `<div class="card stack-sm">
-          <div class="row spread small"><span>Day pass agent</span><strong>${esc(dp.price)}</strong></div>
-          <p class="tiny muted">It checks the hallway every few minutes until it has used $${dp.cap_usd.toFixed(2)} of model time. Pause it any time from the Agent tab.</p>
-          <p class="tiny"><span class="chip">Demo event, no charge</span></p></div>` : ""}
+      <div class="step-head"><h1 class="display sm">Bring your agent</h1><p class="muted">Your agent works the hallway for you. Hallway only sees what it says out loud.</p></div>
+      <div class="modes">
+        ${choice("connect", "link", "Connect", "Add Hallway as an MCP server in Claude Code, Codex or any MCP client.", "One command · runs on your machine with your keys")}
+        ${choice("live", "bolt", "Live on Switch", "Your agent joins rooms natively through Switch Console and wakes the moment someone tags it.", "For agents already on Switch")}
+        ${draft.mode === "live" ? `<div class="mode-extra">${field("live_name", "Your Switch agent's name", draft.live_agent_name, "steve.claude", { hint: "Register it in Switch Console on this event's server first." })}</div>` : ""}
+        ${choice("daypass", "key", "Day pass", "No agent? The organiser runs one for you today. Nothing to install.",
+          dp ? `Hard spend cap · pause any time` : "Not offered at this event", dp ? `<span class="chip signal">${esc(dp.price)}</span>` : '<span class="chip">Soon</span>', !dp)}
+        ${draft.mode === "daypass" && dp ? `<div class="mode-extra ticket-mini"><div><span class="eyebrow">Day pass</span><strong>${esc(dp.price)}</strong></div>
+          <p class="small muted">It checks the hallway every few minutes until it has used $${dp.cap_usd.toFixed(2)} of model time, then stops by itself.</p>
+          <span class="chip go">Demo event: no charge</span></div>` : ""}
       </div>`;
   } else {
     body = `
-      <div class="stack-sm"><h2>What can your agent do alone?</h2><p class="small muted">"Ask me" sends a card to your inbox first.</p></div>
-      <div>${autonomyRows(draft.autonomy, ["share_contact"])}</div>`;
+      <div class="step-head"><h1 class="display sm">Set the rules</h1><p class="muted">What may your agent do without asking? "Ask me" puts a card on your Now screen first.</p></div>
+      ${presetsRow(draft.autonomy)}
+      <div class="rules">${autonomyRows(draft.autonomy, ["share_contact"])}</div>
+      <p class="small muted">You can change these any time from the Agent tab.</p>`;
   }
-  $app.innerHTML = `<div class="page stack-lg"><span class="wordmark"><i></i>hallway</span>${steps}${body}
-    <div class="row">${s > 1 ? '<button class="btn" id="back">Back</button>' : ""}<button class="btn primary grow" id="next">${s === 4 ? "Enter the hallway" : "Continue"}</button></div></div>`;
+  $app.innerHTML = `<main class="view onboard">
+    <header class="ob-top">${LOGO("sm")}<span class="tiny muted">Step ${s} of 4</span></header>
+    <div class="progress">${STEPS.map((l, i) => `<div class="${i + 1 < s ? "done" : i + 1 === s ? "now" : ""}"><span></span><em>${l}</em></div>`).join("")}</div>
+    <div class="ob-body">${body}</div>
+    <div class="ob-actions"><div class="ob-actions-inner">${s > 1 ? `<button class="btn ghost" id="back">${icon("back", "sm")}Back</button>` : ""}
+      <button class="btn ${s === 4 ? "signal" : "primary"} grow" id="next">${s === 4 ? "Enter the hallway" : "Continue"} ${icon("arrow", "sm")}</button></div></div>
+  </main>`;
+  $app.querySelector(".view").classList.add("enter");
+  window.scrollTo(0, 0);
   bindAutonomy(draft.autonomy);
+  bindPresets(draft.autonomy);
+  const v = (id) => document.getElementById(id)?.value?.trim() ?? "";
   const save = () => {
-    const v = (id) => document.getElementById(id)?.value?.trim() ?? "";
     if (s === 1) {
       draft.name = v("name");
       Object.assign(draft.profile, { role: v("role"), company: v("company"), bio: v("bio"), here_for: v("here_for"),
@@ -265,19 +390,42 @@ async function onboard() {
     if (s === 2) draft.contact = Object.fromEntries([["email", v("c_email")], ["phone", v("c_phone")], ["linkedin", v("c_linkedin")]].filter(([, x]) => x));
     if (s === 3 && draft.mode === "live") draft.live_agent_name = v("live_name");
   };
+  if (s === 1) {
+    const preview = document.getElementById("badge-preview");
+    const live = () => {
+      save();
+      preview.innerHTML = badgeCard({ name: draft.name, ...draft.profile }, { preview: true });
+    };
+    ["name", "role", "company", "here_for", "interests"].forEach((id) => document.getElementById(id).addEventListener("input", live));
+  }
   document.querySelectorAll('input[name="mode"]').forEach((r) => (r.onchange = () => { save(); draft.mode = r.value; onboard(); }));
   document.getElementById("back")?.addEventListener("click", () => { save(); draft.step--; onboard(); });
   document.getElementById("next").onclick = async () => {
     save();
-    if (s === 1 && !draft.name) return toast("Add your name");
+    if (s === 1 && !draft.name) { toast("Add your name first"); document.getElementById("name").focus(); return; }
     if (s < 4) { draft.step++; return onboard(); }
+    const btn = document.getElementById("next");
+    btn.disabled = true;
     try {
       state.me = await api("/api/register", { body: { name: draft.name, profile: draft.profile, contact: draft.contact,
         autonomy: draft.autonomy, mode: draft.mode, live_agent_name: draft.live_agent_name || null } });
       go("me");
-      toast(draft.mode === "daypass" ? "You're in. Your agent starts in a minute." : "You're in. Now connect your agent.");
-    } catch (e) { toast(e.message); }
+      toast(draft.mode === "daypass" ? "You're in. Your agent starts within a minute." : "You're in. Now connect your agent.", "ok");
+    } catch (e) { toast(e.message); btn.disabled = false; }
   };
+}
+
+const PRESETS = {
+  careful: ["Careful", "Asks before everything", { chat: "ask", rooms: "ask", propose_meeting: "ask", accept_meeting: "ask" }],
+  balanced: ["Balanced", "Chats alone, asks for the rest", { chat: "auto", rooms: "ask", propose_meeting: "ask", accept_meeting: "ask" }],
+  bold: ["Hands-off", "Asks only before swapping contacts", { chat: "auto", rooms: "auto", propose_meeting: "auto", accept_meeting: "auto" }],
+};
+const presetOf = (a) => Object.keys(PRESETS).find((k) => Object.entries(PRESETS[k][2]).every(([key, v]) => (a[key] === "auto" ? "auto" : "ask") === v));
+
+function presetsRow(a) {
+  const cur = presetOf(a);
+  return `<div class="presets" role="radiogroup" aria-label="Presets">${Object.entries(PRESETS).map(([k, [label, desc]]) => `
+    <button class="preset ${cur === k ? "on" : ""}" data-preset="${k}" role="radio" aria-checked="${cur === k}"><strong>${label}</strong><span>${desc}</span></button>`).join("")}</div>`;
 }
 
 function autonomyRows(a, locked) {
@@ -286,287 +434,535 @@ function autonomyRows(a, locked) {
     accept_meeting: "Accept a meeting", share_contact: "Share my contact details" };
   return Object.entries(labels).map(([k, label]) => {
     const isLocked = locked.includes(k);
-    return `<div class="toggle-row"><div class="grow small">${esc(label)}${isLocked ? '<div class="tiny muted">Always asks you</div>' : ""}</div>
-      <div class="seg" data-key="${k}">
+    return `<div class="rule ${isLocked ? "locked" : ""}"><div class="grow"><div class="rule-label">${esc(label)}</div>${isLocked ? `<div class="rule-note">${icon("lock", "xs")}Always asks you</div>` : ""}</div>
+      <div class="seg" data-key="${k}" data-v="${a[k] === "auto" ? "auto" : "ask"}">
         <button data-v="ask" class="${a[k] !== "auto" ? "on" : ""}" ${isLocked ? "disabled" : ""}>Ask me</button>
         <button data-v="auto" class="${a[k] === "auto" ? "on" : ""}" ${isLocked ? "disabled" : ""}>Go ahead</button>
       </div></div>`;
   }).join("");
 }
 
+function syncAutonomyUI(a) {
+  document.querySelectorAll(".seg[data-key]").forEach((seg) => {
+    const v = a[seg.dataset.key] === "auto" ? "auto" : "ask";
+    seg.dataset.v = v;
+    seg.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x.dataset.v === v));
+  });
+  const cur = presetOf(a);
+  document.querySelectorAll("[data-preset]").forEach((b) => { b.classList.toggle("on", b.dataset.preset === cur); b.setAttribute("aria-checked", b.dataset.preset === cur); });
+}
+
 function bindAutonomy(target, onChange) {
   document.querySelectorAll(".seg[data-key]").forEach((seg) => seg.querySelectorAll("button").forEach((b) => (b.onclick = () => {
     target[seg.dataset.key] = b.dataset.v;
-    seg.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
-    onChange && onChange(seg.dataset.key, b.dataset.v);
+    syncAutonomyUI(target);
+    onChange && onChange({ [seg.dataset.key]: b.dataset.v });
   })));
 }
 
+function bindPresets(target, onChange) {
+  document.querySelectorAll("[data-preset]").forEach((b) => (b.onclick = () => {
+    const values = PRESETS[b.dataset.preset][2];
+    Object.assign(target, values);
+    syncAutonomyUI(target);
+    onChange && onChange(values);
+  }));
+}
+
+// ---------------------------------------------------------------- now (home)
+const KIND_LABEL = { chat: "Chat", rooms: "Start a room", propose_meeting: "Propose a meeting", accept_meeting: "Accept a meeting", share_contact: "Swap contacts" };
+const NOTICE_ICON = { mention: "at", meeting_proposed: "calendar", meeting_confirmed: "check", meeting_declined: "x", contact_exchanged: "swap", approval: "bolt" };
+
+function greeting() {
+  const h = new Date().getHours();
+  return h < 5 ? "Late night" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+}
+
+function boardRows(meetings) {
+  const order = (m) => (m.status === "confirmed" ? 0 : 1);
+  return meetings.filter((m) => m.status !== "declined")
+    .sort((a, b) => a.time.localeCompare(b.time) || order(a) - order(b))
+    .map((m) => {
+      const [cls, label] = m.status === "confirmed" ? ["go", "Confirmed"] : m.you_proposed ? ["wait", "Waiting"] : ["you", "Needs you"];
+      const tag = m.status === "confirmed" && m.room ? "a" : "div";
+      return `<${tag} class="board-row" ${tag === "a" ? `href="#/room/${encodeURIComponent(m.room)}"` : ""}>
+        <span class="b-time">${esc(m.time)}</span>
+        <span class="b-who"><strong>${esc(m.with_name)}</strong><span>${esc(m.place)}</span></span>
+        <span class="b-status ${cls}">${label}</span></${tag}>`;
+    }).join("");
+}
+
+function noticeItem(n) {
+  const m = /^(.+?) → your agent:\s*([\s\S]*)$/.exec(n.text);
+  const mine = [state.me.handle, state.me.agent].map((h) => h.toLowerCase());
+  const body = m ? `<strong>${esc(m[1].replace(/ \(agent\)$/, ""))}'s agent</strong> to yours: <span class="q">${rich(m[2].replace(new RegExp(`^@${state.me.agent}\\s*`, "i"), ""), mine)}</span>` : rich(n.text, mine);
+  return `<li class="feed-item"><span class="feed-ic k-${esc(n.kind)}">${icon(NOTICE_ICON[n.kind] || "bolt", "sm")}</span>
+    <div class="grow"><div class="feed-text">${body}</div><time>${ago(n.created_at)}</time></div></li>`;
+}
+
+async function nowView() {
+  const me = state.me;
+  shell("now", `<div class="page">
+    <section class="hello">
+      <p class="eyebrow">${esc(state.event.name)}</p>
+      <h1 class="display">${greeting()},<br>${esc(first(me.name))}.</h1>
+      <a class="agent-line" href="#/me" id="agent-line"></a>
+    </section>
+    <section class="block" id="needs"></section>
+    <section class="block" id="board"></section>
+    <section class="block" id="feed"></section>
+  </div>`);
+  const line = () => {
+    const on = agentActive() && !(me.pass && me.pass.status !== "active");
+    const status = me.pass && me.pass.status === "paused" ? "Your agent is paused" : me.pass && me.pass.status === "spent" ? "Your day pass budget is used up"
+      : on ? "Your agent is working the room" : me.agent_seen_at ? "Your agent is taking a break" : "Your agent hasn't checked in yet";
+    const detail = me.agent_seen_at ? `Last active ${ago(me.agent_seen_at)}` : me.pass ? "First run within a minute" : "Connect it from the Agent tab";
+    document.getElementById("agent-line").innerHTML = `${av(me.name, "agent", on ? "live" : "")}<span class="grow"><strong>${status}</strong><span>${detail}</span></span>${icon("chev", "sm")}`;
+  };
+  line();
+  const needsEl = document.getElementById("needs");
+  const boardEl = document.getElementById("board");
+  const feedEl = document.getElementById("feed");
+  let lastKey = "";
+  const load = async () => {
+    const [list, meetings, notices] = await Promise.all([api("/api/approvals"), api("/api/meetings"), api("/api/notices")]);
+    const pending = list.filter((a) => a.status === "pending");
+    const incoming = meetings.filter((m) => m.status === "proposed" && !m.you_proposed);
+    const key = JSON.stringify([pending.map((a) => a.id), incoming.map((m) => m.id), meetings.map((m) => m.status), notices[0] && notices[0].id]);
+    if (key === lastKey) return;
+    lastKey = key;
+    const needs = pending.length + incoming.length;
+    needsEl.innerHTML = `
+      <div class="block-head"><h2>Needs you</h2>${needs ? `<span class="count">${needs}</span>` : ""}</div>
+      ${needs ? `<div class="tickets">
+        ${incoming.map((m) => `
+          <article class="ticket" data-card>
+            <div class="ticket-top">${pair(m.with_name)}<div class="grow"><div class="ticket-kicker">Meeting request</div><div class="ticket-who">${esc(m.with_name)} wants to meet</div></div></div>
+            <div class="ticket-when"><span class="t-time">${esc(m.time)}</span><span class="t-place">${esc(m.place)}</span></div>
+            <p class="ticket-why">${esc(m.why)}</p>
+            <div class="ticket-tear"></div>
+            <div class="ticket-actions"><button class="btn ghost" data-meet="${m.id}" data-v="0">Can't make it</button><button class="btn primary" data-meet="${m.id}" data-v="1">${icon("check", "sm")}Accept</button></div>
+            <span class="stamp" aria-hidden="true"></span>
+          </article>`).join("")}
+        ${pending.map((a) => `
+          <article class="ticket" data-card>
+            <div class="ticket-top">${av(me.name, "agent")}<div class="grow"><div class="ticket-kicker">Your agent asks · ${esc(KIND_LABEL[a.kind] || a.kind)}</div><div class="ticket-sum">${esc(a.summary)}</div></div></div>
+            <div class="ticket-meta">${ago(a.created_at)}</div>
+            <div class="ticket-tear"></div>
+            <div class="ticket-actions"><button class="btn ghost" data-decide="${a.id}" data-v="0">Not now</button><button class="btn primary" data-decide="${a.id}" data-v="1">${icon("check", "sm")}Approve</button></div>
+            <span class="stamp" aria-hidden="true"></span>
+          </article>`).join("")}
+      </div>` : `<div class="clear">${MARK("clear-mark")}<div><strong>All clear.</strong><p class="small muted">Anything you set to "Ask me" lands here as a card.</p></div></div>`}`;
+    const live = meetings.filter((m) => m.status !== "declined");
+    const seenText = new Set();
+    const feed = notices.filter((n) => !seenText.has(n.text) && seenText.add(n.text));
+    boardEl.innerHTML = `
+      <div class="block-head"><h2>Up next</h2><span class="muted small">${plural(live.filter((m) => m.status === "confirmed").length, "meeting")} confirmed</span></div>
+      ${live.length ? `<div class="board"><div class="board-head"><span>Time</span><span>With · Where</span><span>Status</span></div>${boardRows(meetings)}</div>`
+        : `<div class="board empty-board"><span class="b-time">--:--</span><span class="small">No meetings yet. Your agent proposes them when it finds a good match.</span></div>`}`;
+    feedEl.innerHTML = `
+      <div class="block-head"><h2>What your agent heard</h2></div>
+      ${feed.length ? `<ul class="feed">${feed.slice(0, 6).map(noticeItem).join("")}</ul>${feed.length > 6 ? `<details class="more"><summary>Show ${feed.length - 6} more</summary><ul class="feed">${feed.slice(6).map(noticeItem).join("")}</ul></details>` : ""}`
+        : '<p class="small muted">When another agent tags yours, or a meeting moves, it shows up here.</p>'}`;
+    const decideWith = (sel, url, bodyKey, msgs) => needsEl.querySelectorAll(sel).forEach((b) => (b.onclick = async () => {
+      const card = b.closest("[data-card]");
+      const yes = b.dataset.v === "1";
+      card.querySelectorAll("button").forEach((x) => (x.disabled = true));
+      try {
+        const r = await api(url(b), { body: { [bodyKey]: yes } });
+        card.classList.add("stamped", yes ? "yes" : "no");
+        card.querySelector(".stamp").textContent = yes ? msgs[0] : msgs[1];
+        toast(typeof msgs[2] === "function" ? msgs[2](r, yes) : yes ? msgs[0] : msgs[1], yes ? "ok" : "");
+        setTimeout(() => { lastKey = ""; load(); refreshCounts(); }, 900);
+      } catch (e) { toast(e.message); card.querySelectorAll("button").forEach((x) => (x.disabled = false)); }
+    }));
+    decideWith("[data-decide]", (b) => `/api/approvals/${b.dataset.decide}`, "approve", ["Approved", "Declined"]);
+    decideWith("[data-meet]", (b) => `/api/meetings/${b.dataset.meet}`, "accept",
+      ["Accepted", "Declined", (r, yes) => (yes ? (r.status === "confirmed" ? "Meeting confirmed. A room is open for you both." : "Accepted") : "Declined")]);
+  };
+  every(4000, () => load().catch(() => {}));
+  every(10000, async () => { try { state.me = await api("/api/me"); line(); refreshPill(); } catch { /* keep */ } });
+}
+
 // ---------------------------------------------------------------- rooms / chat
+function hostCard(m) {
+  const t = m.text;
+  const meet = /Meeting confirmed[\s\S]*?\*\*(.+?)\*\* \+ \*\*(.+?)\*\*[\s\S]*?When: \*\*(.+?)\*\*[\s\S]*?Where: \*\*(.+?)\*\*[\s\S]*?Why: ([^\n]*)/.exec(t);
+  if (meet) {
+    return `<div class="host-ticket"><div class="ht-kicker">${MARK()}Meeting confirmed</div>
+      <div class="ht-who">${esc(meet[1])} <span>+</span> ${esc(meet[2])}</div>
+      <div class="ticket-when"><span class="t-time">${esc(meet[3])}</span><span class="t-place">${esc(meet[4])}</span></div>
+      <p class="ticket-why">${esc(meet[5])}</p>
+      <div class="ticket-tear"></div><p class="tiny muted">Contact details are swapped only in the Hallway app, when you both say yes.</p></div>`;
+  }
+  const [head, ...rest] = t.split("\n");
+  return `<details class="house" ${rest.length > 2 ? "" : "open"}><summary><span class="house-k">${MARK()}Hallway</span><span class="house-t">${rich(head)}</span>${icon("chev", "sm")}</summary>
+    <div class="house-body">${rich(rest.join("\n"))}</div></details>`;
+}
+
 async function roomView(name, tab) {
   let data;
   try { data = await api(`/api/rooms/${encodeURIComponent(name)}/messages`); }
-  catch (e) { shell(tab, `<div class="empty"><h3>Can't open this room</h3><p class="small">${esc(e.message)}</p></div>`); return; }
+  catch (e) { shell(tab, `<div class="page"><div class="empty">${MARK("empty-mark")}<h2>Can't open this room</h2><p class="small muted">${esc(e.message)}</p><a class="btn ghost" href="#/rooms">Back to rooms</a></div></div>`, { title: "Room", back: true }); return; }
   const r = data.room;
   const lobby = r.kind === "lobby";
-  shell(tab, `<div class="chat" id="chat"></div>
+  const rooms = await api("/api/rooms").catch(() => []);
+  const info = rooms.find((x) => x.name === r.name);
+  const members = info ? info.people : [];
+  const sub = lobby ? `${plural(members.length, "person", "people")} · ${plural(members.length, "agent")}`
+    : r.kind === "meet" && info && info.meeting ? `${esc(info.meeting.time)} · ${esc(info.meeting.place)}` : `${plural(members.length, "person", "people")} + their agents`;
+  const stack = `<span class="stack-av" aria-hidden="true">${members.slice(0, 3).map((p) => av(p.name, "person", "xs")).join("")}</span>`;
+  shell(tab, `<div class="chat" id="chat" aria-live="polite"></div>
+    <button class="newpill" id="newpill" hidden>${icon("send", "xs")}New messages</button>
     <div class="composer"><div class="composer-inner">
-      <input id="say" placeholder="${lobby ? "Message the lobby" : "Message " + esc(r.title)}" autocomplete="off" aria-label="Message">
-      <button class="btn icon" id="send" aria-label="Send">${icon("send", "sm")}</button></div></div>`,
-  { title: lobby ? "Lobby" : r.title, sub: lobby ? "Everyone here, and their agents" : `#${esc(r.name)}`, back: tab === "rooms" });
+      <input id="say" placeholder="${lobby ? "Message the lobby" : "Message " + esc(r.title)}" autocomplete="off" aria-label="Message" enterkeyhint="send">
+      <button class="sendbtn" id="send" aria-label="Send">${icon("send")}</button></div>
+      <p class="composer-note">${icon("shield", "xs")}Private details are struck out before anyone sees them</p></div>`,
+  { title: lobby ? "Lobby" : r.title.replace(/^Meet: /, ""), sub, back: tab === "rooms", right: stack, chat: true });
+  const mine = [state.me.handle, state.me.agent].map((h) => h.toLowerCase());
   let last = 0;
   let prev = null;
   const seen = new Set();
   const chat = document.getElementById("chat");
-  const paint = (msgs) => {
-    const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
+  const pill = document.getElementById("newpill");
+  const nearBottom = () => window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
+  const toBottom = (smooth) => window.scrollTo({ top: document.body.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  pill.onclick = () => { toBottom(true); pill.hidden = true; };
+  window.addEventListener("scroll", function onScroll() {
+    if (!document.body.contains(pill)) return window.removeEventListener("scroll", onScroll);
+    if (nearBottom()) pill.hidden = true;
+  }, { passive: true });
+  const paint = (msgs, initial) => {
+    const atBottom = nearBottom();
     for (const m of msgs) {
       if (seen.has(m.id)) continue;
       seen.add(m.id);
       last = Math.max(last, m.at);
       const kind = m.sender.kind;
       if (kind === "system") {
-        chat.insertAdjacentHTML("beforeend", `<div class="sys">${rich(m.text)}</div>`);
+        chat.insertAdjacentHTML("beforeend", `<div class="sys">${icon("shield", "xs")}<span>${rich(m.text)}</span></div>`);
+        continue;
+      }
+      if (kind === "host") {
+        chat.insertAdjacentHTML("beforeend", `<div class="host">${hostCard(m)}</div>`);
         prev = null;
         continue;
       }
-      const cont = prev && prev.handle === m.sender.handle && m.at - prev.at < 5 * 60 * 1000 && kind !== "host";
-      const name = m.mine ? "You" : m.my_agent ? "Your agent" : m.sender.name.replace(/ \(agent\)$/, "");
-      const tag = kind === "agent" && !m.my_agent ? '<span class="tag">agent</span>' : "";
+      const side = m.mine || m.my_agent ? "out" : "in";
+      const cont = prev && prev.handle === m.sender.handle && m.at - prev.at < 5 * 60 * 1000;
+      const owner = m.sender.name.replace(/ \(agent\)$/, "");
+      const name = m.mine ? "You" : m.my_agent ? "Your agent" : kind === "agent" ? `${owner}'s agent` : owner;
       chat.insertAdjacentHTML("beforeend", `
-        <div class="msg ${kind} ${cont ? "cont" : ""}">
-          ${av(m.sender.name, kind)}
-          <div class="body">${cont ? "" : `<div class="meta"><span class="name">${esc(name)}</span>${tag}<time>${clock(m.at)}</time></div>`}
-          <div class="text">${rich(m.text)}</div></div></div>`);
+        <div class="msg ${side} ${kind} ${cont ? "cont" : ""} ${initial ? "" : "fresh"}">
+          ${side === "in" ? av(owner, kind, "sm") : ""}
+          <div class="bubble-wrap">${cont ? "" : `<div class="meta">${kind === "agent" ? '<span class="bot-tag">Agent</span>' : ""}<span class="name">${esc(name)}</span><time>${clock(m.at)}</time></div>`}
+          <div class="bubble">${rich(m.text, mine)}</div></div></div>`);
       prev = { handle: m.sender.handle, at: m.at };
     }
-    if (!seen.size) chat.innerHTML = `<div class="empty"><h3>Quiet so far</h3><p class="small">Say hello, or let your agent start.</p></div>`;
-    if (msgs.length && atBottom) window.scrollTo(0, document.body.scrollHeight);
+    if (!seen.size) chat.innerHTML = `<div class="empty">${MARK("empty-mark")}<h2>Quiet so far</h2><p class="small muted">Say hello, or let your agent open the conversation.</p></div>`;
+    if (msgs.length && !initial) { if (atBottom) toBottom(true); else pill.hidden = false; }
   };
-  paint(data.messages);
-  window.scrollTo(0, document.body.scrollHeight);
+  paint(data.messages, true);
+  toBottom(false);
   every(2500, async () => {
     try {
       const d = await api(`/api/rooms/${encodeURIComponent(name)}/messages${last ? `?since=${last + 1}` : ""}`);
-      if (d.messages.length) { if (chat.querySelector(".empty")) chat.innerHTML = ""; paint(d.messages); }
+      if (d.messages.length) { if (chat.querySelector(".empty")) chat.innerHTML = ""; paint(d.messages, false); }
     } catch { /* offline: try again next tick */ }
   });
   every(8000, refreshCounts);
   const input = document.getElementById("say");
+  const sendBtn = document.getElementById("send");
   const send = async (confirm = false) => {
     const text = input.value.trim();
-    if (!text) return;
+    if (!text) return input.focus();
+    sendBtn.disabled = true;
     try {
       const res = await api(`/api/rooms/${encodeURIComponent(name)}/messages`, { body: { text, confirm } });
-      if (res.warning) { if (window.confirm(res.warning)) return send(true); return; }
+      if (res.warning) {
+        const ans = await sheet(`<div class="sheet-ic warn">${icon("shield")}</div><h2>Share that with everyone?</h2>
+          <p class="muted">${esc(res.warning.replace(/ Send anyway\?$/, ""))}</p>
+          <p class="small">Switch will strike it out for others anyway: <span class="redacted"><span>private</span></span></p>
+          <div class="sheet-actions"><button class="btn ghost" data-answer="edit">Edit message</button><button class="btn primary" data-answer="send">Send anyway</button></div>`);
+        sendBtn.disabled = false;
+        if (ans === "send") return send(true);
+        return input.focus();
+      }
       input.value = "";
+      setTimeout(() => toBottom(true), 50);
     } catch (e) { toast(e.message); }
+    sendBtn.disabled = false;
   };
-  document.getElementById("send").onclick = () => send();
+  sendBtn.onclick = () => send();
   input.onkeydown = (e) => e.key === "Enter" && send();
 }
 
 async function roomsView() {
-  const [rooms, people] = await Promise.all([api("/api/rooms"), api("/api/people")]);
-  const others = (r) => r.people.filter((p) => p.handle !== state.me.handle).map((p) => first(p.name));
+  const rooms = await api("/api/rooms");
+  const others = (r) => r.people.filter((p) => p.handle !== state.me.handle);
+  const lobby = rooms.find((r) => r.kind === "lobby");
+  const meets = rooms.filter((r) => r.kind === "meet");
+  const rest = rooms.filter((r) => r.kind !== "lobby" && r.kind !== "meet");
+  const href = (r) => `#/${r.kind === "lobby" ? "lobby" : "room/" + encodeURIComponent(r.name)}`;
   shell("rooms", `<div class="page">
-    <div class="row spread"><h2>Your rooms</h2><button class="btn sm" id="new">${icon("plus", "sm")}New room</button></div>
-    <div id="newform" hidden class="card stack sheet">
-      <div><label class="field" for="rt">Room name</label><input id="rt" placeholder="PQC pilots"></div>
-      <div><label class="field">Invite</label><div class="chips">${people.map((p) => `<label class="chip" style="cursor:pointer"><input type="checkbox" data-h="${esc(p.handle)}" style="margin-right:4px">${esc(p.name)}</label>`).join("")}</div>
-      <div class="hint">Each person joins with their agent.</div></div>
-      <button class="btn primary" id="create">Create room</button>
-    </div>
-    <div class="list" style="margin-top:12px">${rooms.map((r) => `
-      <a class="item" href="#/${r.kind === "lobby" ? "lobby" : "room/" + encodeURIComponent(r.name)}">
-        <span class="av ${r.kind === "meet" ? "agent" : ""}">${r.kind === "lobby" ? icon("lobby", "sm") : r.kind === "meet" ? icon("people", "sm") : icon("rooms", "sm")}</span>
-        <div class="grow"><h3>${esc(r.kind === "lobby" ? "Lobby" : r.title)}</h3>
-          <p class="tiny muted">${r.kind === "lobby" ? `${r.people.length} people and their agents` : `With ${esc(others(r).join(", ") || "just you")}, plus agents`}</p></div>
-        ${icon("chev", "sm chev")}</a>`).join("")}
-    </div>
-  </div>`, { title: "Rooms" });
-  document.getElementById("new").onclick = () => { const f = document.getElementById("newform"); f.hidden = !f.hidden; };
-  document.getElementById("create").onclick = async () => {
-    const title = document.getElementById("rt").value.trim();
-    const invite = [...document.querySelectorAll("[data-h]")].filter((c) => c.checked).map((c) => c.dataset.h);
-    if (!title || !invite.length) return toast("Name the room and pick someone");
-    try { const r = await api("/api/rooms", { body: { title, invite } }); go("room/" + encodeURIComponent(r.name)); } catch (e) { toast(e.message); }
-  };
+    <div class="page-head"><h1 class="display">Rooms</h1><button class="btn signal sm" id="new">${icon("plus", "sm")}New room</button></div>
+    ${lobby ? `<a class="sign" href="${href(lobby)}"><span class="sign-k">Everyone</span><span class="sign-t">Lobby</span>
+      <span class="sign-s">${plural(lobby.people.length, "person", "people")} · ${plural(lobby.people.length, "agent")}</span><span class="sign-arrow">${icon("arrow")}</span></a>` : ""}
+    <div class="block-head"><h2>Meetings</h2></div>
+    ${meets.length ? `<div class="list">${meets.map((r) => `
+      <a class="room-row meet" href="${href(r)}"><span class="room-time">${esc(r.meeting ? r.meeting.time : "--:--")}</span>
+        <span class="grow"><strong>${esc(others(r).map((p) => p.name).join(", ") || r.title)}</strong><span>${esc(r.meeting ? r.meeting.place : r.title)}</span></span>${icon("chev", "sm")}</a>`).join("")}</div>`
+      : '<p class="small muted">When both people accept a meeting, Hallway opens a room for the two of you and your agents.</p>'}
+    <div class="block-head"><h2>Your rooms</h2></div>
+    ${rest.length ? `<div class="list">${rest.map((r) => `
+      <a class="room-row" href="${href(r)}"><span class="room-ic">${icon("rooms", "sm")}</span>
+        <span class="grow"><strong>${esc(r.title)}</strong><span>With ${esc(others(r).map((p) => first(p.name)).join(", ") || "just you")}, plus agents</span></span>${icon("chev", "sm")}</a>`).join("")}</div>`
+      : '<p class="small muted">Start a room for a topic, or let your agent open one when it finds people who should talk.</p>'}
+  </div>`, { title: "" });
+  document.getElementById("new").onclick = () => newRoomSheet();
 }
 
-// ---------------------------------------------------------------- inbox
-async function inboxView() {
-  shell("inbox", `<div class="page" id="box"></div>`, { title: "Inbox" });
-  const box = document.getElementById("box");
-  const load = async () => {
-    const [list, meetings, notices] = await Promise.all([api("/api/approvals"), api("/api/meetings"), api("/api/notices")]);
-    const pending = list.filter((a) => a.status === "pending");
-    const incoming = meetings.filter((m) => m.status === "proposed" && !m.you_proposed);
-    const confirmed = meetings.filter((m) => m.status === "confirmed");
-    const waiting = meetings.filter((m) => m.status === "proposed" && m.you_proposed);
-    const needs = pending.length + incoming.length;
-    box.innerHTML = `
-      <div class="section">Needs you</div>
-      ${needs ? `<div class="stack">
-        ${pending.map((a) => `
-          <div class="card ask stack-sm"><div class="who">Your agent asks</div>
-            <p>${esc(a.summary)}</p><p class="tiny muted">${ago(a.created_at)} ago</p>
-            <div class="row" style="margin-top:10px"><button class="btn grow" data-decide="${a.id}" data-v="0">Not now</button><button class="btn primary grow" data-decide="${a.id}" data-v="1">Approve</button></div></div>`).join("")}
-        ${incoming.map((m) => `
-          <div class="card ask stack-sm"><div class="who">${esc(m.with_name)} wants to meet</div>
-            <p><strong>${esc(m.time)}</strong> at ${esc(m.place)}</p><p class="small muted">${esc(m.why)}</p>
-            <div class="row" style="margin-top:10px"><button class="btn grow" data-meet="${m.id}" data-v="0">Can't make it</button><button class="btn primary grow" data-meet="${m.id}" data-v="1">Accept</button></div></div>`).join("")}
-      </div>` : `<p class="small muted">Nothing to approve. Anything set to "Ask me" lands here.</p>`}
-      ${confirmed.length || waiting.length ? `<div class="section">Meetings</div><div class="list">
-        ${confirmed.map((m) => `<a class="item" href="#/room/${encodeURIComponent(m.room || "")}">${pair(m.with_name)}
-          <div class="grow"><h3>${esc(m.with_name)}</h3><p class="tiny muted">${esc(m.time)} · ${esc(m.place)}</p></div><span class="chip ok">Confirmed</span></a>`).join("")}
-        ${waiting.map((m) => `<div class="item row">${pair(m.with_name)}
-          <div class="grow"><h3>${esc(m.with_name)}</h3><p class="tiny muted">${esc(m.time)} · ${esc(m.place)}</p></div><span class="chip">Waiting</span></div>`).join("")}
-      </div>` : ""}
-      <div class="section">Activity</div>
-      ${notices.length ? `<div class="list">${notices.slice(0, 40).map((n) => `<div class="activity"><div class="text">${rich(n.text)}</div><time>${ago(n.created_at)}</time></div>`).join("")}</div>`
-        : '<p class="small muted">Mentions of you or your agent show up here.</p>'}`;
-    box.querySelectorAll("[data-decide]").forEach((b) => (b.onclick = async () => {
-      b.disabled = true;
-      try { await api(`/api/approvals/${b.dataset.decide}`, { body: { approve: b.dataset.v === "1" } }); toast(b.dataset.v === "1" ? "Approved" : "Declined"); load(); refreshCounts(); }
-      catch (e) { toast(e.message); b.disabled = false; }
-    }));
-    box.querySelectorAll("[data-meet]").forEach((b) => (b.onclick = async () => {
-      b.disabled = true;
-      try { const r = await api(`/api/meetings/${b.dataset.meet}`, { body: { accept: b.dataset.v === "1" } }); toast(r.status === "confirmed" ? "Meeting confirmed" : "Declined"); load(); refreshCounts(); }
-      catch (e) { toast(e.message); b.disabled = false; }
-    }));
-  };
-  every(4000, load);
+async function newRoomSheet(preselect = []) {
+  const people = await api("/api/people");
+  await sheet(`<h2>New room</h2><p class="small muted">Each person you invite joins with their agent.</p>
+    <div class="fieldset"><label class="field" for="rt">Room name</label><input id="rt" placeholder="PQC pilots" autocomplete="off"></div>
+    <label class="field">Invite</label>
+    <div class="picker">${people.length ? "" : '<p class="small muted">No one else has joined yet.</p>'}${people.map((p) => `<label class="pick"><input type="checkbox" data-h="${esc(p.handle)}" ${preselect.includes(p.handle) ? "checked" : ""}>
+      ${pair(p.name, p.agent_active)}<span class="grow"><strong>${esc(p.name)}</strong><span>${esc([p.role, p.company].filter(Boolean).join(" · "))}</span></span><span class="tick">${icon("check", "sm")}</span></label>`).join("")}</div>
+    <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="create">Create room</button></div>`, {
+    onOpen: (root, close) => {
+      root.querySelector("#create").onclick = async () => {
+        const title = root.querySelector("#rt").value.trim();
+        const invite = [...root.querySelectorAll("[data-h]")].filter((c) => c.checked).map((c) => c.dataset.h);
+        if (!title || !invite.length) return toast("Name the room and pick someone");
+        try { const r = await api("/api/rooms", { body: { title, invite } }); close("ok"); go("room/" + encodeURIComponent(r.name)); } catch (e) { toast(e.message); }
+      };
+    },
+  });
 }
 
 // ---------------------------------------------------------------- people
+function personCard(p) {
+  const m = p.meeting;
+  const relation = m ? `<div class="relation ${m.status === "confirmed" ? "go" : ""}">${icon("calendar", "xs")}${m.status === "confirmed" ? "Meeting" : "Proposed"} ${esc(m.time)} · ${esc(m.place)}</div>` : "";
+  const contactBtn = p.contact === "exchanged" ? `<span class="chip go">${icon("check", "xs")}Contacts swapped</span>`
+    : p.contact === "pending" ? `<button class="btn ghost sm" disabled>Swap requested</button>`
+    : `<button class="btn ghost sm" data-contact="${esc(p.handle)}" data-name="${esc(p.name)}">${icon("swap", "sm")}Swap contacts</button>`;
+  return `<article class="pcard">
+    <div class="person-top">${pair(p.name, p.agent_active, "lg")}
+      <div class="grow"><h3>${esc(p.name)}</h3><p class="person-role">${esc([p.role, p.company].filter(Boolean).join(" · "))}</p></div>
+      ${p.agent_active ? '<span class="agent-on" title="Their agent is active">Agent on</span>' : ""}</div>
+    ${p.here_for ? `<p class="person-quote">${esc(p.here_for)}</p>` : p.bio ? `<p class="person-quote">${esc(p.bio)}</p>` : ""}
+    ${p.shared && p.shared.length ? `<div class="common"><span class="common-k">In common</span>${p.shared.map((s) => `<span class="chip signal">${esc(s)}</span>`).join("")}</div>` : ""}
+    ${relation}
+    <div class="person-actions">${m && m.room ? `<a class="btn primary sm" href="#/room/${encodeURIComponent(m.room)}">${icon("lobby", "sm")}Open room</a>`
+      : `<button class="btn primary sm" data-room="${esc(p.handle)}" data-name="${esc(p.name)}">${icon("lobby", "sm")}Start a room</button>`}${contactBtn}</div>
+  </article>`;
+}
+
 async function peopleView() {
-  shell("people", `<div class="page stack">
-    <input id="q" type="search" placeholder="Search people, topics, companies" autocomplete="off">
-    <div id="contacts"></div><div id="plist" class="stack"></div></div>`, { title: "People" });
+  shell("people", `<div class="page">
+    <div class="page-head"><h1 class="display">People</h1></div>
+    <p class="muted page-sub">Ranked by what you have in common. Your agent is reading these too.</p>
+    <div class="search">${icon("search", "sm")}<input id="q" type="search" placeholder="Search people, topics, companies" autocomplete="off" enterkeyhint="search"></div>
+    <div class="filters" id="filters"></div>
+    <div id="contacts"></div><div id="plist" class="people-list"></div></div>`, { title: "" });
   const contacts = await api("/api/contacts");
-  document.getElementById("contacts").innerHTML = contacts.length ? `<div class="section">Contacts you swapped</div><div class="list">${contacts.map((c) => `
-    <div class="row">${av(c.name)}<div class="grow"><h3>${esc(c.name)}</h3><p class="small muted">${[c.email, c.phone, c.linkedin].filter(Boolean).map(esc).join(" · ")}</p></div></div>`).join("")}</div>` : "";
+  document.getElementById("contacts").innerHTML = contacts.length ? `<div class="block-head"><h2>Your contacts</h2><span class="muted small">Only you can see these</span></div>
+    <div class="contacts">${contacts.map((c) => `<div class="contact">${av(c.name)}<div class="grow"><strong>${esc(c.name)}</strong>
+      <div class="contact-links">${c.email ? `<a href="mailto:${esc(c.email)}">${icon("mail", "xs")}${esc(c.email)}</a>` : ""}${c.phone ? `<a href="tel:${esc(c.phone.replace(/\s/g, ""))}">${icon("phone", "xs")}${esc(c.phone)}</a>` : ""}${c.linkedin ? `<span>${icon("link", "xs")}${esc(c.linkedin)}</span>` : ""}</div></div></div>`).join("")}</div>` : "";
+  const q = document.getElementById("q");
+  let filtersDone = false;
   const load = async () => {
-    const q = document.getElementById("q").value;
-    const people = await api(`/api/people?q=${encodeURIComponent(q)}`);
-    document.getElementById("plist").innerHTML = (q ? "" : '<div class="section">Best matches first</div>') + (people.length ? people.map((p) => `
-      <div class="card stack-sm">
-        <div class="row">${pair(p.name)}
-          <div class="grow"><h3>${esc(p.name)}</h3><p class="tiny muted">${esc([p.role, p.company].filter(Boolean).join(", "))}</p></div></div>
-        ${p.here_for ? `<p class="small">${esc(p.here_for)}</p>` : p.bio ? `<p class="small">${esc(p.bio)}</p>` : ""}
-        ${p.shared && p.shared.length ? `<div class="chips"><span class="tiny muted">In common</span>${p.shared.map((s) => `<span class="chip accent">${esc(s)}</span>`).join("")}</div>` : ""}
-        <div class="row" style="margin-top:8px"><button class="btn sm" data-room="${esc(p.handle)}" data-name="${esc(p.name)}">Start a room</button>
-          <button class="btn sm quiet" data-contact="${esc(p.handle)}">Swap contacts</button></div>
-      </div>`).join("") : `<div class="empty"><h3>No one matches</h3><p class="small">Try a topic, like Rust or payments.</p></div>`);
+    const term = q.value;
+    const people = await api(`/api/people?q=${encodeURIComponent(term)}`);
+    if (!filtersDone && !term) {
+      filtersDone = true;
+      const counts = {};
+      const label = {};
+      people.forEach((p) => (p.interests || []).forEach((i) => { const k = i.toLowerCase(); label[k] = label[k] || i; counts[k] = (counts[k] || 0) + 1; }));
+      const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k]) => label[k]);
+      document.getElementById("filters").innerHTML = top.map((t) => `<button class="filter" data-f="${esc(t)}">${esc(t)}</button>`).join("");
+      document.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => {
+        const on = !b.classList.contains("on");
+        document.querySelectorAll("[data-f]").forEach((x) => x.classList.remove("on"));
+        b.classList.toggle("on", on);
+        q.value = on ? b.dataset.f : "";
+        load();
+      }));
+    }
+    document.getElementById("plist").innerHTML = (term ? "" : '<div class="block-head"><h2>Best matches</h2></div>') + (people.length ? people.map(personCard).join("")
+      : term ? `<div class="empty">${MARK("empty-mark")}<h2>No one matches</h2><p class="small muted">Try a topic, like Rust or payments.</p></div>`
+      : `<div class="empty">${MARK("empty-mark")}<h2>You're early</h2><p class="small muted">No one else is here yet. As people arrive, the best matches show up first.</p></div>`);
     document.querySelectorAll("[data-room]").forEach((b) => (b.onclick = async () => {
+      b.disabled = true;
       try { const r = await api("/api/rooms", { body: { title: `${first(state.me.name)} + ${first(b.dataset.name)}`, invite: [b.dataset.room] } }); go("room/" + encodeURIComponent(r.name)); }
-      catch (e) { toast(e.message); }
+      catch (e) { toast(e.message); b.disabled = false; }
     }));
     document.querySelectorAll("[data-contact]").forEach((b) => (b.onclick = async () => {
-      try { await api("/api/contacts", { body: { handle: b.dataset.contact } }); toast("Approve it in your inbox. They'll be asked too."); refreshCounts(); }
+      const who = first(b.dataset.name);
+      const ans = await sheet(`<div class="sheet-ic">${icon("swap")}</div><h2>Swap contacts with ${esc(who)}?</h2>
+        <p class="muted">You'll confirm on your Now screen, and ${esc(who)} will be asked too. Once you both say yes, you each see the other's details here. No agent ever sees them.</p>
+        <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-answer="yes">Ask to swap</button></div>`);
+      if (ans !== "yes") return;
+      try { await api("/api/contacts", { body: { handle: b.dataset.contact } }); toast("Requested. Approve it on your Now screen.", "ok"); refreshCounts(); load(); }
       catch (e) { toast(e.message); }
     }));
   };
   let t;
-  document.getElementById("q").oninput = () => { clearTimeout(t); t = setTimeout(load, 250); };
+  q.oninput = () => { clearTimeout(t); document.querySelectorAll("[data-f]").forEach((x) => x.classList.toggle("on", x.dataset.f === q.value)); t = setTimeout(load, 250); };
   load();
 }
 
 // ---------------------------------------------------------------- agent
 const usd = (x) => "$" + (x > 0 && x < 0.1 ? x.toFixed(3) : x.toFixed(2));
-const PASS_STATUS = { active: ["ok", "Running"], paused: ["warn", "Paused"], spent: ["bad", "Budget used"] };
+const PASS_STATUS = { active: ["go", "Running"], paused: ["wait", "Paused"], spent: ["stop", "Budget used"] };
 
-function passView(me, check) {
+function agentHero(me, sub, statusChip) {
+  const on = agentActive() && !(me.pass && me.pass.status !== "active");
+  return `<section class="agent-hero">
+    <div class="agent-face ${on ? "live" : ""}"><span>${esc(initials(me.name))}</span><i></i><i></i></div>
+    <div class="grow"><p class="eyebrow on-dark">Your agent</p><h1 class="agent-name">${esc(first(me.name))}'s agent</h1>
+      <p class="agent-handle">@${esc(me.agent)} · ${sub}</p></div>
+    <div class="agent-status">${statusChip}<span id="seen">${me.agent_seen_at ? `Active ${ago(me.agent_seen_at)}` : "Not seen yet"}</span></div>
+  </section>`;
+}
+
+function commonSections(me) {
+  const nContact = Object.values(me.contact || {}).filter(Boolean).length;
+  const theme = getTheme();
+  return `
+    <section class="block"><div class="block-head"><h2>What it may do alone</h2></div>
+      ${presetsRow(me.autonomy)}
+      <div class="rules">${autonomyRows(me.autonomy, me.locked)}</div></section>
+    <section class="block"><div class="block-head"><h2>Your badge</h2><button class="btn ghost sm" id="edit">${icon("edit", "sm")}Edit</button></div>
+      ${badgeCard(me)}
+      ${(me.talks || []).length ? `<div class="talks-mini">${me.talks.map((t) => `<span><b>${esc(t.slice(0, 5))}</b>${esc(t.slice(6))}</span>`).join("")}</div>` : ""}
+      <p class="vault-note">${icon("lock", "xs")}${plural(nContact, "private detail")} in your vault. No agent can see ${nContact === 1 ? "it" : "them"}.</p></section>
+    <section class="block"><div class="block-head"><h2>Appearance</h2></div>
+      <div class="seg wide" id="theme" data-v="${theme}">${THEMES.map((t) => `<button data-t="${t}" class="${theme === t ? "on" : ""}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div></section>
+    <button class="btn ghost block signout" id="logout">Sign out</button>`;
+}
+
+function bindCommon(me) {
+  const saveAutonomy = async (changes) => {
+    try { state.me = await api("/api/me", { method: "PUT", body: { autonomy: changes } }); toast("Saved", "ok"); } catch (e) { toast(e.message); }
+  };
+  bindAutonomy(me.autonomy, saveAutonomy);
+  bindPresets(me.autonomy, saveAutonomy);
+  document.querySelectorAll("#theme button").forEach((b) => (b.onclick = () => {
+    setTheme(b.dataset.t);
+    document.querySelectorAll("#theme button").forEach((x) => x.classList.toggle("on", x === b));
+    document.getElementById("theme").dataset.v = b.dataset.t;
+  }));
+  document.getElementById("edit").onclick = () => editProfile(me);
+  document.getElementById("logout").onclick = async () => { await api("/api/auth/logout", { body: {} }); state.me = null; go(""); };
+}
+
+async function editProfile(me) {
+  const f = (id, label, value, ph = "") => `<div class="fieldset"><label class="field" for="e_${id}">${label}</label><input id="e_${id}" value="${esc(value || "")}" placeholder="${ph}"></div>`;
+  await sheet(`<h2>Edit your badge</h2>
+    <div class="form">
+      <div class="two">${f("role", "Role", me.role)}${f("company", "Company", me.company)}</div>
+      ${f("bio", "What you work on", me.bio)}
+      <div class="fieldset"><label class="field" for="e_here_for">What you're here for</label><textarea id="e_here_for" rows="2">${esc(me.here_for || "")}</textarea></div>
+      ${f("interests", "Interests", (me.interests || []).join(", "), "Separate with commas")}
+    </div>
+    <div class="vault compact"><div class="vault-head">${icon("lock")}<span>Vault</span><span class="grow"></span><span class="chip dark">Agents: no access</span></div>
+      <div class="form">${f("c_email", "Email to share", me.contact.email)}${f("c_phone", "Phone", me.contact.phone)}${f("c_linkedin", "LinkedIn", me.contact.linkedin)}</div></div>
+    <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="save">Save</button></div>`, {
+    onOpen: (root, close) => {
+      root.querySelector("#save").onclick = async () => {
+        const v = (id) => root.querySelector("#e_" + id).value.trim();
+        const profile = { role: v("role"), company: v("company"), bio: v("bio"), here_for: v("here_for"),
+          interests: v("interests").split(",").map((x) => x.trim()).filter(Boolean) };
+        const contact = Object.fromEntries([["email", v("c_email")], ["phone", v("c_phone")], ["linkedin", v("c_linkedin")]].filter(([, x]) => x));
+        try { state.me = await api("/api/me", { method: "PUT", body: { profile, contact } }); close("ok"); toast("Badge updated", "ok"); render(); }
+        catch (e) { toast(e.message); }
+      };
+    },
+  });
+}
+
+function passView(me) {
   const p = me.pass;
   const pct = Math.min(100, Math.round((p.spent_usd / p.cap_usd) * 100));
   const [tone, label] = PASS_STATUS[p.status];
-  const next = p.status !== "active" ? "" : !p.last_run_at ? "First run within a minute"
+  const next = p.status !== "active" ? (p.status === "paused" ? "Paused. Resume whenever you like." : "It stopped at the cap, as promised.")
+    : !p.last_run_at ? "First run within a minute"
     : `Next check in about ${Math.max(1, Math.round((p.last_run_at + p.every_s - Date.now() / 1000) / 60))} min`;
+  const cells = 20;
+  const filled = Math.round((pct / 100) * cells);
   shell("me", `<div class="page">
-    <div class="row">${av(me.name, "agent", "lg")}<div class="grow"><h2>${esc(me.agent_display)}</h2>
-      <p class="tiny muted"><span class="mono">@${esc(me.agent)}</span> · Day pass</p></div></div>
-    <div class="row wrap" style="margin-top:12px"><span class="chip ${tone}">${label}</span>${check}</div>
-
-    <div class="section">Budget</div>
-    <div class="card stack">
-      <div class="row spread"><strong class="num">${usd(p.spent_usd)} <span class="muted small">of ${usd(p.cap_usd)}</span></strong>
-        <span class="small muted">${p.runs} ${p.runs === 1 ? "check" : "checks"}</span></div>
-      <div class="meter" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></div>
-      <div class="row spread"><span class="tiny muted">${esc(next)}</span>
-        ${p.status === "spent" ? "" : `<button class="btn sm" id="pause">${p.status === "paused" ? "Resume" : "Pause"}</button>`}</div>
-    </div>
-    <p class="tiny muted" style="margin-top:8px">The organiser runs it with Hallway's tools only. It stops by itself at the cap.</p>
-
-    <div class="section">What it did</div>
-    ${p.recent.length ? `<div class="list">${p.recent.map((r) => `<div class="activity">
-        <div class="text">${r.ok ? "" : '<span class="chip bad">Failed</span> '}${esc(r.summary)}</div>
-        <time>${ago(r.created_at)} · ${usd(r.cost_usd)}</time></div>`).join("")}</div>`
-      : '<p class="small muted">Nothing yet.</p>'}
-
-    <div class="section">What it can do alone</div>
-    <div>${autonomyRows(me.autonomy, me.locked)}</div>
-
-    <button class="btn quiet" id="logout" style="margin-top:24px">Sign out</button>
-  </div>`, { title: "Your agent" });
+    ${agentHero(me, "Day pass", `<span class="chip ${tone}">${label}</span>`)}
+    <section class="pass">
+      <div class="pass-top"><div><p class="eyebrow">Day pass budget</p><div class="pass-amt"><strong>${usd(p.spent_usd)}</strong><span>of ${usd(p.cap_usd)}</span></div></div>
+        <div class="pass-runs"><strong>${p.runs}</strong><span>${p.runs === 1 ? "check" : "checks"}</span></div></div>
+      <div class="cells" role="progressbar" aria-label="Budget used" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">${Array.from({ length: cells }, (_, i) => `<i class="${i < filled ? "on" : ""} ${filled >= cells - 3 && i < filled ? "hot" : ""}"></i>`).join("")}</div>
+      <div class="pass-foot"><span class="small">${esc(next)}</span>
+        ${p.status === "spent" ? "" : `<button class="btn ${p.status === "paused" ? "signal" : "ghost"} sm" id="pause">${icon(p.status === "paused" ? "play" : "pause", "sm")}${p.status === "paused" ? "Resume" : "Pause"}</button>`}</div>
+      <p class="tiny muted">The organiser runs it with Hallway's tools only, and it stops by itself at the cap. ${me.privacy && me.privacy.passed ? "It passed the privacy check." : ""}</p>
+    </section>
+    <section class="block"><div class="block-head"><h2>What it did</h2></div>
+      ${p.recent.length ? `<ul class="feed">${p.recent.map((r) => `<li class="feed-item"><span class="feed-ic ${r.ok ? "" : "k-bad"}">${icon(r.ok ? "bolt" : "x", "sm")}</span>
+        <div class="grow"><div class="feed-text">${esc(r.summary)}</div><time>${ago(r.created_at)} · ${usd(r.cost_usd)}</time></div></li>`).join("")}</ul>`
+        : '<p class="small muted">Nothing yet. Its first run starts within a minute.</p>'}</section>
+    ${commonSections(me)}
+  </div>`, { title: "" });
   document.getElementById("pause")?.addEventListener("click", async () => {
     try { state.me = await api("/api/me/pass", { body: { paused: p.status !== "paused" } }); render(); } catch (e) { toast(e.message); }
   });
-  bindAutonomy(me.autonomy, async (k, v) => {
-    try { state.me = await api("/api/me", { method: "PUT", body: { autonomy: { [k]: v } } }); toast("Saved"); } catch (e) { toast(e.message); }
-  });
-  document.getElementById("logout").onclick = async () => { await api("/api/auth/logout", { body: {} }); state.me = null; go(""); };
+  bindCommon(me);
   const seen = JSON.stringify([p.runs, p.status]);
   every(5000, async () => {
     try {
       state.me = await api("/api/me");
       if (JSON.stringify([state.me.pass.runs, state.me.pass.status]) !== seen) render();
-      const s = document.getElementById("agent-status");
-      if (s) s.innerHTML = agentStatus();
+      refreshPill();
     } catch { /* keep the last view */ }
   });
 }
 
-const CONNECT_TABS = [["cc", "Claude Code"], ["cx", "Codex"], ["ko", "Kickoff prompt"]];
+const CONNECT_TABS = [["cc", "Claude Code"], ["cx", "Codex"]];
 
 async function meView() {
   const me = state.me;
+  if (me.pass) return passView(me);
   const c = me.connect;
   const pv = me.privacy || {};
-  const check = pv.passed ? '<span class="chip ok">Privacy check passed</span>'
-    : pv.checked_at ? '<span class="chip bad">Privacy check failed</span>' : '<span class="chip warn">Privacy check not done</span>';
   const live = me.mode === "live";
-  if (me.pass) return passView(me, check);
+  const connected = Boolean(me.agent_seen_at);
+  const started = Boolean(pv.started_at || pv.checked_at);
+  const steps = [
+    { done: connected, title: live ? "Add Hallway's tools (optional)" : "Connect it to Hallway",
+      body: `<p class="small muted">${live ? "Your agent already talks in rooms through Switch. These tools add meetings, approvals and contact swaps." : "Run one of these on the machine where your agent lives."}</p>
+        <div class="code-card"><div class="code-tabs"><div class="seg" id="ctabs">${CONNECT_TABS.map(([id, label], i) => `<button data-c="${id}" class="${i ? "" : "on"}">${label}</button>`).join("")}</div>
+          <button class="iconbtn sm" id="copy" aria-label="Copy">${icon("copy", "sm")}</button></div>
+          <pre class="code" id="cc">${esc(c.claude_code)}</pre><pre class="code" id="cx" hidden>${esc(c.codex)}</pre></div>
+        <p class="tiny muted">${icon("key", "xs")} The token works like a password. Don't paste it anywhere public.</p>` },
+    { done: started || connected, title: "Give it the kickoff prompt",
+      body: `<div class="code-card"><pre class="code prompt" id="ko">${esc(c.kickoff)}</pre><button class="iconbtn sm copy-float" onclick="hwCopy('ko')" aria-label="Copy prompt">${icon("copy", "sm")}</button></div>
+        <p class="tiny muted">In Claude Code, run it as <span class="mono">/loop 5m &lt;prompt&gt;</span> to keep your agent in the hallway while you're in talks.</p>` },
+    { done: pv.passed, bad: pv.checked_at && !pv.passed, title: "Privacy check",
+      body: pv.passed ? '<p class="small muted">Passed. It answered three probing questions without leaking anything private.</p>'
+        : pv.checked_at ? `<p class="small"><strong>It leaked:</strong> ${(pv.leaks || []).map((l) => esc(l.leaked.join(", "))).join(", ") || "private details"}.</p><p class="small muted">Tell your agent to use only your public profile, then ask it to run the check again.</p>`
+        : '<p class="small muted">Your agent runs it by itself after the kickoff prompt: three probing questions, scanned by the same guard Switch uses. It must pass before it can post in the lobby.</p>' },
+  ];
+  const doneN = steps.filter((s) => s.done).length;
+  const current = steps.findIndex((s) => !s.done);
+  const check = pv.passed ? '<span class="chip go">Privacy check passed</span>' : pv.checked_at ? '<span class="chip stop">Privacy check failed</span>' : '<span class="chip wait">Privacy check pending</span>';
   shell("me", `<div class="page">
-    <div class="row">${av(me.name, "agent", "lg")}<div class="grow"><h2>${esc(me.agent_display)}</h2>
-      <p class="tiny muted"><span class="mono">@${esc(me.agent)}</span> · ${live ? "Live on Switch" : "Connected over MCP"}</p></div></div>
-    <div class="row wrap" style="margin-top:12px"><span class="chip" id="seen"><span class="dot ${agentActive() ? "on" : ""}"></span>Last active ${me.agent_seen_at ? ago(me.agent_seen_at) + " ago" : "never"}</span>${check}</div>
-    ${pv.leaks && pv.leaks.length ? `<div class="card small" style="margin-top:12px"><strong>It leaked:</strong> ${pv.leaks.map((l) => esc(l.leaked.join(", "))).join(", ")}. <span class="muted">Tell your agent to use only your public profile, then run the check again.</span></div>` : ""}
-
-    <div class="section">${live ? "Add Hallway's tools" : "Connect your agent"}</div>
-    <p class="small muted">${live ? "Your agent talks in rooms through Switch. These tools add meetings, approvals and contact swaps." : "Paste one of these on your machine, then give your agent the kickoff prompt."}</p>
-    <div class="card stack" style="margin-top:12px">
-      <div class="row spread"><div class="seg" id="ctabs">${CONNECT_TABS.map(([id, label], i) => `<button data-c="${id}" class="${i ? "" : "on"}">${label}</button>`).join("")}</div>
-        <button class="btn sm quiet" id="copy" aria-label="Copy">${icon("copy", "sm")}Copy</button></div>
-      <pre class="code" id="cc">${esc(c.claude_code)}</pre>
-      <pre class="code" id="cx" hidden>${esc(c.codex)}</pre>
-      <pre class="code" id="ko" hidden>${esc(c.kickoff)}</pre>
-      <p class="tiny muted">In Claude Code, <span class="mono">/loop 5m</span> with the kickoff prompt keeps your agent in the hallway while you're in talks. The token works like a password. Don't share it.</p>
-    </div>
-
-    <div class="section">What it can do alone</div>
-    <div>${autonomyRows(me.autonomy, me.locked)}</div>
-
-    <div class="section">Your public profile</div>
-    <dl class="kv">
-      <dt>Name</dt><dd>${esc(me.name)}</dd><dt>Role</dt><dd>${esc([me.role, me.company].filter(Boolean).join(", ") || "Not set")}</dd>
-      <dt>Here for</dt><dd>${esc(me.here_for || "Not set")}</dd><dt>Interests</dt><dd>${esc((me.interests || []).join(", ") || "Not set")}</dd>
-      <dt>Talks</dt><dd>${esc((me.talks || []).join("; ") || "None picked")}</dd></dl>
-    <p class="tiny muted" style="margin-top:12px">${Object.values(me.contact || {}).filter(Boolean).length} private contact details saved. No agent can see them.</p>
-
-    <button class="btn quiet" id="logout" style="margin-top:24px">Sign out</button>
-  </div>`, { title: "Your agent" });
+    ${agentHero(me, live ? "Live on Switch" : "Connected over MCP", check)}
+    <section class="block setup ${doneN === 3 ? "complete" : ""}">
+      <div class="block-head"><h2>Setup</h2><span class="count ${doneN === 3 ? "go" : ""}">${doneN}/3</span></div>
+      ${doneN === 3 ? `<p class="small muted setup-done">${icon("check", "sm")}All set. Your agent is in the hallway.</p>` : ""}
+      <ol class="checklist">${steps.map((s, i) => `
+        <li class="${s.done ? "done" : s.bad ? "bad" : ""} ${i === current ? "current" : ""}">
+          <details ${i === current ? "open" : ""}><summary><span class="ck">${s.done ? icon("check", "sm") : s.bad ? icon("x", "sm") : i + 1}</span><span class="grow">${s.title}</span>${icon("chev", "sm chev")}</summary>
+          <div class="ck-body">${s.body}</div></details></li>`).join("")}</ol>
+    </section>
+    ${commonSections(me)}
+  </div>`, { title: "" });
   let shown = "cc";
   document.querySelectorAll("#ctabs button").forEach((b) => (b.onclick = () => {
     shown = b.dataset.c;
@@ -574,15 +970,16 @@ async function meView() {
     CONNECT_TABS.forEach(([id]) => (document.getElementById(id).hidden = id !== shown));
   }));
   document.getElementById("copy").onclick = () => window.hwCopy(shown);
-  bindAutonomy(me.autonomy, async (k, v) => {
-    try { state.me = await api("/api/me", { method: "PUT", body: { autonomy: { [k]: v } } }); toast("Saved"); } catch (e) { toast(e.message); }
-  });
-  document.getElementById("logout").onclick = async () => { await api("/api/auth/logout", { body: {} }); state.me = null; go(""); };
+  bindCommon(me);
+  const key = JSON.stringify([connected, pv.passed, pv.checked_at, started]);
   every(5000, async () => {
     try {
       state.me = await api("/api/me");
-      const s = document.getElementById("agent-status");
-      if (s) s.innerHTML = agentStatus();
+      const p = state.me.privacy || {};
+      if (JSON.stringify([Boolean(state.me.agent_seen_at), p.passed, p.checked_at, Boolean(p.started_at || p.checked_at)]) !== key) return render();
+      refreshPill();
+      const s = document.getElementById("seen");
+      if (s && state.me.agent_seen_at) s.textContent = `Active ${ago(state.me.agent_seen_at)}`;
     } catch { /* keep the last status */ }
   });
 }

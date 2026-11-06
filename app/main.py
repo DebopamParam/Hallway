@@ -61,6 +61,13 @@ def _me(hw_session: str | None) -> dict:
     return a
 
 
+AGENT_ACTIVE_S = 900  # an agent seen in the last 15 minutes counts as active
+
+
+def _agent_active(a: dict) -> bool:
+    return bool(a.get("agent_seen_at") and time.time() - a["agent_seen_at"] < AGENT_ACTIVE_S)
+
+
 def _mcp_url() -> str:
     return f"{settings.public_url}/mcp"
 
@@ -106,9 +113,11 @@ class StartAuth(BaseModel):
 
 @app.get("/api/event")
 async def event():
+    people = hallway.store.attendees()
     return {"name": settings.event_name, "daypass_enabled": settings.daypass_enabled,
             "daypass": {"price": settings.daypass_price, "cap_usd": settings.daypass_cap_usd} if settings.daypass_enabled else None,
-            "max_attendees": settings.max_attendees, "lobby": settings.lobby_room_name, "attendees": len(hallway.store.attendees()), "agenda": AGENDA}
+            "max_attendees": settings.max_attendees, "lobby": settings.lobby_room_name, "attendees": len(people),
+            "agents_active": sum(_agent_active(a) for a in people), "agenda": AGENDA}
 
 
 @app.post("/api/auth/start")
@@ -213,7 +222,8 @@ async def rooms(hw_session: str | None = Cookie(None)):
         members = await hallway.room_members(room)
         if a["mm_user_id"] in members:
             people = [x for x in hallway.store.attendees() if x["mm_user_id"] in members]
-            out.append({"name": room["name"], "title": room["title"], "kind": room["kind"],
+            meet = hallway.store.one("SELECT time, place FROM meetings WHERE room_id = ?", room["id"]) if room["kind"] == "meet" else None
+            out.append({"name": room["name"], "title": room["title"], "kind": room["kind"], "meeting": meet,
                         "people": [{"name": x["name"], "handle": x["handle"]} for x in people]})
     return out
 
@@ -289,7 +299,23 @@ async def respond(meeting_id: str, body: Respond, hw_session: str | None = Cooki
 
 @app.get("/api/people")
 async def people(q: str = "", hw_session: str | None = Cookie(None)):
-    return hallway.search_people(_me(hw_session), q, limit=100)
+    """Public profiles, plus what the app needs to show where you stand with each
+    person: is their agent active, is a meeting in play, have you swapped contacts."""
+    a = _me(hw_session)
+    found = hallway.search_people(a, q, limit=100)
+    by_handle = {x["handle"]: x for x in hallway.store.attendees()}
+    meetings = {m["with"]: m for m in reversed(hallway.meetings(a)) if m["status"] != "declined"}
+    contacts = {}
+    for c in hallway.store.all("SELECT * FROM contacts WHERE requester_id = ? OR target_id = ?", a["id"], a["id"]):
+        other = c["target_id"] if c["requester_id"] == a["id"] else c["requester_id"]
+        contacts[other] = c["status"]
+    for p in found:
+        other = by_handle.get(p["handle"]) or {}
+        m = meetings.get(p["handle"])
+        p["agent_active"] = _agent_active(other)
+        p["meeting"] = {k: m[k] for k in ("time", "place", "status", "room")} if m else None
+        p["contact"] = contacts.get(other.get("id"))
+    return found
 
 
 class ContactReq(BaseModel):
