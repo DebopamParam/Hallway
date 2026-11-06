@@ -175,9 +175,7 @@ class FakeSwitch:
     async def delete_agent(self, agent: AgentCreds) -> None:
         a = self._agent(agent)
         self.w.calls.append(("delete_agent", a["name"]))
-        del self.w.agents[agent.id]
-        for ch in self.w.channels.values():
-            ch["members"].discard(f"u_{a['name']}")
+        del self.w.agents[agent.id]  # like Switch: its bot stays active and in its channels
 
     async def read_context(
         self, agent: AgentCreds, room_id: str, since: str | None = None, limit: int = 50
@@ -242,7 +240,10 @@ class FakeMM:
     async def create_user(self, username: str, email: str, first_name: str) -> tuple[dict, str]:
         await asyncio.sleep(0)
         self.w.calls.append(("mm_create_user", username))
+        if any(u["email"] == email and u["username"] != username for u in self.w.users.values()):
+            raise MMError("POST /users: 400 An account with that email already exists.")
         u = self.w.add_user(username, first_name=first_name, email=email)
+        u.pop("delete_at", None)  # MMClient.create_user reactivates a deactivated user it reuses
         password = f"pw-{username}-{next(_ids)}"
         self.passwords[u["id"]] = password
         return u, password
@@ -255,6 +256,18 @@ class FakeMM:
             raise MMError(f"DELETE /users/{user_id}: 404")
         self.w.calls.append(("mm_deactivate_user", user_id))
         self.w.users[user_id]["delete_at"] = _ms()
+
+    async def retire_user(self, user_id: str) -> None:
+        self.w.users[user_id]["email"] = f"removed-{user_id}@hallway.invalid"
+
+    async def disable_bot(self, user_id: str) -> None:
+        if not self.w.users.get(user_id, {}).get("is_bot"):
+            raise MMError(f"POST /bots/{user_id}/disable: 404")
+        self.w.calls.append(("mm_disable_bot", user_id))
+        self.w.users[user_id]["delete_at"] = _ms()
+
+    async def user_by_username(self, username: str) -> dict | None:
+        return self.w.user_by_name(username)
 
     async def ensure_team_capacity(self, seats: int) -> int:
         return seats
@@ -279,6 +292,10 @@ class FakeMM:
 
     async def add_to_channel(self, channel_id: str, user_id: str) -> None:
         self.w.channels[channel_id]["members"].add(user_id)
+
+    async def remove_from_channel(self, channel_id: str, user_id: str) -> None:
+        self.w.calls.append(("mm_remove_from_channel", (channel_id, user_id)))
+        self.w.channels[channel_id]["members"].discard(user_id)
 
     async def posts(self, channel_id: str, since_ms: int | None = None, per_page: int = 100) -> list[dict]:
         posts = [p for p in self.w.channels[channel_id]["posts"] if not since_ms or p["create_at"] > since_ms]

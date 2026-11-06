@@ -245,6 +245,7 @@ class Hallway:
             name == settings.host_agent_name
             or name in self._reserved_names
             or bool(self.store.one("SELECT 1 FROM attendees WHERE handle = ? OR agent_name = ?", name, name))
+            or self.store.kv_get(f"retired:{name}") is not None
         )
 
     def _unique(self, base: str) -> str:
@@ -475,13 +476,17 @@ class Hallway:
         return self.store.need("SELECT * FROM passes WHERE id = ?", p["id"])
 
     async def remove_attendee(self, attendee: dict) -> dict:
-        """Take an attendee out of the event (the organiser's call): their Switch
-        stand-in and Mattermost account are cleaned up where Hallway can, then
-        every row of theirs is deleted, which frees their invite spot. Rooms and
-        messages they were part of stay. Returns what happened to each part."""
+        """Take an attendee out of the event (the organiser's call): the person
+        and their agent leave every room, their Switch stand-in and Mattermost
+        accounts are cleaned up where Hallway can, then every row of theirs is
+        deleted, which frees their invite spot. Messages they posted stay in
+        the rooms. Their handle (and their stand-in's name) is never given out
+        again: Mattermost and Switch would hand the next owner of the name the
+        old account, with its rooms and its messages. Returns what happened."""
         aid = attendee["id"]
         out: dict[str, str] = {}
         self.presence.forget(aid)
+        out["rooms"] = await self._leave_all_rooms(attendee)
         if attendee["mode"] in STAND_IN_MODES and attendee.get("switch_agent_id") and attendee.get("switch_agent_key"):
             try:
                 await self.switch.delete_agent(AgentCreds(attendee["switch_agent_id"], attendee["switch_agent_key"]))
@@ -495,12 +500,27 @@ class Hallway:
             out["switch_agent"] = "not Hallway's (Live mode): left alone" if attendee["mode"] == "live" else "none"
         if attendee.get("mm_user_id"):
             try:
+                await self.mm.retire_user(attendee["mm_user_id"])
+            except (MMError, OSError) as e:
+                log.warning("remove %s: could not free the Mattermost user's email: %s", attendee["handle"], e)
+            try:
                 await self.mm.deactivate_user(attendee["mm_user_id"])
                 out["mattermost_user"] = "deactivated"
             except (MMError, OSError) as e:
                 log.warning("remove %s: could not deactivate Mattermost user: %s", attendee["handle"], e)
                 out["mattermost_user"] = f"left in place: {e}"[:200]
+        bot = await self._agent_mm_user_id(attendee)
+        if attendee["mode"] in STAND_IN_MODES and bot:
+            try:
+                await self.mm.disable_bot(bot)
+                out["agent_mattermost_user"] = "deactivated"
+            except (MMError, OSError) as e:
+                log.warning("remove %s: could not deactivate the agent's bot user: %s", attendee["handle"], e)
+                out["agent_mattermost_user"] = f"left in place: {e}"[:200]
+        retired = [attendee["handle"]] + ([attendee["agent_name"]] if attendee["mode"] in STAND_IN_MODES else [])
         with self.store.transaction():
+            for name in retired:
+                self.store.kv_set(f"retired:{name}", {"attendee_id": aid, "at": time.time()})
             db = self.store.db
             for table, col in (
                 ("sessions", "attendee_id"),
@@ -520,6 +540,36 @@ class Hallway:
         self.store.forget_private(aid)
         log.info("attendee %s removed by the organiser (%s)", attendee["handle"], out)
         return out
+
+    async def _agent_mm_user_id(self, attendee: dict) -> str | None:
+        if attendee.get("agent_mm_user_id"):
+            return str(attendee["agent_mm_user_id"])
+        u = await self.mm.user_by_username(attendee["agent_name"])
+        return str(u["id"]) if u else None
+
+    async def _leave_all_rooms(self, attendee: dict) -> str:
+        """Take the person and their agent's bot out of every room's channel.
+        Switch follows the channel's membership, and nothing else does it:
+        deleting a Switch agent leaves its bot in the channels."""
+        users = [u for u in (attendee.get("mm_user_id"), await self._agent_mm_user_id(attendee)) if u]
+        left, failed = 0, 0
+        for room in self.store.all("SELECT * FROM rooms"):
+            try:
+                members = await self.room_members(room)
+            except (MMError, OSError) as e:
+                log.warning("remove %s: could not read the members of %s: %s", attendee["handle"], room["name"], e)
+                failed += 1
+                continue
+            for uid in users:
+                if uid not in members:
+                    continue
+                try:
+                    await self.mm.remove_from_channel(room["mm_channel_id"], uid)
+                    left += 1
+                except (MMError, OSError) as e:
+                    log.warning("remove %s: could not leave %s: %s", attendee["handle"], room["name"], e)
+                    failed += 1
+        return f"left {left} memberships" + (f", {failed} failed (see the log)" if failed else "")
 
     async def announce(self, text: str) -> dict:
         """Post in the lobby as the host agent (the organiser's announcements)."""

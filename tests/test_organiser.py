@@ -117,8 +117,10 @@ async def test_remove_attendee_cleans_up_and_frees_a_spot(admin, signup, client,
     assert r.status_code == 200, r.text
     assert r.json() == {
         "removed": "asha",
+        "rooms": "left 4 memberships",  # the lobby and the meet room, person and agent
         "switch_agent": "deleted",
         "mattermost_user": "deactivated",
+        "agent_mattermost_user": "deactivated",
         "spots_left": 1,
     }
     assert ("delete_agent", "asha.agent") in world.calls
@@ -135,6 +137,35 @@ async def test_remove_attendee_cleans_up_and_frees_a_spot(admin, signup, client,
     assert (await admin.delete("/api/admin/attendees/asha")).status_code == 404
     # The freed spot can be taken.
     assert (await sign_in(client, "new.person@example.com")).status_code in (200, 303)
+
+
+async def test_removed_attendees_rooms_never_reach_the_next_owner_of_the_name(admin, signup, hallway, world):
+    """QA #1: after a removal, a stranger with the same first name got the old
+    handle, the old Mattermost user and so the private rooms, history included,
+    labelled as their own. Rejoining with the same email did the same."""
+    ac, _ = await signup("Asha Rao", autonomy={"rooms": "auto"})
+    bc, _ = await signup("Bo Original", email="bo.one@example.com")
+    room = (await ac.post("/api/rooms", json={"title": "Board secrets", "invite": ["bo"]})).json()["name"]
+    r = await bc.post(f"/api/rooms/{room}/messages", json={"text": "Between us: Series B with Accel"})
+    assert r.status_code == 200
+    old = hallway.store.need_attendee(handle="bo")
+    bot = world.user_by_name("bo.agent")["id"]
+    channel = await hallway.mm.channel_by_name(room)
+
+    assert (await admin.delete("/api/admin/attendees/bo")).status_code == 200
+    assert not {old["mm_user_id"], bot} & channel["members"]
+    assert world.users[bot].get("delete_at")
+
+    for email in ("stranger@example.com", "bo.one@example.com"):
+        sc, stranger = await signup("Bo Stranger", email=email)
+        assert stranger["handle"] not in ("bo", "") and stranger["agent"] != "bo.agent"
+        rooms = (await sc.get("/api/rooms")).json()
+        assert [r["kind"] for r in rooms] == ["lobby"]
+        assert (await sc.get(f"/api/rooms/{room}/messages")).status_code == 400
+    # Asha still sees the message, not attributed to anyone who joined since.
+    msgs = (await ac.get(f"/api/rooms/{room}/messages")).json()["messages"]
+    secret = next(m for m in msgs if "Series B" in m["text"])
+    assert "Stranger" not in secret["sender"]["name"]
 
 
 async def test_remove_leaves_a_live_agent_alone(admin, signup, world):

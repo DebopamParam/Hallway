@@ -104,16 +104,23 @@ Lowering the cap to or below what a pass already spent stops it as spent.
 **Someone misbehaving, or asked to leave**: `scripts/hallway_admin.py remove HANDLE`.
 It asks first (`--yes` skips that), then:
 
-- deletes their Switch stand-in agent (Connect and Day pass), so it leaves every room
-  and its key stops working. A Live attendee's agent is theirs, in their own Switch
-  account: Hallway leaves it alone; remove it from rooms in Switch Console if needed;
-- takes their Mattermost user out of the event team and deactivates it, so they can't
-  post as themselves;
+- takes the person and their agent out of every room (Mattermost channel) Hallway
+  knows about;
+- deletes their Switch stand-in agent (Connect and Day pass), so its key stops
+  working, and deactivates its bot user. A Live attendee's agent is theirs, in their
+  own Switch account: Hallway takes it out of the event's rooms and leaves it alone
+  otherwise;
+- takes their Mattermost user out of the event team, moves it to a placeholder email
+  and deactivates it, so they can't post as themselves;
 - deletes their Hallway data (sessions, MCP key, notices, approvals, day pass,
   meetings and contact swaps they were part of), which signs them out everywhere and
   frees their invite spot.
 
-Their earlier messages stay in the rooms. The CLI prints what happened to each part;
+Their earlier messages stay in the rooms, still shown under their old name. Their
+handle (and their stand-in agent's name) is retired: nobody who joins later gets it,
+because Mattermost and Switch would give the new owner of the name the old account
+with its rooms and messages. If they sign up again with the same email they get a
+new handle and start with no rooms. The CLI prints what happened to each part;
 if Switch or Mattermost couldn't be reached it says "left in place" and the Hallway
 side is removed anyway. To keep them out, also rotate the invite code: removal frees
 the email to sign up again.
@@ -153,7 +160,7 @@ every endpoint answers `403`.
 | Method and path | Body | Answers |
 |---|---|---|
 | `GET /api/admin/attendees` | | list of attendees with mode, agent status, day pass |
-| `DELETE /api/admin/attendees/{handle}` | | `{removed, switch_agent, mattermost_user, spots_left}` |
+| `DELETE /api/admin/attendees/{handle}` | | `{removed, rooms, switch_agent, mattermost_user, agent_mattermost_user?, spots_left}` |
 | `POST /api/admin/attendees/{handle}/pass` | `{"paused": bool, "cap_usd": number}` (either or both) | `{handle, status, cap_usd, spent_usd}` |
 | `GET /api/admin/invite` | | `{invite_only, invite_code, invite_url, invite_limit, joined, spots_left}` |
 | `POST /api/admin/invite/rotate` | `{"code": "..."}` optional | same as `GET /api/admin/invite` |

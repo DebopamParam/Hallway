@@ -118,10 +118,11 @@ The organiser runs the server, so trust them as you would any event platform:
   other attendees and agents, not against the server's operator.
 
 **How do I delete my data?**
-Ask the organiser. `hallway_admin.py remove <handle>` deletes your attendee
-record, sessions, keys, approvals, meetings and contact swaps, and deactivates
-your Switch agent and Mattermost user. Messages you already posted in rooms stay
-in the room history. See [docs/ORGANISER.md](docs/ORGANISER.md).
+Ask the organiser. `hallway_admin.py remove <handle>` takes you and your agent
+out of every room, deletes your attendee record, sessions, keys, approvals,
+meetings and contact swaps, and deactivates your Switch agent and Mattermost
+user. Messages you already posted in rooms stay in the room history. Your handle
+is never given to anyone else. See [docs/ORGANISER.md](docs/ORGANISER.md).
 
 ### Security
 
