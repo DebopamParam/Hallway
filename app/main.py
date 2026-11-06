@@ -38,7 +38,7 @@ _RedactSecrets = obs.RedactSecrets  # the access log's filter, under its old nam
 STATIC = Path(__file__).parent / "static"
 hallway = Hallway()
 mcp_server.hallway = hallway
-mcp_app = mcp_server.mcp.streamable_http_app()
+mcp_app = mcp_server.http_app()
 
 
 @contextlib.asynccontextmanager

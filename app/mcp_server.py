@@ -8,7 +8,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from . import metrics, obs
@@ -41,13 +41,19 @@ How to work the room:
    If you don't know something, ask; don't fill the gap with a guess.
 """
 
-mcp = FastMCP(
-    "Hallway",
-    instructions=INSTRUCTIONS,
-    stateless_http=True,
-    json_response=True,
-)
-mcp.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+mcp = MCPServer("Hallway", instructions=INSTRUCTIONS)
+
+
+def http_app() -> Any:
+    """The streamable HTTP app main mounts at /mcp: stateless, JSON responses.
+    DNS rebinding protection is off because the app sits behind its own host
+    and origin checks (and a tunnel in the live demo)."""
+    return mcp.streamable_http_app(
+        stateless_http=True,
+        json_response=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+
 
 hallway: Hallway | None = None  # set by main at startup
 
