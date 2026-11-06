@@ -207,6 +207,7 @@ class Hallway:
         self.presence.stop()
         await self.switch.close()
         await self.mm.close()
+        self.store.checkpoint()
 
     async def _wait_channel(self, name: str, created_after_ms: int, tries: int = 20) -> dict | None:
         """The Mattermost channel Switch made for a room we just created: the
@@ -353,11 +354,12 @@ class Hallway:
                 f"{name}'s agent at {settings.event_name}. Speaks for {name} through Hallway.",
             )
             row.update(switch_agent_id=creds.id, switch_agent_key=creds.key)
-        self.store.insert("attendees", **row)
-        if mode == "daypass":
-            self.store.insert(
-                "passes", id=new_id(), attendee_id=aid, cap_usd=settings.daypass_cap_usd, created_at=time.time()
-            )
+        with self.store.transaction():  # never an attendee without the pass their mode needs
+            self.store.insert("attendees", **row)
+            if mode == "daypass":
+                self.store.insert(
+                    "passes", id=new_id(), attendee_id=aid, cap_usd=settings.daypass_cap_usd, created_at=time.time()
+                )
         attendee = self.store.need_attendee(id=aid)
         attendee["mcp_token"] = mcp_token
         self.presence.ensure(attendee)
@@ -426,6 +428,12 @@ class Hallway:
         )
 
     def record_run(
+        self, attendee_id: str, engine: str, cost_usd: float, tool_calls: int, summary: str, ok: bool
+    ) -> dict:
+        with self.store.transaction():  # the run, the ledger and the notice land together
+            return self._record_run(attendee_id, engine, cost_usd, tool_calls, summary, ok)
+
+    def _record_run(
         self, attendee_id: str, engine: str, cost_usd: float, tool_calls: int, summary: str, ok: bool
     ) -> dict:
         p = self.store.one("SELECT * FROM passes WHERE attendee_id = ?", attendee_id)
@@ -837,12 +845,13 @@ class Hallway:
             "SELECT * FROM notices WHERE attendee_id = ? AND audience IN ('agent','both') AND agent_seen = 0 ORDER BY id",
             attendee["id"],
         )
-        if notices:
-            self.store.db.execute(
-                "UPDATE notices SET agent_seen = 1 WHERE attendee_id = ? AND id <= ?",
-                (attendee["id"], notices[-1]["id"]),
-            )
-        self.store.update("attendees", attendee["id"], cursors=cursors, agent_seen_at=time.time())
+        with self.store.transaction():  # notices marked seen only with the cursors that go with them
+            if notices:
+                self.store.db.execute(
+                    "UPDATE notices SET agent_seen = 1 WHERE attendee_id = ? AND id <= ?",
+                    (attendee["id"], notices[-1]["id"]),
+                )
+            self.store.update("attendees", attendee["id"], cursors=cursors, agent_seen_at=time.time())
         return {
             "messages": new_messages[-40:],
             "notices": [{"kind": n["kind"], "text": n["text"], **n["payload"]} for n in notices],
@@ -1034,6 +1043,10 @@ class Hallway:
         }
 
     async def _contact_ok(self, attendee: dict, contact_id: str) -> dict:
+        with self.store.transaction():  # both sides' yes, the swap and its notices, or none of it
+            return self._contact_ok_sync(attendee, contact_id)
+
+    def _contact_ok_sync(self, attendee: dict, contact_id: str) -> dict:
         c = self.store.need("SELECT * FROM contacts WHERE id = ?", contact_id)
         side = "requester_ok" if c["requester_id"] == attendee["id"] else "target_ok"
         self.store.update("contacts", c["id"], **{side: 1})

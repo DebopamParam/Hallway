@@ -334,12 +334,13 @@ app/
   mcp_server.py   the agent-facing MCP tools
   presence.py     one WebSocket per stand-in agent
   guard.py        privacy detectors (Switch Trust wire format)
-  switch.py mm.py store.py config.py
+  store.py        SQLite: connection settings, numbered migrations, transactions
+  switch.py mm.py config.py
   static/         the attendee app (no build step)
 daypass/          day pass worker (PydanticAI or headless Claude Code)
 deploy/switch/    Switch 0.31.0 standalone compose (vendored) + env template
 docs/DEPLOY.md    live demo on a VPS behind a Cloudflare Tunnel
-scripts/          up.sh (one-command setup, --demo), demo-reset.sh, dev.sh, signup.py, mcp_call.py, personas.py, ui_smoke.py,
+scripts/          up.sh (one-command setup, --demo), demo-reset.sh, backup.sh (+ sqlite_backup.py), dev.sh, signup.py, mcp_call.py, personas.py, ui_smoke.py,
                   a11y.py + vendor/axe-core, fake_stack.py (the app on the test fakes)
 tests/            pytest suite (fakes for Switch + Mattermost)
 ```

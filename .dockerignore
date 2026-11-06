@@ -8,6 +8,7 @@ venv
 .env.*
 !.env.example
 data
+backups
 spike
 tests
 scripts

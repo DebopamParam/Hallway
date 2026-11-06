@@ -4,19 +4,24 @@ Secrets that grant access (session cookies, MCP keys, day pass worker tokens)
 are stored as sha256 hashes and looked up by hash; the plain value only ever
 lives in the browser cookie or the attendee's agent config."""
 
+import contextlib
 import hashlib
 import json
+import logging
 import re
 import secrets
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 from .config import settings
 
-SCHEMA_VERSION = 2  # PRAGMA user_version. 1 (unset, 0) = plain session/MCP tokens on attendees
+log = logging.getLogger("hallway.store")
+
+BUSY_TIMEOUT_MS = 5000  # wait this long for another connection's write lock (a backup, a migration) before failing
 
 ATTENDEES = """
 CREATE TABLE IF NOT EXISTS {name} (
@@ -45,7 +50,10 @@ CREATE TABLE IF NOT EXISTS {name} (
 );
 """
 
-SCHEMA = (
+# The tables as migration 1 creates them. Frozen: a later change to the layout
+# is a new migration at the end of MIGRATIONS, never an edit here, so every DB
+# goes through the same steps whatever version it starts from.
+BASE_SCHEMA = (
     ATTENDEES.replace("{name}", "attendees")
     + """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -183,6 +191,110 @@ def contact_private_values(contact: dict | None) -> list[str]:
     return vals
 
 
+def configure(db: sqlite3.Connection) -> None:
+    """Per-connection settings. WAL lets the app read while a backup or another
+    reader holds the file and survives a crash mid-write; NORMAL sync is safe
+    with WAL (a power cut can lose the last commits, never corrupt the DB)."""
+    db.execute("PRAGMA journal_mode = WAL")
+    db.execute("PRAGMA synchronous = NORMAL")
+    db.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    db.execute("PRAGMA foreign_keys = ON")  # per connection; enforced for any table that declares REFERENCES
+
+
+# ------------------------------------------------------------------ migrations
+# MIGRATIONS[i] takes a DB from PRAGMA user_version i to i + 1. Each runs in
+# one transaction together with the version bump, so a crash leaves the DB at
+# the version before it, and the next start runs it again. Append only.
+
+
+def _m1_base_schema(db: sqlite3.Connection) -> None:
+    """0 -> 1: the tables. On a DB from before versioning (user_version 0 but
+    the old `attendees` with plain tokens) this only adds what's missing."""
+    for stmt in BASE_SCHEMA.split(";"):
+        if stmt.strip():
+            db.execute(stmt)
+
+
+def _m2_hash_tokens(db: sqlite3.Connection) -> None:
+    """1 -> 2: each attendee's lifelong plain `session_token` becomes a hashed
+    row in `sessions` (a normal 7-day session from now, so nobody is signed
+    out), the plain `mcp_token` becomes `mcp_token_hash` + a hint, and
+    onboarding `pre:<token>` keys become `pre:<hash>`. SQLite can't drop a
+    UNIQUE column, so the attendees table is rebuilt without the plain ones.
+    Nothing to do on a DB created with hashed tokens."""
+    old_cols = {r[1] for r in db.execute("PRAGMA table_info(attendees)")}
+    if "session_token" not in old_cols:
+        return
+    now = time.time()
+    db.execute(
+        "INSERT OR IGNORE INTO sessions (id, attendee_id, user_agent, created_at, last_seen_at, expires_at) "
+        "SELECT sha256_hex(session_token), id, '', ?, ?, ? FROM attendees WHERE session_token IS NOT NULL",
+        (now, now, now + settings.session_ttl_s),
+    )
+    db.execute("DROP TABLE IF EXISTS attendees_v2")
+    db.execute(ATTENDEES.replace("{name}", "attendees_v2").strip().rstrip(";"))
+    keep = [c for c in (r[1] for r in db.execute("PRAGMA table_info(attendees_v2)")) if c in old_cols]
+    cols = ", ".join(keep)
+    db.execute(
+        f"INSERT INTO attendees_v2 ({cols}, mcp_token_hash, mcp_token_hint) "
+        f"SELECT {cols}, sha256_hex(mcp_token), substr(mcp_token, 1, 7) || '…' FROM attendees"
+    )
+    db.execute("DROP TABLE attendees")
+    db.execute("ALTER TABLE attendees_v2 RENAME TO attendees")
+    for key, value in db.execute("SELECT key, value FROM kv WHERE key LIKE 'pre:%'").fetchall():
+        db.execute("DELETE FROM kv WHERE key = ?", (key,))
+        db.execute("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", ("pre:" + token_hash(key[4:]), value))
+
+
+def _m3_indexes(db: sqlite3.Connection) -> None:
+    """2 -> 3: indexes for the per-attendee lookups made on every request
+    (inbox, notices, approvals, meetings) and the day pass ledger."""
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS notices_attendee ON notices (attendee_id, agent_seen)",
+        "CREATE INDEX IF NOT EXISTS approvals_attendee ON approvals (attendee_id, status)",
+        "CREATE INDEX IF NOT EXISTS meetings_proposer ON meetings (proposer_id)",
+        "CREATE INDEX IF NOT EXISTS meetings_invitee ON meetings (invitee_id)",
+        "CREATE INDEX IF NOT EXISTS meetings_room ON meetings (room_id)",
+        "CREATE INDEX IF NOT EXISTS pass_runs_attendee ON pass_runs (attendee_id)",
+        "CREATE INDEX IF NOT EXISTS worker_tokens_attendee ON worker_tokens (attendee_id)",
+    ):
+        db.execute(stmt)
+
+
+MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [_m1_base_schema, _m2_hash_tokens, _m3_indexes]
+SCHEMA_VERSION = len(MIGRATIONS)
+
+
+def db_version(db: sqlite3.Connection) -> int:
+    return int(db.execute("PRAGMA user_version").fetchone()[0])
+
+
+def migrate(db: sqlite3.Connection, migrations: list[Callable[[sqlite3.Connection], None]] | None = None) -> int:
+    """Apply the migrations this DB hasn't had, in order, each in its own
+    transaction. Returns the version it ends at. Safe to run on every start
+    and from two processes at once (the version is re-read under the lock)."""
+    steps = MIGRATIONS if migrations is None else migrations
+    for target in range(1, len(steps) + 1):
+        if db_version(db) >= target:
+            continue
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            if db_version(db) < target:  # another process may have just done it
+                steps[target - 1](db)
+                db.execute(f"PRAGMA user_version = {target}")
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        log.info("database migrated to version %d (%s)", target, steps[target - 1].__name__)
+    version = db_version(db)
+    if version > len(steps):
+        log.warning(
+            "database is at version %d, newer than this code (%d): was Hallway downgraded?", version, len(steps)
+        )
+    return version
+
+
 class Store:
     # The private-values cache is kept up to date by insert()/update(); this
     # full re-read is only a backstop for a write that bypassed them.
@@ -190,62 +302,45 @@ class Store:
 
     def __init__(self, path: str = settings.db_path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
+        # Autocommit (isolation_level=None): every statement commits on its own,
+        # and multi-statement writes that must land together use transaction().
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL")
+        configure(self.db)
         self.db.create_function("sha256_hex", 1, lambda t: token_hash(t) if t is not None else None, deterministic=True)
-        self.db.executescript(SCHEMA)
-        self.migrate()
+        migrate(self.db)
         self._private: dict[str, list[str]] | None = None  # attendee id -> private contact values
         self._private_read_at = 0.0
         self.private_version = 0  # bumped whenever any attendee's private values may have changed
 
-    # ------------------------------------------------------------ migrations
-    def migrate(self) -> None:
-        """Bring an older DB up to SCHEMA_VERSION. Each step runs in one
-        transaction and checks the layout it changes, so running it twice (or
-        after a crash halfway) is safe."""
-        cols = {r[1] for r in self.db.execute("PRAGMA table_info(attendees)")}
-        if "session_token" in cols:
-            self._migrate_hash_tokens(cols)
-        if self.db.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
-            self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    @contextlib.contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """BEGIN IMMEDIATE ... COMMIT, or ROLLBACK if the block raises.
 
-    def _migrate_hash_tokens(self, old_cols: set[str]) -> None:
-        """v1 -> v2: each attendee's lifelong plain `session_token` becomes a
-        hashed row in `sessions` (a normal 7-day session from now, so nobody is
-        signed out), the plain `mcp_token` becomes `mcp_token_hash` + a hint,
-        and onboarding `pre:<token>` keys become `pre:<hash>`. SQLite can't drop
-        a UNIQUE column, so the attendees table is rebuilt without the plain ones."""
-        now = time.time()
-        db = self.db
-        db.execute("BEGIN IMMEDIATE")
+        A plain `with`, not `async with`, on purpose: nothing can await inside,
+        so no other coroutine's writes on this shared connection slip into it.
+        IMMEDIATE takes the write lock up front, so another process (a backup,
+        the sqlite3 shell) waits for busy_timeout instead of failing halfway.
+        Nested calls join the outer transaction."""
+        if self.db.in_transaction:
+            yield self.db
+            return
+        self.db.execute("BEGIN IMMEDIATE")
         try:
-            db.execute(
-                "INSERT OR IGNORE INTO sessions (id, attendee_id, user_agent, created_at, last_seen_at, expires_at) "
-                "SELECT sha256_hex(session_token), id, '', ?, ?, ? FROM attendees WHERE session_token IS NOT NULL",
-                (now, now, now + settings.session_ttl_s),
-            )
-            db.execute("DROP TABLE IF EXISTS attendees_v2")
-            db.execute(ATTENDEES.replace("{name}", "attendees_v2").strip().rstrip(";"))
-            keep = [c for c in (r[1] for r in db.execute("PRAGMA table_info(attendees_v2)")) if c in old_cols]
-            cols = ", ".join(keep)
-            db.execute(
-                f"INSERT INTO attendees_v2 ({cols}, mcp_token_hash, mcp_token_hint) "
-                f"SELECT {cols}, sha256_hex(mcp_token), substr(mcp_token, 1, 7) || '…' FROM attendees"
-            )
-            db.execute("DROP TABLE attendees")
-            db.execute("ALTER TABLE attendees_v2 RENAME TO attendees")
-            for key, value in db.execute("SELECT key, value FROM kv WHERE key LIKE 'pre:%'").fetchall():
-                db.execute("DELETE FROM kv WHERE key = ?", (key,))
-                db.execute(
-                    "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", ("pre:" + token_hash(key[4:]), value)
-                )
-            db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            db.execute("COMMIT")
+            yield self.db
         except BaseException:
-            db.execute("ROLLBACK")
+            self.db.execute("ROLLBACK")
             raise
+        self.db.execute("COMMIT")
+
+    def checkpoint(self) -> None:
+        """Fold the WAL back into the main file (on shutdown), so a stopped
+        Hallway's DB is one self-contained file. Best effort: a reader holding
+        the WAL just means it's done on the next start."""
+        try:
+            self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error as e:
+            log.warning("WAL checkpoint on shutdown: %s", e)
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict | None:
