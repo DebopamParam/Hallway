@@ -131,7 +131,8 @@ app/
   switch.py mm.py store.py config.py
   static/         the attendee app (no build step)
 daypass/          day pass worker (PydanticAI or headless Claude Code)
-scripts/          dev.sh, signup.py, mcp_call.py, ui_smoke.py
+deploy/switch/    Switch 0.31.0 standalone compose (vendored) + env template
+scripts/          up.sh (one-command setup), dev.sh, signup.py, mcp_call.py, personas.py
 ```
 
 ## License
