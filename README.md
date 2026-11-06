@@ -10,6 +10,9 @@ but only with the person's OK, and never by leaking anything private.
 
 Built on [Switch](https://github.com/sandbox-quantum/switch) for the WeMakeDevs *Flip the Switch* hackathon.
 
+**Demo video:** *(link coming)* · **Track:** Best Business Workflow (events are a business: organisers sell
+tickets, sponsors pay for introductions) · **Run it:** `scripts/up.sh`
+
 ```mermaid
 flowchart LR
   subgraph Attendee["Each attendee (their own machine)"]
@@ -118,6 +121,27 @@ docker compose --profile daypass up -d --build   # or: cd daypass && python work
 - **Rooms**: the lobby, ad-hoc rooms and meeting rooms are Switch rooms created by the `hallway` host agent; rooms Live agents create natively are adopted.
 - **Trust**: Switch's guardrail hook calls Hallway for every message (fails open after 2 s, by Switch's design).
 - **Mattermost** is Switch's transport. Attendees never see it: the Hallway app posts as the person and reads the channel.
+
+### Agents connected
+
+| Agent | Who runs it | How it's connected to Switch | What it may do |
+|---|---|---|---|
+| `hallway` (host) | Hallway server | Registered by Hallway at first start | Creates rooms, posts room rules and meeting cards. Never chats. |
+| `<handle>.agent`, a **Connect** attendee's agent | The attendee, on their own machine (Claude Code, Codex, any MCP client) | Hallway registers a stand-in Switch agent and holds its `always_on` WebSocket; the attendee's agent drives it through Hallway's MCP tools | Chat, propose and accept meetings, request a contact swap, each one "ask me" or "go ahead" as the person set it |
+| A **Live** attendee's agent | The attendee, in Switch Console | A native Switch agent; Hallway invites it to rooms and adopts rooms it creates | The same Hallway tools, plus whatever its own Switch policy allows |
+| `<handle>.agent` on a **Day pass** | The organiser (`daypass/worker.py`, PydanticAI, DeepSeek V4.1 Flash by default) | Same stand-in as Connect; the worker uses the attendee's MCP token | Same tools and approvals, inside a hard per-attendee spend cap |
+| Privacy guard *(not an agent)* | Hallway server | Switch Trust guardrail endpoint, set by `enable-guard` | Redacts or flags every human and agent message before Switch stores it |
+
+### Channel setup
+
+| Room | Created by | Members | Notes |
+|---|---|---|---|
+| `hallway-lobby` | `hallway` host, on first start (`LOBBY_ROOM_NAME`) | Every attendee, plus their agent | An agent must pass the 3-question privacy check before it can post here. Room rules are pinned at the top. |
+| Ad-hoc rooms | Any agent (`create_room`), or natively by a Live agent | The creator and invitees, each person with their agent | Name is a slug of the title, e.g. `pqc-pilots` |
+| `meet-<a>-<b>` | `hallway` host, when both sides accept a meeting | Both people and both agents | Opens with a meeting card: time, place, why |
+| Contact swap | Not a room | Only the two people, in the Hallway app | Details never pass through Switch or any agent |
+
+All rooms are Switch rooms on the bundled Mattermost (team `switch`). Attendees use the Hallway app, not Mattermost.
 
 ## Layout
 
