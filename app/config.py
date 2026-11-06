@@ -51,7 +51,11 @@ class Settings:
     mm_team: str = os.environ.get("MM_TEAM", "switch")
     db_path: str = os.environ.get("HALLWAY_DB", "./data/hallway.db")
     public_url: str = os.environ.get("HALLWAY_PUBLIC_URL", "http://localhost:8787").rstrip("/")
+    # Three separate secrets (see check_keys): GUARD_API_KEY is what Switch sends
+    # to /guardrails/check, HALLWAY_ADMIN_KEY is the organiser's x-hallway-admin
+    # (admin endpoints, persona seeding), DAYPASS_WORKER_KEY is the day pass worker's.
     guard_api_key: str = os.environ.get("GUARD_API_KEY", "")
+    admin_key: str = os.environ.get("HALLWAY_ADMIN_KEY") or os.environ.get("ADMIN_KEY", "")
     event_name: str = os.environ.get("EVENT_NAME", "Hallway Demo Event")
     max_attendees: int = int(os.environ.get("MAX_ATTENDEES", "1000"))
     daypass_enabled: bool = _bool("DAYPASS_ENABLED", False)
@@ -97,6 +101,54 @@ def is_dev_env(s: "Settings") -> bool:
     """Local development: a localhost public URL, or HALLWAY_ENV=dev said out loud."""
     host = urlparse(s.public_url).hostname or ""
     return s.hallway_env == "dev" or (urlparse(s.public_url).scheme == "http" and host in ("localhost", "127.0.0.1"))
+
+
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+PLACEHOLDER_KEYS = ("", "change-me")
+
+
+def is_local_url(s: "Settings") -> bool:
+    """HALLWAY_PUBLIC_URL points at this machine (HALLWAY_ENV doesn't matter)."""
+    return (urlparse(s.public_url).hostname or "") in LOCAL_HOSTS
+
+
+def usable_key(key: str) -> str:
+    """The key, or "" when it's unset or the .env.example placeholder: never accept those."""
+    return "" if key.strip() in PLACEHOLDER_KEYS else key
+
+
+def admin_key(s: "Settings") -> str:
+    """HALLWAY_ADMIN_KEY, or GUARD_API_KEY for .env files from before it existed (deprecated)."""
+    return usable_key(s.admin_key) or usable_key(s.guard_api_key)
+
+
+def worker_key(s: "Settings") -> str:
+    """DAYPASS_WORKER_KEY, or GUARD_API_KEY for .env files from before it existed (deprecated)."""
+    return usable_key(s.daypass_worker_key) or usable_key(s.guard_api_key)
+
+
+def check_keys(s: "Settings") -> list[str]:
+    """Refuse to start a public instance with missing, placeholder or shared
+    secrets. On a localhost URL, returns deprecation warnings instead."""
+    keys = {"GUARD_API_KEY": s.guard_api_key, "HALLWAY_ADMIN_KEY": s.admin_key, "DAYPASS_WORKER_KEY": s.daypass_worker_key}
+    if not is_local_url(s):
+        bad = [k for k, v in keys.items() if not usable_key(v)]
+        if bad:
+            raise RuntimeError(
+                f"{', '.join(bad)} must be set to a random secret (not empty or change-me) when HALLWAY_PUBLIC_URL "
+                f"is not localhost (it is {s.public_url}). Generate one each with: openssl rand -hex 24")
+        seen: dict[str, str] = {}
+        for k, v in keys.items():
+            if v in seen:
+                raise RuntimeError(f"{seen[v]} and {k} must be different secrets: if one leaks, the other must not.")
+            seen[v] = k
+        return []
+    warnings = []
+    for name, own in (("HALLWAY_ADMIN_KEY", s.admin_key), ("DAYPASS_WORKER_KEY", s.daypass_worker_key)):
+        if not usable_key(own) and usable_key(s.guard_api_key):
+            warnings.append(f"{name} is not set: falling back to GUARD_API_KEY. This is deprecated and refused on a "
+                            f"public URL; set {name} to its own secret.")
+    return warnings
 
 
 def check_signin(s: "Settings") -> None:

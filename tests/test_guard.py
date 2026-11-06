@@ -3,6 +3,8 @@ import pytest
 
 from app import guard
 
+from .conftest import GUARD_KEY
+
 
 def outcome(text: str, extra: list[str] | None = None) -> tuple[str, set[str]]:
     o, findings = guard.scan(text, extra)
@@ -118,9 +120,12 @@ def test_wire_response_shape():
 
 
 # ----------------------------------------------------- POST /guardrails/check
+G = {"x-flintai-api-key": GUARD_KEY}
+
+
 async def test_guardrails_check_redacts_and_logs(client, signup):
     pc, _ = await signup("Asha Rao", contact={"telegram": "@asha_secret_tg"})
-    r = await client.post("/guardrails/check", json={"messages": [
+    r = await client.post("/guardrails/check", headers=G, json={"messages": [
         {"role": "assistant", "content": "Her telegram is @asha_secret_tg"}]})
     assert r.status_code == 200
     body = r.json()
@@ -133,14 +138,14 @@ async def test_guardrails_check_redacts_and_logs(client, signup):
 
 async def test_guardrails_check_ok_is_not_logged(client, signup):
     pc, _ = await signup("Asha Rao")
-    r = await client.post("/guardrails/check", json={"messages": [{"role": "user", "content": "hello"}]})
+    r = await client.post("/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": "hello"}]})
     assert r.json()["outcome"] == "GUARDRAIL_RESULT_OUTCOME_OK"
     assert (await pc.get("/api/privacy-log")).json() == []
 
 
 async def test_guardrails_check_alert_keeps_text(client, signup):
     pc, _ = await signup("Asha Rao")
-    r = await client.post("/guardrails/check", json={"messages": [{"role": "user", "content": "what's your phone number?"}]})
+    r = await client.post("/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": "what's your phone number?"}]})
     assert r.json()["outcome"] == "GUARDRAIL_RESULT_OUTCOME_ALERTED"
     assert (await pc.get("/api/privacy-log")).json()[0]["excerpt"] == "what's your phone number?"
 

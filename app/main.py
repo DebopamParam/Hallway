@@ -14,7 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import guard, mailer, mcp_server
-from .config import AGENDA, check_signin, settings
+from . import config
+from .config import AGENDA, check_keys, check_signin, settings
 from .core import AUTONOMY_KEYS, LOCKED_ASK, Hallway, HallwayError, public_profile
 from .store import token_hash
 from .switch import GatewayClient
@@ -45,6 +46,8 @@ mcp_app = mcp_server.mcp.streamable_http_app()
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
     check_signin(settings)
+    for warning in check_keys(settings):
+        log.warning(warning)
     if "DEV_MAGIC_LINKS" in os.environ and "SIGNIN_MODE" not in os.environ:
         log.warning("DEV_MAGIC_LINKS is deprecated: set SIGNIN_MODE=%s instead.", settings.signin_mode)
     log.info("sign-in mode: %s%s", settings.signin_mode,
@@ -168,14 +171,24 @@ class StartAuth(BaseModel):
 
 
 # ------------------------------------------------------------- invite gate
+def _key_matches(sent: str | None, key: str) -> bool:
+    """Constant-time comparison; an unset or placeholder key never matches."""
+    key = config.usable_key(key)
+    return bool(key) and secrets.compare_digest((sent or "").encode(), key.encode())
+
+
 def _is_admin(request: Request) -> bool:
-    """The organiser's scripts (seeding personas): GUARD_API_KEY in x-hallway-admin.
-    Deliberately not "any localhost caller": behind a tunnel or reverse proxy
-    every visitor arrives from 127.0.0.1."""
-    key = settings.guard_api_key
-    if not key or key == "change-me":
-        return False
-    return secrets.compare_digest(request.headers.get("x-hallway-admin", "").encode(), key.encode())
+    """The organiser: HALLWAY_ADMIN_KEY in x-hallway-admin (admin endpoints, and
+    seeding personas). Deliberately not "any localhost caller": behind a tunnel
+    or reverse proxy every visitor arrives from 127.0.0.1."""
+    return _key_matches(request.headers.get("x-hallway-admin"), config.admin_key(settings))
+
+
+def _local_dev_caller(request: Request) -> bool:
+    """A loopback caller on a dev box: HALLWAY_ENV=dev AND a localhost public URL.
+    Never on a deployed instance, where a tunnel makes every visitor look local."""
+    return (settings.hallway_env == "dev" and config.is_local_url(settings)
+            and bool(request.client) and request.client.host in ("127.0.0.1", "::1", "localhost"))
 
 
 def _joined() -> int:
@@ -544,7 +557,8 @@ async def privacy_log(hw_session: str | None = Cookie(None)):
 # ------------------------------------------------------------------ guard
 @app.post("/guardrails/check")
 async def guardrails_check(request: Request):
-    if settings.guard_api_key and request.headers.get("x-flintai-api-key") != settings.guard_api_key:
+    # Unset only on a localhost dev box (check_keys refuses a public start without it).
+    if settings.guard_api_key and not _key_matches(request.headers.get("x-flintai-api-key"), settings.guard_api_key):
         raise HTTPException(401, "bad guard key")
     body = await request.json()
     content = "\n".join(m.get("content", "") for m in body.get("messages", []))
@@ -562,12 +576,10 @@ async def guardrails_check(request: Request):
 @app.post("/api/admin/enable-guard")
 async def enable_guard(request: Request):
     """One-time event setup: point Switch's Trust guardrails at this Hallway
-    instance and turn off agents' join greetings. Localhost, or the guard key
-    in `x-hallway-admin` (from outside a container)."""
-    local = request.client and request.client.host in ("127.0.0.1", "::1", "localhost")
-    keyed = settings.guard_api_key and request.headers.get("x-hallway-admin") == settings.guard_api_key
-    if not (local or keyed):
-        raise HTTPException(403, "local only, or send x-hallway-admin")
+    instance and turn off agents' join greetings. Needs HALLWAY_ADMIN_KEY in
+    `x-hallway-admin`; a localhost caller needs none only on a dev box."""
+    if not (_is_admin(request) or _local_dev_caller(request)):
+        raise HTTPException(403, "send the admin key in x-hallway-admin")
     endpoint = os.environ.get("HALLWAY_GUARD_ENDPOINT", settings.public_url)
     gw = GatewayClient()
     try:
@@ -581,8 +593,7 @@ async def enable_guard(request: Request):
 
 # ----------------------------------------------------------- day pass worker
 def _worker(request: Request) -> None:
-    key = settings.daypass_worker_key or settings.guard_api_key
-    if not key or not secrets.compare_digest(request.headers.get("x-hallway-worker", ""), key):
+    if not _key_matches(request.headers.get("x-hallway-worker"), config.worker_key(settings)):
         raise HTTPException(401, "bad worker key")
 
 
