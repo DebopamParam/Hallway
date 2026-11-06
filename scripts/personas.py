@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from signup import signup  # noqa: E402
+from signup import signup
 
 ROOT = Path(__file__).resolve().parent.parent
 PERSONAS = ROOT / "personas" / "personas.json"

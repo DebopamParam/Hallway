@@ -31,11 +31,11 @@ os.environ.update({
 })
 sys.path.insert(0, str(ROOT))
 
-import uvicorn  # noqa: E402
+import uvicorn
 
-from app import main  # noqa: E402
-from app.presence import Presence  # noqa: E402
-from tests.fakes import FakeMM, FakeSwitch, World  # noqa: E402
+from app import main
+from app.presence import Presence
+from tests.fakes import FakeMM, FakeSwitch, World
 
 Presence.ensure = lambda self, attendee: None  # type: ignore[method-assign]  # no WebSockets to Switch
 world = World()

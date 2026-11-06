@@ -1,5 +1,4 @@
 """Startup against the fake Switch, and the person+agent sync loop."""
-import pytest
 
 
 async def test_startup_registers_host_and_lobby(hallway, world, client):

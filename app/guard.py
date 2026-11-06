@@ -152,7 +152,7 @@ def _place_only(text: str) -> bool:
     """Just a city or country, then nothing more specific: "Bangalore these days",
     "Pune, came by train". A street, area or number after it is private."""
     m = _PLACE_PREFIX.match(text.strip())
-    return bool(m) and not re.search(r"[A-Z0-9#]", text.strip()[m.end():])
+    return m is not None and not re.search(r"[A-Z0-9#]", text.strip()[m.end():])
 
 
 # --------------------------------------------------- all redaction rules

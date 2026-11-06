@@ -119,7 +119,7 @@ async def test_admin_key_is_not_limited(client, limits):
     """scripts/signup.py and personas.py seed with the admin key."""
     limits(auth_start_ip="1/60", auth_start_email="1/60", register_ip="1/60", session_write="1/60")
     client.headers["x-hallway-admin"] = ADMIN_KEY
-    for n in range(3):
+    for _ in range(3):
         r = await client.post("/api/auth/start", json={"email": "p@example.com"})
         assert r.status_code == 200 and r.json()["dev_link"]
 

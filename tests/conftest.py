@@ -35,21 +35,21 @@ os.environ.update({
     "LOBBY_ROOM_NAME": "hallway-lobby",
 })
 
-import asyncio  # noqa: E402
-import itertools  # noqa: E402
-import json  # noqa: E402
-import logging  # noqa: E402
-from urllib.parse import urlparse  # noqa: E402
+import asyncio
+import itertools
+import json
+import logging
+from urllib.parse import urlparse
 
-import httpx  # noqa: E402
-import pytest  # noqa: E402
+import httpx
+import pytest
 
-from app import core, main, mcp_server  # noqa: E402
-from app.ratelimit import limiter  # noqa: E402
-from app.presence import Presence  # noqa: E402
-from app.store import Store  # noqa: E402
+from app import core, main, mcp_server
+from app.presence import Presence
+from app.ratelimit import limiter
+from app.store import Store
 
-from .fakes import FakeMM, FakeSwitch, World  # noqa: E402
+from .fakes import FakeMM, FakeSwitch, World
 
 logging.getLogger("mcp").setLevel(logging.WARNING)  # one INFO line per tool call otherwise
 

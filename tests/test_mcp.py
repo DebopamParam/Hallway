@@ -50,7 +50,7 @@ async def test_search_people(signup, client):
     tok = asha["connect"]["token"]
 
     everyone = await mcp_call(client, tok, "search_people")
-    assert [p["handle"] for p in everyone][0] == "bo"  # most overlap first
+    assert everyone[0]["handle"] == "bo"  # most overlap first
     assert {p["handle"] for p in everyone} == {"bo", "cy"}  # never yourself
     assert everyone[0]["shared"] == ["PQC"]
 

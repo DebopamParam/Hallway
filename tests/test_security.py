@@ -8,7 +8,7 @@ import httpx
 import pytest
 from starlette.requests import Request
 
-from app import main, security
+from app import main
 
 from .conftest import ADMIN_KEY, GUARD_KEY, WORKER_KEY, mcp_call, register
 

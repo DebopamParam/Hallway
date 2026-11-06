@@ -104,7 +104,7 @@ async def test_deciding_twice_is_a_no_op(signup):
 
 async def test_create_room_with_approval(signup, client, hallway, world):
     ac, asha = await signup("Asha Rao")  # rooms: ask (default)
-    bc, bo = await signup("Bo Chen")
+    bc, _bo = await signup("Bo Chen")
     res = await mcp_call(client, asha["connect"]["token"], "create_room", {"title": "PQC pilots", "invite": ["bo"]})
     assert res["status"] == "pending_approval"
     assert [r["name"] for r in (await ac.get("/api/rooms")).json()] == ["hallway-lobby"]
@@ -187,7 +187,7 @@ async def test_meeting_needs_proposers_approval_by_default(signup, client):
 
 async def test_meeting_declined_by_person(signup, client):
     ac, asha = await signup("Asha Rao", autonomy={"propose_meeting": "auto"})
-    bc, bo = await signup("Bo Chen")
+    bc, _bo = await signup("Bo Chen")
     res = await mcp_call(client, asha["connect"]["token"], "propose_meeting",
                          {"with_who": "bo", "time": "12:00", "place": "Courtyard", "why": "lunch"})
     r = await bc.post(f"/api/meetings/{res['meeting_id']}", json={"accept": False})

@@ -147,7 +147,7 @@ async def run_claude_code(p: dict, budget: float) -> Run:
                                       "headers": {"Authorization": f"Bearer {p['token']}"}}}}
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "mcp.json")
-        with open(path, "w") as f:
+        with open(path, "w") as f:  # noqa: ASYNC230 - a few hundred bytes, before a run of minutes
             json.dump(cfg, f)
         cmd = ["claude", "-p", task, "--model", os.environ.get("DAYPASS_CLAUDE_MODEL", "haiku"),
                "--output-format", "json", "--max-budget-usd", f"{budget:.4f}",

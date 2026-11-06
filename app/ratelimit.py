@@ -13,7 +13,7 @@ import math
 import os
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from . import config  # noqa: F401  (loads ./.env into the environment first)
@@ -57,7 +57,7 @@ def parse(spec: str) -> Limit | None:
     return Limit(count, period)
 
 
-def limits_from_env(env=os.environ) -> dict[str, Limit | None]:
+def limits_from_env(env: Mapping[str, str] = os.environ) -> dict[str, Limit | None]:
     if env.get("RATE_LIMITS", "on").strip().lower() in ("off", "false", "0", "no"):
         return {name: None for name in DEFAULTS}
     return {name: parse(env.get(f"RATE_LIMIT_{name.upper()}", default)) for name, default in DEFAULTS.items()}

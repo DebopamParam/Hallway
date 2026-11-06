@@ -1,0 +1,28 @@
+# pre-commit install   (then the hooks run on every commit; `pre-commit run -a` for all files)
+# The hooks run the tools from your environment (pip install -r requirements-dev.txt),
+# so they use the same pinned, hashed versions as CI and see the app's dependencies,
+# which mypy needs.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+      - id: mypy
+        name: mypy
+        entry: mypy
+        language: system
+        types: [python]
+        pass_filenames: false   # checks the files listed in pyproject.toml
+      - id: eslint
+        name: eslint
+        entry: npx --yes eslint@10.13.0
+        language: system
+        files: ^app/static/.*\.js$

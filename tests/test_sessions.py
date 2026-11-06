@@ -135,7 +135,7 @@ async def test_rotate_agent_key(signup, client, hallway):
 
 # ------------------------------------------------------------------ day pass
 async def test_day_pass_worker_runs_with_its_own_token(signup, client, hallway):
-    pc, me = await signup("Sana Qureshi", mode="daypass")
+    pc, _me = await signup("Sana Qureshi", mode="daypass")
     [due] = (await client.get("/internal/daypass/due", headers=W)).json()
     run_tok = due["token"]
     assert run_tok.startswith("hwp_") and run_tok not in dump(hallway)

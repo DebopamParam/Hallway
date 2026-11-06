@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
@@ -14,11 +15,10 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import guard, mailer, mcp_server, security
-from .ratelimit import RateLimited, limiter
-from . import config
+from . import config, guard, mailer, mcp_server, security
 from .config import AGENDA, check_keys, check_signin, settings
 from .core import AUTONOMY_KEYS, LOCKED_ASK, Hallway, HallwayError, public_profile
+from .ratelimit import RateLimited, limiter
 from .store import token_hash
 from .switch import GatewayClient
 
@@ -46,7 +46,7 @@ mcp_app = mcp_server.mcp.streamable_http_app()
 
 
 @contextlib.asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     check_signin(settings)
     for warning in check_keys(settings):
         log.warning(warning)
@@ -80,14 +80,14 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 @app.exception_handler(RateLimited)
-async def _rate_limited(_req: Request, exc: RateLimited):
+async def _rate_limited(_req: Request, exc: RateLimited) -> JSONResponse:
     return JSONResponse({"error": f"Too many requests. Wait {exc.retry_after} s and try again.",
                          "code": "rate_limited", "retry_after": exc.retry_after},
                         status_code=429, headers={"Retry-After": str(exc.retry_after)})
 
 
 @app.exception_handler(HallwayError)
-async def _hallway_error(_req: Request, exc: HallwayError):
+async def _hallway_error(_req: Request, exc: HallwayError) -> JSONResponse:
     return JSONResponse({"error": str(exc)}, status_code=400)
 
 
@@ -114,7 +114,7 @@ def _session(hw_session: str | None) -> tuple[dict | None, str | None]:
     return _lookup(hw_session)[:2]
 
 
-def _set_session_cookie(resp: Response, token: str, max_age: int) -> None:
+def _set_session_cookie(resp: Response, token: str, max_age: float) -> None:
     resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=max(0, int(max_age)),
                     secure=settings.public_url.startswith("https://"))
 
@@ -156,7 +156,8 @@ def _mcp_url() -> str:
 
 def _remaining_usd(p: dict) -> float:
     """What's left of a pass's budget. Never negative: one run can overshoot the cap."""
-    return max(0.0, round(p["cap_usd"] - p["spent_usd"], 6))
+    left: float = round(p["cap_usd"] - p["spent_usd"], 6)
+    return max(0.0, left)
 
 
 def _pass_view(a: dict) -> dict | None:
@@ -225,12 +226,13 @@ def _local_dev_caller(request: Request) -> bool:
     """A loopback caller on a dev box: HALLWAY_ENV=dev AND a localhost public URL.
     Never on a deployed instance, where a tunnel makes every visitor look local."""
     return (settings.hallway_env == "dev" and config.is_local_url(settings)
-            and bool(request.client) and request.client.host in ("127.0.0.1", "::1", "localhost"))
+            and request.client is not None and request.client.host in ("127.0.0.1", "::1", "localhost"))
 
 
 def _joined() -> int:
     """People who joined as attendees. Seeded personas don't take a demo spot."""
-    return hallway.store.one("SELECT COUNT(*) AS n FROM attendees WHERE is_persona = 0")["n"]
+    n: int = hallway.store.need("SELECT COUNT(*) AS n FROM attendees WHERE is_persona = 0")["n"]
+    return n
 
 
 def _spots_left() -> int | None:
@@ -260,7 +262,7 @@ def _check_spots() -> None:
 
 
 @app.exception_handler(JoinRefused)
-async def _join_refused(_req: Request, exc: JoinRefused):
+async def _join_refused(_req: Request, exc: JoinRefused) -> JSONResponse:
     if exc.code == "invite_only":
         return JSONResponse({"error": INVITE_ONLY, "code": "invite_only"}, status_code=403)
     return JSONResponse({"error": _demo_full_message(), "code": "demo_full",
@@ -268,7 +270,7 @@ async def _join_refused(_req: Request, exc: JoinRefused):
 
 
 @app.get("/api/event")
-async def event():
+async def event() -> dict:
     people = hallway.store.attendees()
     return {"name": settings.event_name, "signin_mode": settings.signin_mode, "daypass_enabled": settings.daypass_enabled,
             "daypass": {"price": settings.daypass_price, "cap_usd": settings.daypass_cap_usd} if settings.daypass_enabled else None,
@@ -307,7 +309,7 @@ def _refusal_email(code: str) -> tuple[str, str]:
 
 
 @app.post("/api/auth/start")
-async def auth_start(body: StartAuth, request: Request):
+async def auth_start(body: StartAuth, request: Request) -> dict:
     email = body.email.strip().lower()
     admin = _is_admin(request)
     if not admin:
@@ -334,7 +336,7 @@ async def auth_start(body: StartAuth, request: Request):
             await mailer.make_sender(settings).send(email, subject, text)
         except mailer.SendError as e:
             log.error("sign-in email to %s failed: %s", mailer.mask_email(email), e)
-            raise HTTPException(503, "We couldn't send the email just now. Try again in a minute.")
+            raise HTTPException(503, "We couldn't send the email just now. Try again in a minute.") from e
         return {"sent": True, "dev_link": None}
     if mode == "demo" and existing:
         # No email provider, so a link on screen for an existing account would
@@ -347,7 +349,7 @@ async def auth_start(body: StartAuth, request: Request):
 
 
 @app.get("/auth/magic")
-async def auth_magic(t: str, request: Request):
+async def auth_magic(t: str, request: Request) -> RedirectResponse:
     limiter.check("magic_ip", client_ip(request))
     rec = hallway.store.kv_pop(f"magic:{t}")  # single use: gone on first open
     if not rec or time.time() - rec["at"] > settings.magic_link_ttl_s:
@@ -364,7 +366,7 @@ async def auth_magic(t: str, request: Request):
 
 
 @app.post("/api/auth/logout")
-async def logout(hw_session: str | None = Cookie(None)):
+async def logout(hw_session: str | None = Cookie(None)) -> JSONResponse:
     """Ends this session on the server too: a copied cookie stops working."""
     if hw_session:
         hallway.store.revoke_session(hw_session)
@@ -375,7 +377,7 @@ async def logout(hw_session: str | None = Cookie(None)):
 
 
 @app.post("/api/auth/logout-all")
-async def logout_all(hw_session: str | None = Cookie(None)):
+async def logout_all(hw_session: str | None = Cookie(None)) -> JSONResponse:
     """Sign out everywhere: every session of this attendee, this one included."""
     a = _me(hw_session)
     n = hallway.store.revoke_sessions(a["id"])
@@ -386,9 +388,9 @@ async def logout_all(hw_session: str | None = Cookie(None)):
 
 
 @app.get("/api/me")
-async def me(response: Response, hw_session: str | None = Cookie(None)):
+async def me(response: Response, hw_session: str | None = Cookie(None)) -> dict:
     a, email, s = _lookup(hw_session)
-    if a:
+    if a and s and hw_session:
         # The cookie slides with the server-side expiry (the app loads /api/me on open).
         _set_session_cookie(response, hw_session, s["expires_at"] - time.time())
         return _me_view(a)
@@ -398,12 +400,12 @@ async def me(response: Response, hw_session: str | None = Cookie(None)):
 
 
 @app.post("/api/me/agent-key")
-async def rotate_agent_key(hw_session: str | None = Cookie(None)):
+async def rotate_agent_key(hw_session: str | None = Cookie(None)) -> dict:
     """A new MCP key, shown once in this response. The old one stops working now."""
     a = _me(hw_session)
     token = hallway.store.set_mcp_token(a["id"])
     log.info("agent key rotated: %s", a["handle"])
-    return _me_view(hallway.store.attendee(id=a["id"]), token=token)
+    return _me_view(hallway.store.need_attendee(id=a["id"]), token=token)
 
 
 class Register(BaseModel):
@@ -416,7 +418,7 @@ class Register(BaseModel):
 
 
 @app.post("/api/register")
-async def register(body: Register, request: Request, response: Response, hw_session: str | None = Cookie(None)):
+async def register(body: Register, request: Request, response: Response, hw_session: str | None = Cookie(None)) -> dict:
     persona = _is_admin(request)
     if not persona:
         limiter.check("register_ip", client_ip(request))
@@ -435,9 +437,10 @@ async def register(body: Register, request: Request, response: Response, hw_sess
             mode=body.mode, live_agent_name=body.live_agent_name, is_persona=persona,
         )
     # The onboarding token is retired; the new account gets a fresh session.
-    hallway.store.kv_pop(f"pre:{token_hash(hw_session)}")
+    if hw_session:  # always: the pending email came from it
+        hallway.store.kv_pop(f"pre:{token_hash(hw_session)}")
     _set_session_cookie(response, hallway.store.create_session(a["id"], _ua(request)), settings.session_ttl_s)
-    return _me_view(hallway.store.attendee(id=a["id"]), token=a.get("mcp_token"))
+    return _me_view(hallway.store.need_attendee(id=a["id"]), token=a.get("mcp_token"))
 
 
 class UpdateMe(BaseModel):
@@ -447,7 +450,7 @@ class UpdateMe(BaseModel):
 
 
 @app.put("/api/me")
-async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)):
+async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)) -> dict:
     a = hallway.update_settings(_me(hw_session), profile=body.profile, contact=body.contact, autonomy=body.autonomy)
     return _me_view(a)
 
@@ -457,7 +460,7 @@ class PassState(BaseModel):
 
 
 @app.post("/api/me/pass")
-async def pass_state(body: PassState, hw_session: str | None = Cookie(None)):
+async def pass_state(body: PassState, hw_session: str | None = Cookie(None)) -> dict:
     a = _me(hw_session)
     hallway.set_pass_paused(a, body.paused)
     return _me_view(a)
@@ -465,7 +468,7 @@ async def pass_state(body: PassState, hw_session: str | None = Cookie(None)):
 
 # -------------------------------------------------------------------- rooms
 @app.get("/api/rooms")
-async def rooms(hw_session: str | None = Cookie(None)):
+async def rooms(hw_session: str | None = Cookie(None)) -> list[dict]:
     a = _me(hw_session)
     out = []
     for room in hallway.store.all("SELECT * FROM rooms ORDER BY created_at"):
@@ -479,7 +482,7 @@ async def rooms(hw_session: str | None = Cookie(None)):
 
 
 @app.get("/api/rooms/{name}/messages")
-async def room_messages(name: str, since: int | None = None, hw_session: str | None = Cookie(None)):
+async def room_messages(name: str, since: int | None = None, hw_session: str | None = Cookie(None)) -> dict:
     a = _me(hw_session)
     room = hallway.room_by_ref(name)
     return {"room": {"name": room["name"], "title": room["title"], "kind": room["kind"]},
@@ -492,7 +495,7 @@ class PostBody(BaseModel):
 
 
 @app.post("/api/rooms/{name}/messages")
-async def room_post(name: str, body: PostBody, hw_session: str | None = Cookie(None)):
+async def room_post(name: str, body: PostBody, hw_session: str | None = Cookie(None)) -> dict:
     a = _me(hw_session)
     room = hallway.room_by_ref(name)
     outcome, findings = guard.scan(body.text)
@@ -509,14 +512,14 @@ class NewRoom(BaseModel):
 
 
 @app.post("/api/rooms")
-async def new_room(body: NewRoom, hw_session: str | None = Cookie(None)):
+async def new_room(body: NewRoom, hw_session: str | None = Cookie(None)) -> dict:
     room = await hallway.create_room(_me(hw_session), body.title, body.invite)
     return {"name": room["name"], "title": room["title"]}
 
 
 # ------------------------------------------------- approvals, meetings, people
 @app.get("/api/approvals")
-async def approvals(hw_session: str | None = Cookie(None)):
+async def approvals(hw_session: str | None = Cookie(None)) -> list[dict]:
     a = _me(hw_session)
     return hallway.store.all(
         "SELECT id, kind, summary, status, created_at, decided_at FROM approvals WHERE attendee_id = ? "
@@ -529,12 +532,12 @@ class Decide(BaseModel):
 
 
 @app.post("/api/approvals/{approval_id}")
-async def decide(approval_id: str, body: Decide, hw_session: str | None = Cookie(None)):
+async def decide(approval_id: str, body: Decide, hw_session: str | None = Cookie(None)) -> dict:
     return await hallway.decide(_me(hw_session), approval_id, body.approve)
 
 
 @app.get("/api/meetings")
-async def meetings(hw_session: str | None = Cookie(None)):
+async def meetings(hw_session: str | None = Cookie(None)) -> list[dict]:
     return hallway.meetings(_me(hw_session))
 
 
@@ -543,12 +546,12 @@ class Respond(BaseModel):
 
 
 @app.post("/api/meetings/{meeting_id}")
-async def respond(meeting_id: str, body: Respond, hw_session: str | None = Cookie(None)):
+async def respond(meeting_id: str, body: Respond, hw_session: str | None = Cookie(None)) -> dict:
     return await hallway.respond_meeting(_me(hw_session), meeting_id, body.accept, by_person=True)
 
 
 @app.get("/api/people")
-async def people(q: str = "", hw_session: str | None = Cookie(None)):
+async def people(q: str = "", hw_session: str | None = Cookie(None)) -> list[dict]:
     """Public profiles, plus what the app needs to show where you stand with each
     person: is their agent active, is a meeting in play, have you swapped contacts."""
     a = _me(hw_session)
@@ -573,17 +576,17 @@ class ContactReq(BaseModel):
 
 
 @app.post("/api/contacts")
-async def contact_request(body: ContactReq, hw_session: str | None = Cookie(None)):
+async def contact_request(body: ContactReq, hw_session: str | None = Cookie(None)) -> dict:
     return await hallway.request_contact(_me(hw_session), body.handle)
 
 
 @app.get("/api/contacts")
-async def contacts(hw_session: str | None = Cookie(None)):
+async def contacts(hw_session: str | None = Cookie(None)) -> list[dict]:
     return hallway.contacts(_me(hw_session))
 
 
 @app.get("/api/notices")
-async def notices(hw_session: str | None = Cookie(None)):
+async def notices(hw_session: str | None = Cookie(None)) -> list[dict]:
     a = _me(hw_session)
     return hallway.store.all(
         "SELECT id, kind, text, created_at FROM notices WHERE attendee_id = ? AND audience IN ('person','both') "
@@ -592,7 +595,7 @@ async def notices(hw_session: str | None = Cookie(None)):
 
 
 @app.get("/api/privacy-log")
-async def privacy_log(hw_session: str | None = Cookie(None)):
+async def privacy_log(hw_session: str | None = Cookie(None)) -> list[dict]:
     _me(hw_session)
     return hallway.store.all("SELECT outcome, categories, excerpt, created_at FROM guard_log ORDER BY id DESC LIMIT 30")
 
@@ -639,7 +642,7 @@ class GuardStats:
 guard_stats = GuardStats()
 
 
-def _guard_messages(body) -> tuple[str, str | None]:
+def _guard_messages(body: object) -> tuple[str, str | None]:
     messages = body.get("messages") if isinstance(body, dict) else None
     if not isinstance(messages, list):
         raise ValueError("no messages array")
@@ -654,7 +657,7 @@ def _guard_messages(body) -> tuple[str, str | None]:
 
 
 @app.post("/guardrails/check")
-async def guardrails_check(request: Request):
+async def guardrails_check(request: Request) -> dict:
     """Switch Trust's check for every message. Fails CLOSED wherever it can:
     whatever goes wrong in here is answered BLOCKED (with a 200), because a
     500, a 429 or a timeout would make Switch deliver the message unchecked."""
@@ -700,7 +703,7 @@ async def guardrails_check(request: Request):
 
 
 @app.post("/api/admin/enable-guard")
-async def enable_guard(request: Request):
+async def enable_guard(request: Request) -> dict:
     """One-time event setup: point Switch's Trust guardrails at this Hallway
     instance and turn off agents' join greetings. Needs HALLWAY_ADMIN_KEY in
     `x-hallway-admin`; a localhost caller needs none only on a dev box."""
@@ -724,7 +727,7 @@ def _worker(request: Request) -> None:
 
 
 @app.get("/internal/daypass/due")
-async def daypass_due(request: Request, every_s: int | None = None):
+async def daypass_due(request: Request, every_s: int | None = None) -> list[dict]:
     """Passes whose agent should run now, with what the worker needs to run them.
     `token` is a fresh MCP token for this run only (the attendee's own key is
     stored hashed): it expires within the hour and is revoked when the run reports."""
@@ -746,7 +749,7 @@ class RunReport(BaseModel):
 
 
 @app.post("/internal/daypass/{attendee_id}/runs")
-async def daypass_report(attendee_id: str, body: RunReport, request: Request):
+async def daypass_report(attendee_id: str, body: RunReport, request: Request) -> dict:
     _worker(request)
     p = hallway.record_run(attendee_id, body.engine, body.cost_usd, body.tool_calls, body.summary, body.ok)
     hallway.store.revoke_worker_tokens(attendee_id)
@@ -755,12 +758,12 @@ async def daypass_report(attendee_id: str, body: RunReport, request: Request):
 
 # --------------------------------------------------------------- SPA + MCP
 @app.get("/")
-async def index():
+async def index() -> FileResponse:
     return FileResponse(STATIC / "index.html")
 
 
 @app.get("/health")
-async def health():
+async def health() -> dict:
     return {"ok": True, "guard": guard_stats.as_dict()}
 
 

@@ -2,6 +2,7 @@
 Switch's guard calls, DAYPASS_WORKER_KEY for the worker; no localhost bypass
 on a deployed instance; refuse to start a public instance with weak keys."""
 import dataclasses
+from typing import ClassVar
 
 import pytest
 
@@ -15,7 +16,7 @@ def use(monkeypatch, **changes):
 
 
 class FakeGateway:
-    calls: list = []
+    calls: ClassVar[list] = []
 
     async def login(self):
         pass

@@ -64,7 +64,7 @@ async def test_negative_cost_is_ignored(client, hallway, daypass):
 
 
 async def test_overshoot_marks_spent_and_remaining_never_negative(client, hallway, daypass):
-    pc, me = daypass
+    pc, _me = daypass
     aid = await attendee_id(hallway, "sana")
     await report(client, aid, 0.40)
     r = await report(client, aid, 0.35)  # one run overshoots the $0.50 cap

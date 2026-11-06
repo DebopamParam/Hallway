@@ -7,10 +7,9 @@ import asyncio
 import json
 import os
 
+import worker
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-
-import worker
 
 
 def scripted(messages, info: AgentInfo) -> ModelResponse:

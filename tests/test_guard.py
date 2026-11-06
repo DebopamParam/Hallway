@@ -91,7 +91,7 @@ def test_redaction_wins_over_alert():
 
 def test_overlapping_hits_merge_into_one_span():
     text = "Aadhaar 1234 5678 9012 ok"
-    o, findings = guard.scan(text)
+    _o, findings = guard.scan(text)
     assert len(findings) == 1
     assert guard.redact(text, findings) == "Aadhaar [redacted] ok"
 

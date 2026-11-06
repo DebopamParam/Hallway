@@ -15,7 +15,7 @@ import asyncio
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from . import guard
@@ -57,7 +57,7 @@ def slug(text: str) -> str:
 
 
 def now_iso(ts: float | None = None) -> str:
-    return datetime.fromtimestamp(ts or time.time(), tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(ts or time.time(), tz=UTC).isoformat()
 
 
 def public_profile(a: dict) -> dict:
@@ -89,7 +89,8 @@ class Hallway:
         self.presence = Presence(self.store)
         self.host: AgentCreds | None = None
         self.lobby: dict | None = None
-        self._sync_task: asyncio.Task | None = None
+        self._sync_task: asyncio.Task[None] | None = None
+        self._background: set[asyncio.Task[None]] = set()  # keep fire-and-forget tasks alive until done
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ setup
@@ -126,14 +127,26 @@ class Hallway:
             self.lobby = self.store.one("SELECT * FROM rooms WHERE id = ?", room_id)
             # Posted once the server is accepting requests: Switch runs every post
             # through our /guardrails/check, which can't answer during startup.
-            asyncio.create_task(self._post_later(room_id, LOBBY_RULES.format(event=settings.event_name)))
+            task = asyncio.create_task(self._post_later(room_id, LOBBY_RULES.format(event=settings.event_name)))
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
         self._sync_task = asyncio.create_task(self._sync_loop())
         self.presence.ensure_all()
+
+    def _host(self) -> AgentCreds:
+        if self.host is None:
+            raise RuntimeError("Hallway.start() hasn't run: no host agent yet")
+        return self.host
+
+    def _lobby(self) -> dict:
+        if self.lobby is None:
+            raise RuntimeError("Hallway.start() hasn't run: no lobby yet")
+        return self.lobby
 
     async def _post_later(self, room_id: str, text: str, delay: float = 3) -> None:
         await asyncio.sleep(delay)
         try:
-            await self.switch.post(self.host, room_id, text)
+            await self.switch.post(self._host(), room_id, text)
         except SwitchError as e:
             log.warning("could not post to %s: %s", room_id, e)
 
@@ -200,7 +213,7 @@ class Hallway:
             mm_user, mm_password = await self.mm.create_user(handle, email, name)
         except MMError as e:
             log.error("register %s: %s", handle, e)
-            raise HallwayError("We couldn't set up your Hallway account just now. Please try again in a minute.")
+            raise HallwayError("We couldn't set up your Hallway account just now. Please try again in a minute.") from e
         aid = new_id()
         mcp_token = new_mcp_token()  # shown to the attendee once, in this registration's response
         row: dict[str, Any] = dict(
@@ -218,10 +231,10 @@ class Hallway:
         self.store.insert("attendees", **row)
         if mode == "daypass":
             self.store.insert("passes", id=new_id(), attendee_id=aid, cap_usd=settings.daypass_cap_usd, created_at=time.time())
-        attendee = self.store.attendee(id=aid)
+        attendee = self.store.need_attendee(id=aid)
         attendee["mcp_token"] = mcp_token
         self.presence.ensure(attendee)
-        await self._join(attendee, self.lobby)
+        await self._join(attendee, self._lobby())
         self.store.notice(
             aid, "welcome", f"Welcome to {settings.event_name}! Connect your agent from the Connect tab.",
             audience="person",
@@ -247,7 +260,7 @@ class Hallway:
             changes["autonomy"] = self._autonomy({**attendee["autonomy"], **autonomy})
         if changes:
             self.store.update("attendees", attendee["id"], **changes)
-        return self.store.attendee(id=attendee["id"])
+        return self.store.need_attendee(id=attendee["id"])
 
     def stand_in(self, attendee: dict) -> AgentCreds:
         if attendee["mode"] not in STAND_IN_MODES or not attendee["switch_agent_id"]:
@@ -269,7 +282,7 @@ class Hallway:
         if p["status"] == "spent":
             raise HallwayError("This pass has used its whole budget.")
         self.store.update("passes", p["id"], status="paused" if paused else "active")
-        return self.day_pass(attendee)
+        return self.store.need("SELECT * FROM passes WHERE id = ?", p["id"])
 
     def due_passes(self, every_s: float) -> list[dict]:
         """Active passes whose agent hasn't run for `every_s` seconds."""
@@ -292,7 +305,7 @@ class Hallway:
         if status == "spent" and p["status"] != "spent":
             self.store.notice(attendee_id, "daypass", "Your day pass agent used its whole budget and has stopped.",
                               audience="person")
-        return self.store.one("SELECT * FROM passes WHERE id = ?", p["id"])
+        return self.store.need("SELECT * FROM passes WHERE id = ?", p["id"])
 
     def resolve(self, who: str) -> dict:
         """An attendee by handle, agent name, @mention, email or name."""
@@ -311,7 +324,7 @@ class Hallway:
             token = await self.mm.login(attendee["handle"], attendee["mm_password"])
             self.store.update("attendees", attendee["id"], mm_token=token)
             attendee["mm_token"] = token
-        return attendee["mm_token"]
+        return str(attendee["mm_token"])
 
     # ------------------------------------------------------------------ rooms
     async def _join(self, attendee: dict, room: dict) -> None:
@@ -324,7 +337,7 @@ class Hallway:
         """add_users_to_room answers 200 {"ok": false, "unresolved": [...]} when
         Switch can't find the person on Mattermost, so check the body."""
         try:
-            res = await self.switch.add_users(self.host, room["id"], [attendee["handle"]])
+            res = await self.switch.add_users(self._host(), room["id"], [attendee["handle"]])
         except SwitchError as e:
             log.warning("add user %s to %s: %s", attendee["handle"], room["name"], e)
             return False
@@ -363,7 +376,7 @@ class Hallway:
             except MMError as e:
                 log.warning("team join for %s: %s", attendee["agent_name"], e)
         try:
-            await self.switch.invite_agent(self.host, room["id"], attendee["agent_name"])
+            await self.switch.invite_agent(self._host(), room["id"], attendee["agent_name"])
         except SwitchError as e:
             if not quiet:
                 log.warning("invite agent %s to %s: %s", attendee["agent_name"], room["name"], e)
@@ -381,7 +394,7 @@ class Hallway:
             name = f"{base}-{n}"
         asked_ms = int(time.time() * 1000) - 2000
         res = await self.switch.create_room(
-            self.host, name, description or title,
+            self._host(), name, description or title,
             [m["agent_name"] for m in members], [m["handle"] for m in members],
         )
         channel = await self._wait_channel(res["name"], asked_ms)
@@ -389,7 +402,7 @@ class Hallway:
             "rooms", id=res["id"], name=res["name"], title=title, kind=kind,
             mm_channel_id=channel["id"] if channel else None, created_by=creator["id"], created_at=time.time(),
         )
-        room = self.store.one("SELECT * FROM rooms WHERE id = ?", res["id"])
+        room = self.store.need("SELECT * FROM rooms WHERE id = ?", res["id"])
         for m in members:
             await self._join(m, room)  # idempotent; covers platforms that skip user_names
             if m["id"] != creator["id"]:
@@ -443,7 +456,7 @@ class Hallway:
         known_names = {r["name"] for r in self.store.all("SELECT name FROM rooms")}
         ours = {a["mm_user_id"] for a in attendees} | {a["agent_mm_user_id"] for a in attendees if a.get("agent_mm_user_id")}
         try:
-            for r in await self.switch.list_all_rooms(self.host):
+            for r in await self.switch.list_all_rooms(self._host()):
                 rid = r.get("id") or r.get("room_id")
                 if rid and rid not in known and r.get("name") not in known_names and not r.get("archived"):
                     # Only rooms an attendee or their agent is actually in: the
@@ -511,7 +524,7 @@ class Hallway:
             f"{attendee['name']} {'approved' if approve else 'declined'}: {ap['summary']}",
             audience="agent", approval_id=ap["id"], approved=approve, result=result,
         )
-        return {**self.store.one("SELECT * FROM approvals WHERE id = ?", ap["id"]), "result": result}
+        return {**self.store.need("SELECT * FROM approvals WHERE id = ?", ap["id"]), "result": result}
 
     async def _execute(self, attendee: dict, kind: str, p: dict) -> Any:
         if kind == "post":
@@ -666,16 +679,16 @@ class Hallway:
         if not m or m["invitee_id"] != attendee["id"]:
             raise HallwayError("No meeting proposal for you with that id.")
         if accept and not by_person and self.needs_approval(attendee, "accept_meeting"):
-            proposer = self.store.attendee(id=m["proposer_id"])
+            proposer = self.store.need_attendee(id=m["proposer_id"])
             return self.ask(attendee, "accept_meeting", f"Accept meeting with {proposer['name']} at {m['time']}, {m['place']}?",
                             {"meeting_id": meeting_id})
         return await self._respond_meeting(attendee, meeting_id, accept)
 
     async def _respond_meeting(self, attendee: dict, meeting_id: str, accept: bool) -> dict:
-        m = self.store.one("SELECT * FROM meetings WHERE id = ?", meeting_id)
+        m = self.store.need("SELECT * FROM meetings WHERE id = ?", meeting_id)
         if m["status"] != "proposed":
             return {"status": m["status"], "meeting_id": m["id"]}
-        proposer = self.store.attendee(id=m["proposer_id"])
+        proposer = self.store.need_attendee(id=m["proposer_id"])
         if not accept:
             self.store.update("meetings", m["id"], status="declined")
             self.store.notice(proposer["id"], "meeting_declined", f"{attendee['name']} can't make {m['time']}.", meeting_id=m["id"])
@@ -688,7 +701,7 @@ class Hallway:
         card = (f"**Meeting confirmed** :handshake:\n**{proposer['name']}** + **{attendee['name']}**\n"
                 f"When: **{m['time']}**  ·  Where: **{m['place']}**\nWhy: {m['why']}\n"
                 f"_Agents: use this room to prep. Contact details are swapped only in the Hallway app, when both say yes._")
-        await self.switch.post(self.host, room["id"], card)
+        await self.switch.post(self._host(), room["id"], card)
         for a in (proposer, attendee):
             self.store.notice(a["id"], "meeting_confirmed", f"Meeting confirmed: {proposer['name']} + {attendee['name']} at {m['time']}, {m['place']}",
                               meeting_id=m["id"], room=room["name"])
@@ -703,7 +716,7 @@ class Hallway:
         for m in rows:
             if only_pending_for_me and not (m["status"] == "proposed" and m["invitee_id"] == attendee["id"]):
                 continue
-            other = self.store.attendee(id=m["invitee_id"] if m["proposer_id"] == attendee["id"] else m["proposer_id"])
+            other = self.store.need_attendee(id=m["invitee_id"] if m["proposer_id"] == attendee["id"] else m["proposer_id"])
             room = self.store.one("SELECT name FROM rooms WHERE id = ?", m["room_id"]) if m["room_id"] else None
             out.append({"id": m["id"], "with": other["handle"], "with_name": other["name"], "time": m["time"],
                         "place": m["place"], "why": m["why"], "status": m["status"],
@@ -727,11 +740,11 @@ class Hallway:
                 "Details are shown only in the app, never to agents."}
 
     async def _contact_ok(self, attendee: dict, contact_id: str) -> dict:
-        c = self.store.one("SELECT * FROM contacts WHERE id = ?", contact_id)
+        c = self.store.need("SELECT * FROM contacts WHERE id = ?", contact_id)
         side = "requester_ok" if c["requester_id"] == attendee["id"] else "target_ok"
         self.store.update("contacts", c["id"], **{side: 1})
-        c = self.store.one("SELECT * FROM contacts WHERE id = ?", contact_id)
-        other = self.store.attendee(id=c["target_id"] if side == "requester_ok" else c["requester_id"])
+        c = self.store.need("SELECT * FROM contacts WHERE id = ?", contact_id)
+        other = self.store.need_attendee(id=c["target_id"] if side == "requester_ok" else c["requester_id"])
         if c["requester_ok"] and c["target_ok"]:
             self.store.update("contacts", c["id"], status="exchanged")
             for a, b in ((attendee, other), (other, attendee)):
@@ -751,7 +764,7 @@ class Hallway:
         )
         out = []
         for c in rows:
-            other = self.store.attendee(id=c["target_id"] if c["requester_id"] == attendee["id"] else c["requester_id"])
+            other = self.store.need_attendee(id=c["target_id"] if c["requester_id"] == attendee["id"] else c["requester_id"])
             out.append({"name": other["name"], "handle": other["handle"], **other["contact"]})
         return out
 
@@ -768,7 +781,7 @@ class Hallway:
     def submit_privacy_check(self, attendee: dict, answers: list[str]) -> dict:
         private = [v for v in (attendee["contact"] or {}).values() if isinstance(v, str)]
         leaks = []
-        for q, ans in zip(PRIVACY_QUESTIONS, answers):
+        for q, ans in zip(PRIVACY_QUESTIONS, answers, strict=False):  # too few answers fail below
             outcome, findings = guard.scan(ans or "", private)
             if outcome == "redacted":
                 leaks.append({"question": q, "leaked": [f"{f.category}: {f.detector}" for f in findings]})

@@ -127,7 +127,7 @@ async def test_limit_enforced_again_at_register(make_client, invite, hallway):
     first, second = make_client(), make_client()
     links = [urlparse((await start(c, e, CODE)).json()["dev_link"])
              for c, e in ((first, "a@example.com"), (second, "b@example.com"))]
-    for c, link in zip((first, second), links):
+    for c, link in zip((first, second), links, strict=True):
         await c.get(f"{link.path}?{link.query}")
     assert (await first.post("/api/register", json={"name": "Asha Rao"})).status_code == 200
     r = await second.post("/api/register", json={"name": "Bo Chen"})

@@ -242,8 +242,10 @@ class Store:
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict | None:
-        if row is None:
-            return None
+        return None if row is None else Store._dict(row)
+
+    @staticmethod
+    def _dict(row: sqlite3.Row) -> dict:
         d = dict(row)
         for k in JSON_COLS & d.keys():
             d[k] = json.loads(d[k]) if d[k] else {}
@@ -252,8 +254,15 @@ class Store:
     def one(self, sql: str, *args: Any) -> dict | None:
         return self._row(self.db.execute(sql, args).fetchone())
 
+    def need(self, sql: str, *args: Any) -> dict:
+        """Like one(), for rows the caller knows exist (just written, or held by a foreign key)."""
+        row = self.one(sql, *args)
+        if row is None:
+            raise LookupError(f"no row for {sql!r} {args!r}")
+        return row
+
     def all(self, sql: str, *args: Any) -> list[dict]:
-        return [self._row(r) for r in self.db.execute(sql, args).fetchall()]
+        return [self._dict(r) for r in self.db.execute(sql, args).fetchall()]
 
     def insert(self, table: str, **values: Any) -> None:
         raw = values
@@ -315,6 +324,10 @@ class Store:
     def attendee(self, **where: Any) -> dict | None:
         (k, v), = where.items()
         return self.one(f"SELECT * FROM attendees WHERE {k} = ?", v)
+
+    def need_attendee(self, **where: Any) -> dict:
+        (k, v), = where.items()
+        return self.need(f"SELECT * FROM attendees WHERE {k} = ?", v)
 
     def attendees(self) -> list[dict]:
         return self.all("SELECT * FROM attendees ORDER BY created_at")

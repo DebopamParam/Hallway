@@ -71,4 +71,5 @@ def signup(p: dict, base: str = BASE) -> dict:
 
 
 if __name__ == "__main__":
-    print(json.dumps(signup(json.load(open(sys.argv[1])))))
+    with open(sys.argv[1]) as f:
+        print(json.dumps(signup(json.load(f))))

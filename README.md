@@ -272,8 +272,24 @@ sign-in and onboarding, approvals, meetings, the contact swap, the MCP tools
 through the real `/mcp` endpoint, and the day pass ledger. The guard also has a
 labelled corpus with per-category precision/recall thresholds (see above). `xfail` tests mark
 known bugs; flip them when you fix one. CI (`.github/workflows/ci.yml`) runs
-them on every push and pull request, plus `compileall`, the accessibility audit
-below and both Docker builds.
+them on every push and pull request, plus `compileall`, the lint job and the
+accessibility audit below, and both Docker builds.
+
+**Lint, format, types.** ruff (lint and format) and mypy are configured in
+`pyproject.toml` and pinned in `requirements-dev.in`. mypy checks `app/` strictly
+(every function typed, no implicit `Any` returns; bare `dict` is allowed for rows
+and JSON) and `daypass/` with the defaults. The SPA is linted by eslint through
+npx: `eslint.config.mjs` imports nothing, so the repo has no `package.json` or
+`node_modules`.
+
+```bash
+ruff check . && ruff format --check . && mypy
+npx --yes eslint@10.13.0
+pre-commit install       # optional (pip install pre-commit): the same checks on every commit
+```
+
+`.git-blame-ignore-revs` lists the commit that applied `ruff format`; run
+`git config blame.ignoreRevsFile .git-blame-ignore-revs` to skip it in blame.
 
 **Dependencies** are locked with hashes: edit the direct pins in `requirements.in`
 (or `requirements-dev.in`, `daypass/requirements.in`), then regenerate the lock
