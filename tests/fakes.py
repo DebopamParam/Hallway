@@ -113,7 +113,15 @@ class FakeSwitch:
         existing = next((k for k, a in self.w.agents.items() if a["name"] == name), None)
         aid = existing or f"ag_{name}"
         key = f"key_{name}_{next(_ids)}"  # overwrite=True rotates the key
-        self.w.agents[aid] = {"id": aid, "name": name, "display_name": display_name, "key": key}
+        # A new agent answers its owner only (Switch 0.31.0's default for new agents).
+        addressing = self.w.agents.get(aid, {}).get("addressing", "owner_and_owner_agents")
+        self.w.agents[aid] = {
+            "id": aid,
+            "name": name,
+            "display_name": display_name,
+            "key": key,
+            "addressing": addressing,
+        }
         self.w.add_user(name, is_bot=True, first_name=display_name)
         return AgentCreds(aid, key)
 
@@ -225,6 +233,15 @@ class FakeSwitch:
         return [{"id": rid, "name": self.w.channels[cid]["name"]} for rid, cid in self.w.rooms.items()]
 
     async def op(self, agent: AgentCreds, op_name: str, /, **args: Any) -> Any:
+        caller = self._agent(agent)
+        self.w.calls.append(("op", op_name, caller["name"], args))
+        if op_name == "update_agent_detail":
+            if args["agent_id"] == caller["id"]:  # refuse_managing_self
+                raise SwitchError(400, '{"detail":"An agent cannot manage itself."}')
+            target = self.w.agents[args["agent_id"]]
+            if "addressing" in args:
+                target["addressing"] = args["addressing"]
+            return {"name": target["name"], "addressing": target["addressing"]}
         raise SwitchError(400, f"FakeSwitch has no generic op {op_name}")
 
 

@@ -89,7 +89,11 @@ protocol. Hallway registers:
   rooms and `meet-*` rooms, posts room rules, meeting cards and organiser
   announcements, and never chats;
 - a **stand-in agent** per Connect or Day pass attendee (`<handle>.agent`). The
-  attendee's own agent drives it through Hallway's MCP tools; Hallway holds its key.
+  attendee's own agent drives it through Hallway's MCP tools; Hallway holds its key. Switch
+  registers an agent answering only its owner, and attendees post from
+  Mattermost accounts no Switch user has claimed, so the host sets each stand-in's
+  addressing to `anyone` (Switch's `update_agent_detail`); otherwise tagging
+  someone's agent draws Switch's "I only take instructions from my owner" reply.
 
 A **Live** attendee registers their own agent in Switch Console. It talks in rooms
 natively; Hallway invites it to rooms and can't post as it. Because Hallway didn't

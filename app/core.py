@@ -186,6 +186,7 @@ def _overlap_keys(profile: dict) -> dict[str, str]:
 # meeting proposal; other people read these on a card, not as messages.
 TEXT_LIMITS = {"title": 80, "time": 40, "place": 120, "why": 300}
 
+ADDRESSING_OPENED = "stand_ins_addressing_open"  # kv: every stand-in got _open_addressing
 HOST_CREATE_TRIES, HOST_CREATE_BACKOFF_S = 6, 0.5  # Switch busy creating a room: retry for ~10 s
 
 MEETING_CARD_HEAD = "**Meeting confirmed**"  # how the host's meeting card starts, in the room
@@ -290,8 +291,32 @@ class Hallway:
             task = asyncio.create_task(self._post_later(room_id, LOBBY_RULES.format(event=settings.event_name)))
             self._background.add(task)
             task.add_done_callback(self._background.discard)
+        if not self.store.kv_get(ADDRESSING_OPENED):
+            await self._open_all_stand_ins()
         self._sync_task = asyncio.create_task(self._sync_loop())
         self.presence.ensure_all()
+
+    async def _open_addressing(self, agent_name: str, agent_id: str) -> bool:
+        """Let anyone address a stand-in. Switch registers an agent answering
+        only its owner (Hallway's registration key), and people post from
+        Mattermost accounts no Switch user has claimed: tagging someone's
+        agent drew Switch's public "I only take instructions from my owner"
+        reply in that agent's name, and no addressed event, so no mention
+        notice. "anyone" is Switch's open policy. An agent can't change its
+        own, so the host (same owner) does. Returns whether it worked."""
+        try:
+            await self.switch.op(self._host(), "update_agent_detail", agent_id=agent_id, addressing="anyone")
+            return True
+        except SwitchError as e:
+            log.warning("could not open %s to addressing (tags will draw Switch's refusal): %s", agent_name, e)
+            return False
+
+    async def _open_all_stand_ins(self) -> None:
+        """Once, for stand-ins registered before _open_addressing existed."""
+        rows = self.store.all("SELECT agent_name, switch_agent_id FROM attendees WHERE switch_agent_id IS NOT NULL")
+        ok = [await self._open_addressing(r["agent_name"], r["switch_agent_id"]) for r in rows]
+        if all(ok):
+            self.store.kv_set(ADDRESSING_OPENED, time.time())
 
     def _host(self) -> AgentCreds:
         if self.host is None:
@@ -484,6 +509,7 @@ class Hallway:
                 f"{name}'s agent at {settings.event_name}. Speaks for {name} through Hallway.",
             )
             row.update(switch_agent_id=creds.id, switch_agent_key=creds.key)
+            await self._open_addressing(agent_name, creds.id)
         with self.store.transaction():  # never an attendee without the pass their mode needs
             self.store.insert("attendees", **row)
             if mode == "daypass":
