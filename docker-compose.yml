@@ -6,6 +6,12 @@
 # Hardened for a small public box (an 8 GB VPS that also runs Switch, Postgres
 # and Mattermost): non-root images, a read-only root filesystem, no Linux
 # capabilities, no privilege escalation, memory/CPU caps and rotated logs.
+#
+# Public demo (docs/DEPLOY.md): the `tunnel` profile adds cloudflared, which
+# dials out to Cloudflare, so the server opens no inbound port and TLS ends at
+# Cloudflare. cloudflared sits on its own `edge` network with Hallway and
+# nothing else: it can't reach Switch, Mattermost, Postgres or the gateway even
+# if the dashboard's public hostname were pointed at one of them.
 
 x-hardening: &hardening
   read_only: true
@@ -32,7 +38,7 @@ services:
       - "127.0.0.1:${HALLWAY_PORT:-8787}:8787"  # expose it through a Cloudflare Tunnel (docs/DEPLOY.md), not this port
     volumes:
       - hallway-data:/data  # the only writable path besides /tmp
-    networks: [switch]
+    networks: [switch, edge]
     # One uvicorn process with SQLite: ~150 MB in use for a demo-sized event.
     mem_limit: 512m
     cpus: 1.0
@@ -65,6 +71,31 @@ services:
       start_period: 20s
       retries: 3
 
+  cloudflared:
+    <<: *hardening
+    profiles: [tunnel]
+    # Pinned by exact tag and digest; Dependabot (docker-compose) bumps both.
+    image: cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    # A remotely-managed tunnel: its public hostname (-> http://hallway:8787) is
+    # set in the Cloudflare dashboard; the token is all this side needs. Only
+    # TUNNEL_TOKEN is passed in, not Hallway's .env.
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+      TUNNEL_METRICS: 127.0.0.1:20241
+    depends_on:
+      hallway: {condition: service_healthy}
+    networks: [edge]
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:20241", "ready"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
 volumes:
   hallway-data:
 
@@ -72,3 +103,5 @@ networks:
   switch:
     name: ${SWITCH_NETWORK:-switch_default}
     external: true
+  # Hallway <-> cloudflared only.
+  edge:

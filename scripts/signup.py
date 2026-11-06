@@ -12,6 +12,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -44,12 +45,21 @@ def signup(p: dict, base: str = BASE) -> dict:
     # Origin (CSRF check); the admin key alone would exempt us, a visitor isn't.
     headers = {"origin": base, **({"x-hallway-admin": key} if key else {})}
     c = httpx.Client(base_url=base, follow_redirects=False, timeout=60, headers=headers)
+
+    # On an https HALLWAY_PUBLIC_URL the session cookie is Secure, and httpx
+    # won't send a Secure cookie back over plain http (seeding from the Docker
+    # network, http://hallway:8787). Send the latest one explicitly instead.
+    def keep_session(r: httpx.Response) -> None:
+        if token := r.cookies.get("hw_session"):
+            c.headers["cookie"] = f"hw_session={token}"
+    c.event_hooks["response"] = [keep_session]
     r = c.post("/api/auth/start", json={"email": p["email"]})
     r.raise_for_status()
     link = r.json().get("dev_link")
     if not link:
         sys.exit(f"no sign-in link for {p['email']}: {r.json().get('message') or 'check HALLWAY_ADMIN_KEY'}")
-    c.get(link.replace(base, ""))
+    u = urlsplit(link)  # on HALLWAY_PUBLIC_URL's host, which may not be the one we call
+    c.get(f"{u.path}?{u.query}")
     me = c.get("/api/me").json()
     if me.get("onboarding"):
         r = c.post("/api/register", json={k: p[k] for k in ("name", "profile", "contact", "autonomy", "mode", "live_agent_name") if k in p})
@@ -57,7 +67,7 @@ def signup(p: dict, base: str = BASE) -> dict:
         me = r.json()
     if not me["connect"]["token"]:  # already joined: the key was shown once, so issue a new one
         me = c.post("/api/me/agent-key").json()
-    return {"handle": me["handle"], "session": c.cookies.get("hw_session"), "token": me["connect"]["token"], "agent": me["agent"]}
+    return {"handle": me["handle"], "session": c.headers.get("cookie", "").partition("=")[2] or None, "token": me["connect"]["token"], "agent": me["agent"]}
 
 
 if __name__ == "__main__":

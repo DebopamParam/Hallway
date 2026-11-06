@@ -69,7 +69,10 @@ async def _session_write_limit(request: Request) -> None:
         limiter.check("session_write", token_hash(cookie))
 
 
-app = FastAPI(title="Hallway", lifespan=lifespan, dependencies=[Depends(_session_write_limit)])
+_docs = config.api_docs_enabled(settings)  # off in production, see config.api_docs_enabled
+app = FastAPI(title="Hallway", lifespan=lifespan, dependencies=[Depends(_session_write_limit)],
+              docs_url="/docs" if _docs else None, redoc_url="/redoc" if _docs else None,
+              openapi_url="/openapi.json" if _docs else None)
 # Security headers on every response (the SPA, the API, /mcp) and the Origin
 # check on cookie-authenticated writes. Reads `settings` per request.
 app.add_middleware(security.SecurityMiddleware, get_settings=lambda: settings)
