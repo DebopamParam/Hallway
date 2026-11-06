@@ -272,7 +272,8 @@ sign-in and onboarding, approvals, meetings, the contact swap, the MCP tools
 through the real `/mcp` endpoint, and the day pass ledger. The guard also has a
 labelled corpus with per-category precision/recall thresholds (see above). `xfail` tests mark
 known bugs; flip them when you fix one. CI (`.github/workflows/ci.yml`) runs
-them on every push and pull request, plus `compileall` and both Docker builds.
+them on every push and pull request, plus `compileall`, the accessibility audit
+below and both Docker builds.
 
 **Dependencies** are locked with hashes: edit the direct pins in `requirements.in`
 (or `requirements-dev.in`, `daypass/requirements.in`), then regenerate the lock
@@ -291,6 +292,23 @@ an older root image over to uid 10001.
 For a browser check against a running server (needs the Switch stack):
 `python scripts/ui_smoke.py /tmp/shots http://localhost:8787 [--dark]`.
 
+**Accessibility.** `scripts/a11y.py` signs up through the UI, seeds a second
+attendee whose agent proposes meetings and talks in the lobby, then walks every
+screen and sheet at phone size in light and dark. It runs axe-core (vendored in
+`scripts/vendor/axe-core`, WCAG 2.2 AA + best practice) and Hallway's own checks:
+44 px tap targets, a visible focus ring with 3:1 contrast, nothing hidden in the
+Tab order, sheets that take focus, keep Tab inside, close on Esc and give focus
+back, live regions for chat, approvals and toasts, and no animation under
+`prefers-reduced-motion`. It fails on any serious or critical finding. It needs
+no Switch: `scripts/fake_stack.py` serves the app against the test fakes, and CI
+runs it that way.
+
+```bash
+python -m playwright install chromium                 # once
+python scripts/fake_stack.py 8799 &                   # or use a running server
+python scripts/a11y.py /tmp/a11y http://localhost:8799 [--theme light|dark]
+```
+
 ## Layout
 
 ```
@@ -305,7 +323,8 @@ app/
 daypass/          day pass worker (PydanticAI or headless Claude Code)
 deploy/switch/    Switch 0.31.0 standalone compose (vendored) + env template
 docs/DEPLOY.md    live demo on a VPS behind a Cloudflare Tunnel
-scripts/          up.sh (one-command setup, --demo), demo-reset.sh, dev.sh, signup.py, mcp_call.py, personas.py, ui_smoke.py
+scripts/          up.sh (one-command setup, --demo), demo-reset.sh, dev.sh, signup.py, mcp_call.py, personas.py, ui_smoke.py,
+                  a11y.py + vendor/axe-core, fake_stack.py (the app on the test fakes)
 tests/            pytest suite (fakes for Switch + Mattermost)
 ```
 

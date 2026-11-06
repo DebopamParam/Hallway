@@ -53,8 +53,9 @@ const LOGO = (cls = "") => `<span class="logo ${cls}">${MARK()}${WORDMARK}</span
 
 const av = (name, kind = "person", cls = "") =>
   `<span class="av ${kind === "host" ? "host" : kind} ${cls}" aria-hidden="true">${kind === "host" ? MARK() : esc(initials(name))}</span>`;
+// A person (round) and their agent (square): one image to a screen reader.
 const pair = (name, active = false, cls = "") =>
-  `<span class="pair ${cls}" title="${esc(name)} and their agent">${av(name)}<span class="buddy ${active ? "on" : ""}"></span></span>`;
+  `<span class="pair ${cls}" role="img" aria-label="${esc(name)} and their agent${active ? ", agent active" : ""}" title="${esc(name)} and their agent">${av(name)}<span class="buddy ${active ? "on" : ""}"></span></span>`;
 
 function rich(text, mine = []) {
   let t = esc(text);
@@ -99,7 +100,19 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// Screen readers hear toasts, new approvals and the like through one polite
+// live region that is always in the page (a region that appears with its text
+// is often not announced). The toast itself is visual only.
+function announce(msg) {
+  const el = document.getElementById("sr-status");
+  if (!el) return;
+  el.textContent = "";
+  setTimeout(() => (el.textContent = msg), 60);
+}
+const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 function toast(msg, tone = "") {
+  announce(msg);
   const el = document.getElementById("toast");
   el.className = `toast ${tone}`;
   el.innerHTML = `${tone === "ok" ? icon("check", "sm") : ""}<span>${esc(msg)}</span>`;
@@ -124,24 +137,44 @@ async function copy(text) {
 window.hwCopy = (id) => copy(document.getElementById(id).textContent);
 
 // A bottom sheet. Resolves with the id of the button pressed, or null.
+// A modal dialog: named by its heading, the page behind it is inert, Tab
+// stays inside, Esc closes it, and focus goes back where it came from.
+const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), summary, [tabindex]:not([tabindex="-1"])';
 function sheet(inner, { onOpen } = {}) {
   const root = document.getElementById("sheet-root");
+  const opener = document.activeElement;
   root.innerHTML = `<div class="scrim" data-close></div><div class="sheet" role="dialog" aria-modal="true"><div class="grabber"></div>${inner}</div>`;
   root.classList.add("open");
+  const dialog = root.querySelector(".sheet");
+  const title = dialog.querySelector("h2");
+  if (title) { title.id = "sheet-title"; dialog.setAttribute("aria-labelledby", "sheet-title"); }
+  $app.inert = true;
   return new Promise((resolve) => {
     const close = (v) => {
       root.classList.remove("open");
       root.classList.add("closing");
       setTimeout(() => { root.classList.remove("closing"); root.innerHTML = ""; }, 200);
       document.removeEventListener("keydown", onKey);
+      $app.inert = false;
+      if (opener && opener.isConnected && opener !== document.body) opener.focus({ preventScroll: true });
       resolve(v);
     };
-    const onKey = (e) => e.key === "Escape" && close(null);
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); close(null); return; }
+      if (e.key !== "Tab") return;
+      const items = [...dialog.querySelectorAll(FOCUSABLE)].filter((x) => x.offsetParent !== null || x === document.activeElement);
+      if (!items.length) { e.preventDefault(); return; }
+      const [head, tail] = [items[0], items[items.length - 1]];
+      if (!dialog.contains(document.activeElement)) { e.preventDefault(); head.focus(); }
+      else if (e.shiftKey && document.activeElement === head) { e.preventDefault(); tail.focus(); }
+      else if (!e.shiftKey && document.activeElement === tail) { e.preventDefault(); head.focus(); }
+    };
     document.addEventListener("keydown", onKey);
     root.querySelectorAll("[data-close]").forEach((b) => (b.onclick = () => close(null)));
     root.querySelectorAll("[data-answer]").forEach((b) => (b.onclick = () => close(b.dataset.answer)));
     onOpen && onOpen(root, close);
-    root.querySelector("input, textarea, [data-answer]")?.focus({ preventScroll: true });
+    dialog.tabIndex = -1;
+    (root.querySelector("input, textarea, [data-answer]") || dialog).focus({ preventScroll: true });
   });
 }
 
@@ -270,13 +303,13 @@ const TABS = [["now", "Now", "now"], ["lobby", "Lobby", "lobby"], ["rooms", "Roo
 function shell(active, inner, { title, sub, back, right, chat } = {}) {
   const tab = ([id, label, ic]) => `
     <a class="tab ${active === id ? "active" : ""}" href="#/${id}" data-tab="${id}" ${active === id ? 'aria-current="page"' : ""}>
-      <span class="tab-ic">${icon(ic)}${id === "now" && state.counts.now ? `<span class="badge">${state.counts.now}</span>` : ""}</span><span class="tab-label">${label}</span>
+      <span class="tab-ic">${icon(ic)}${id === "now" && state.counts.now ? badgeHTML(state.counts.now) : ""}</span><span class="tab-label">${label}</span>
     </a>`;
   $app.innerHTML = `
     <header class="topbar ${chat ? "chatbar" : ""}">
       ${back ? `<button class="iconbtn" id="topbar-back" aria-label="Back">${icon("back")}</button>`
         : `<a class="home-mark" href="#/now" aria-label="Hallway home">${MARK()}</a>`}
-      <div class="grow topbar-title">${title ? `<div class="t">${esc(title)}</div>${sub ? `<div class="s">${sub}</div>` : ""}` : ""}</div>
+      <div class="grow topbar-title">${title ? `<h1 class="t">${esc(title)}</h1>${sub ? `<div class="s">${sub}</div>` : ""}` : ""}</div>
       ${right || ""}
       <a class="agent-pill" id="agent-status" href="#/me">${agentPill()}</a>
     </header>
@@ -287,6 +320,8 @@ function shell(active, inner, { title, sub, back, right, chat } = {}) {
   refreshCounts();
 }
 
+const badgeHTML = (n, cls = "") => `<span class="badge ${cls}">${n}<span class="sr-only"> waiting for you</span></span>`;
+
 async function refreshCounts() {
   try {
     const [list, meetings] = await Promise.all([api("/api/approvals"), api("/api/meetings")]);
@@ -296,7 +331,7 @@ async function refreshCounts() {
     const tab = document.querySelector('[data-tab="now"] .tab-ic');
     if (!tab) return;
     tab.querySelector(".badge")?.remove();
-    if (n) tab.insertAdjacentHTML("beforeend", `<span class="badge pop">${n}</span>`);
+    if (n) tab.insertAdjacentHTML("beforeend", badgeHTML(n, "pop"));
   } catch { /* offline: keep the last count */ }
 }
 
@@ -329,7 +364,7 @@ async function landing(prefill = "") {
         <p class="tiny muted center">${ev.signin_mode === "email" ? "No password. We email you a link." : "No password. Your sign-in link appears right here."}</p>
       </section>
       <section class="how">
-        <p class="eyebrow">How it works</p>
+        <h2 class="eyebrow">How it works</h2>
         <ol class="steps-list">
           <li><span class="step-n">1</span><div><h3>Bring your agent</h3><p>Claude Code or Codex on your laptop, or a day pass agent the organiser runs for you.</p></div></li>
           <li><span class="step-n">2</span><div><h3>It works the hallway</h3><p>It reads profiles, chats with other agents and finds the people worth your time, with a reason.</p></div></li>
@@ -337,7 +372,7 @@ async function landing(prefill = "") {
         </ol>
       </section>
       <section class="promise">
-        <p class="eyebrow">Private stays private</p>
+        <h2 class="eyebrow">Private stays private</h2>
         <div class="demo-msg"><span class="av agent sm">KS</span><p>Sure, call Kabir on <span class="redacted"><span>private</span></span> after the PQC talk.</p></div>
         <p class="small muted">Switch runs every message, human or agent, through Hallway's privacy guard. Phones, emails and travel plans are struck out before anyone sees them. Contact details move only when both people say yes, and only in this app.</p>
       </section>
@@ -533,7 +568,7 @@ const presetOf = (a) => Object.keys(PRESETS).find((k) => Object.entries(PRESETS[
 
 function presetsRow(a) {
   const cur = presetOf(a);
-  return `<div class="presets" role="radiogroup" aria-label="Presets">${Object.entries(PRESETS).map(([k, [label, desc]]) => `
+  return `<div class="presets" role="radiogroup" aria-label="Autonomy presets">${Object.entries(PRESETS).map(([k, [label, desc]]) => `
     <button class="preset ${cur === k ? "on" : ""}" data-preset="${k}" role="radio" aria-checked="${cur === k}"><strong>${label}</strong><span>${desc}</span></button>`).join("")}</div>`;
 }
 
@@ -544,9 +579,9 @@ function autonomyRows(a, locked) {
   return Object.entries(labels).map(([k, label]) => {
     const isLocked = locked.includes(k);
     return `<div class="rule ${isLocked ? "locked" : ""}"><div class="grow"><div class="rule-label">${esc(label)}</div>${isLocked ? `<div class="rule-note">${icon("lock", "xs")}Always asks you</div>` : ""}</div>
-      <div class="seg" data-key="${k}" data-v="${a[k] === "auto" ? "auto" : "ask"}">
-        <button data-v="ask" class="${a[k] !== "auto" ? "on" : ""}" ${isLocked ? "disabled" : ""}>Ask me</button>
-        <button data-v="auto" class="${a[k] === "auto" ? "on" : ""}" ${isLocked ? "disabled" : ""}>Go ahead</button>
+      <div class="seg" data-key="${k}" data-v="${a[k] === "auto" ? "auto" : "ask"}" role="group" aria-label="${esc(label)}">
+        <button data-v="ask" class="${a[k] !== "auto" ? "on" : ""}" aria-pressed="${a[k] !== "auto"}" ${isLocked ? "disabled" : ""}>Ask me</button>
+        <button data-v="auto" class="${a[k] === "auto" ? "on" : ""}" aria-pressed="${a[k] === "auto"}" ${isLocked ? "disabled" : ""}>Go ahead</button>
       </div></div>`;
   }).join("");
 }
@@ -555,7 +590,7 @@ function syncAutonomyUI(a) {
   document.querySelectorAll(".seg[data-key]").forEach((seg) => {
     const v = a[seg.dataset.key] === "auto" ? "auto" : "ask";
     seg.dataset.v = v;
-    seg.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x.dataset.v === v));
+    seg.querySelectorAll("button").forEach((x) => { x.classList.toggle("on", x.dataset.v === v); x.setAttribute("aria-pressed", x.dataset.v === v); });
   });
   const cur = presetOf(a);
   document.querySelectorAll("[data-preset]").forEach((b) => { b.classList.toggle("on", b.dataset.preset === cur); b.setAttribute("aria-checked", b.dataset.preset === cur); });
@@ -633,6 +668,7 @@ async function nowView() {
   const boardEl = document.getElementById("board");
   const feedEl = document.getElementById("feed");
   let lastKey = "";
+  let known = null;  // the cards already on screen: only new ones are announced
   const load = async () => {
     const [list, meetings, notices] = await Promise.all([api("/api/approvals"), api("/api/meetings"), api("/api/notices")]);
     const pending = list.filter((a) => a.status === "pending");
@@ -640,6 +676,13 @@ async function nowView() {
     const key = JSON.stringify([pending.map((a) => a.id), incoming.map((m) => m.id), meetings.map((m) => m.status), notices[0] && notices[0].id]);
     if (key === lastKey) return;
     lastKey = key;
+    const ids = [...pending.map((a) => `a${a.id}`), ...incoming.map((m) => `m${m.id}`)];
+    if (known) {
+      const fresh = [...incoming.filter((m) => !known.has(`m${m.id}`)).map((m) => `${m.with_name} wants to meet at ${m.time}`),
+        ...pending.filter((a) => !known.has(`a${a.id}`)).map((a) => `Your agent asks: ${a.summary}`)];
+      if (fresh.length) announce(fresh.length === 1 ? fresh[0] : `${fresh.length} new cards need you. ${fresh[0]}`);
+    }
+    known = new Set(ids);
     const needs = pending.length + incoming.length;
     needsEl.innerHTML = `
       <div class="block-head"><h2>Needs you</h2>${needs ? `<span class="count">${needs}</span>` : ""}</div>
@@ -721,7 +764,7 @@ async function roomView(name, tab) {
   const sub = lobby ? `${plural(members.length, "person", "people")} · ${plural(members.length, "agent")}`
     : r.kind === "meet" && info && info.meeting ? `${esc(info.meeting.time)} · ${esc(info.meeting.place)}` : `${plural(members.length, "person", "people")} + their agents`;
   const stack = `<span class="stack-av" aria-hidden="true">${members.slice(0, 3).map((p) => av(p.name, "person", "xs")).join("")}</span>`;
-  shell(tab, `<div class="chat" id="chat" aria-live="polite"></div>
+  shell(tab, `<div class="chat" id="chat" role="log" aria-label="Messages" aria-live="off"></div>
     <button class="newpill" id="newpill" hidden>${icon("send", "xs")}New messages</button>
     <div class="composer"><div class="composer-inner">
       <input id="say" placeholder="${lobby ? "Message the lobby" : "Message " + esc(r.title)}" autocomplete="off" aria-label="Message" enterkeyhint="send">
@@ -735,7 +778,7 @@ async function roomView(name, tab) {
   const chat = document.getElementById("chat");
   const pill = document.getElementById("newpill");
   const nearBottom = () => window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
-  const toBottom = (smooth) => window.scrollTo({ top: document.body.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  const toBottom = (smooth) => window.scrollTo({ top: document.body.scrollHeight, behavior: smooth && !reducedMotion() ? "smooth" : "auto" });
   pill.onclick = () => { toBottom(true); pill.hidden = true; };
   window.addEventListener("scroll", function onScroll() {
     if (!document.body.contains(pill)) return window.removeEventListener("scroll", onScroll);
@@ -764,7 +807,7 @@ async function roomView(name, tab) {
       chat.insertAdjacentHTML("beforeend", `
         <div class="msg ${side} ${kind} ${cont ? "cont" : ""} ${initial ? "" : "fresh"}">
           ${side === "in" ? av(owner, kind, "sm") : ""}
-          <div class="bubble-wrap">${cont ? "" : `<div class="meta">${kind === "agent" ? '<span class="bot-tag">Agent</span>' : ""}<span class="name">${esc(name)}</span><time>${clock(m.at)}</time></div>`}
+          <div class="bubble-wrap">${cont ? `<span class="sr-only">${esc(name)}:</span>` : `<div class="meta">${kind === "agent" ? '<span class="bot-tag">Agent</span>' : ""}<span class="name">${esc(name)}</span><time>${clock(m.at)}</time></div>`}
           <div class="bubble">${rich(m.text, mine)}</div></div></div>`);
       prev = { handle: m.sender.handle, at: m.at };
     }
@@ -773,6 +816,7 @@ async function roomView(name, tab) {
   };
   paint(data.messages, true);
   toBottom(false);
+  chat.setAttribute("aria-live", "polite");  // only new messages are read out, not the history
   every(2500, async () => {
     try {
       const d = await api(`/api/rooms/${encodeURIComponent(name)}/messages${last ? `?since=${last + 1}` : ""}`);
@@ -835,8 +879,8 @@ async function newRoomSheet(preselect = []) {
   const people = await api("/api/people");
   await sheet(`<h2>New room</h2><p class="small muted">Each person you invite joins with their agent.</p>
     <div class="fieldset"><label class="field" for="rt">Room name</label><input id="rt" placeholder="PQC pilots" autocomplete="off"></div>
-    <label class="field">Invite</label>
-    <div class="picker">${people.length ? "" : '<p class="small muted">No one else has joined yet.</p>'}${people.map((p) => `<label class="pick"><input type="checkbox" data-h="${esc(p.handle)}" ${preselect.includes(p.handle) ? "checked" : ""}>
+    <p class="field" id="invite-label">Invite</p>
+    <div class="picker" role="group" aria-labelledby="invite-label">${people.length ? "" : '<p class="small muted">No one else has joined yet.</p>'}${people.map((p) => `<label class="pick"><input type="checkbox" data-h="${esc(p.handle)}" ${preselect.includes(p.handle) ? "checked" : ""}>
       ${pair(p.name, p.agent_active)}<span class="grow"><strong>${esc(p.name)}</strong><span>${esc([p.role, p.company].filter(Boolean).join(" · "))}</span></span><span class="tick">${icon("check", "sm")}</span></label>`).join("")}</div>
     <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="create">Create room</button></div>`, {
     onOpen: (root, close) => {
@@ -873,8 +917,8 @@ async function peopleView() {
   shell("people", `<div class="page">
     <div class="page-head"><h1 class="display">People</h1></div>
     <p class="muted page-sub">Ranked by what you have in common. Your agent is reading these too.</p>
-    <div class="search">${icon("search", "sm")}<input id="q" type="search" placeholder="Search people, topics, companies" autocomplete="off" enterkeyhint="search"></div>
-    <div class="filters" id="filters"></div>
+    <div class="search">${icon("search", "sm")}<input id="q" type="search" placeholder="Search people, topics, companies" aria-label="Search people, topics, companies" autocomplete="off" enterkeyhint="search"></div>
+    <div class="filters" id="filters" role="group" aria-label="Filter by topic"></div>
     <div id="contacts"></div><div id="plist" class="people-list"></div></div>`, { title: "" });
   const contacts = await api("/api/contacts");
   document.getElementById("contacts").innerHTML = contacts.length ? `<div class="block-head"><h2>Your contacts</h2><span class="muted small">Only you can see these</span></div>
@@ -891,11 +935,12 @@ async function peopleView() {
       const label = {};
       people.forEach((p) => (p.interests || []).forEach((i) => { const k = i.toLowerCase(); label[k] = label[k] || i; counts[k] = (counts[k] || 0) + 1; }));
       const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k]) => label[k]);
-      document.getElementById("filters").innerHTML = top.map((t) => `<button class="filter" data-f="${esc(t)}">${esc(t)}</button>`).join("");
+      document.getElementById("filters").innerHTML = top.map((t) => `<button class="filter" data-f="${esc(t)}" aria-pressed="false">${esc(t)}</button>`).join("");
       document.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => {
         const on = !b.classList.contains("on");
-        document.querySelectorAll("[data-f]").forEach((x) => x.classList.remove("on"));
+        document.querySelectorAll("[data-f]").forEach((x) => { x.classList.remove("on"); x.setAttribute("aria-pressed", "false"); });
         b.classList.toggle("on", on);
+        b.setAttribute("aria-pressed", on);
         q.value = on ? b.dataset.f : "";
         load();
       }));
@@ -919,7 +964,11 @@ async function peopleView() {
     }));
   };
   let t;
-  q.oninput = () => { clearTimeout(t); document.querySelectorAll("[data-f]").forEach((x) => x.classList.toggle("on", x.dataset.f === q.value)); t = setTimeout(load, 250); };
+  q.oninput = () => {
+    clearTimeout(t);
+    document.querySelectorAll("[data-f]").forEach((x) => { x.classList.toggle("on", x.dataset.f === q.value); x.setAttribute("aria-pressed", x.dataset.f === q.value); });
+    t = setTimeout(load, 250);
+  };
   load();
 }
 
@@ -949,7 +998,7 @@ function commonSections(me) {
       ${(me.talks || []).length ? `<div class="talks-mini">${me.talks.map((t) => `<span><b>${esc(t.slice(0, 5))}</b>${esc(t.slice(6))}</span>`).join("")}</div>` : ""}
       <p class="vault-note">${icon("lock", "xs")}${plural(nContact, "private detail")} in your vault. No agent can see ${nContact === 1 ? "it" : "them"}.</p></section>
     <section class="block"><div class="block-head"><h2>Appearance</h2></div>
-      <div class="seg wide" id="theme" data-v="${theme}">${THEMES.map((t) => `<button data-t="${t}" class="${theme === t ? "on" : ""}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div></section>
+      <div class="seg wide" id="theme" data-v="${theme}" role="group" aria-label="Theme">${THEMES.map((t) => `<button data-t="${t}" class="${theme === t ? "on" : ""}" aria-pressed="${theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div></section>
     <button class="btn ghost block signout" id="logout">Sign out</button>
     <button class="btn ghost block signout-all" id="logout-all">Sign out everywhere</button>`;
 }
@@ -962,7 +1011,7 @@ function bindCommon(me) {
   bindPresets(me.autonomy, saveAutonomy);
   document.querySelectorAll("#theme button").forEach((b) => (b.onclick = () => {
     setTheme(b.dataset.t);
-    document.querySelectorAll("#theme button").forEach((x) => x.classList.toggle("on", x === b));
+    document.querySelectorAll("#theme button").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-pressed", x === b); });
     document.getElementById("theme").dataset.v = b.dataset.t;
   }));
   document.getElementById("edit").onclick = () => editProfile(me);
@@ -1059,13 +1108,13 @@ async function meView() {
   const steps = [
     { done: connected, title: live ? "Add Hallway's tools (optional)" : "Connect it to Hallway",
       body: `<p class="small muted">${live ? "Your agent already talks in rooms through Switch. These tools add meetings, approvals and contact swaps." : "Run one of these on the machine where your agent lives."}</p>
-        <div class="code-card"><div class="code-tabs"><div class="seg" id="ctabs">${CONNECT_TABS.map(([id, label], i) => `<button data-c="${id}" class="${i ? "" : "on"}">${label}</button>`).join("")}</div>
-          <button class="iconbtn sm" id="copy" aria-label="Copy">${icon("copy", "sm")}</button></div>
+        <div class="code-card"><div class="code-tabs"><div class="seg" id="ctabs" role="group" aria-label="Your agent">${CONNECT_TABS.map(([id, label], i) => `<button data-c="${id}" class="${i ? "" : "on"}" aria-pressed="${!i}">${label}</button>`).join("")}</div>
+          <button class="iconbtn sm" id="copy" aria-label="Copy the command">${icon("copy", "sm")}</button></div>
           <pre class="code" id="cc">${esc(c.claude_code)}</pre><pre class="code" id="cx" hidden>${esc(c.codex)}</pre></div>
         <p class="tiny muted">${icon("key", "xs")} ${fresh ? "Copy it now: Hallway shows your key only once. It works like a password, so don't paste it anywhere public."
           : `Your key (<span class="mono">${esc(c.token_hint)}</span>) is hidden: Hallway shows it only once. Lost it? Make a new one under Agent key.`}</p>` },
     { done: started || connected, title: "Give it the kickoff prompt",
-      body: `<div class="code-card"><pre class="code prompt" id="ko">${esc(c.kickoff)}</pre><button class="iconbtn sm copy-float" id="copy-ko" aria-label="Copy prompt">${icon("copy", "sm")}</button></div>
+      body: `<div class="code-card"><pre class="code prompt" id="ko">${esc(c.kickoff)}</pre><button class="iconbtn sm copy-float" id="copy-ko" aria-label="Copy the kickoff prompt">${icon("copy", "sm")}</button></div>
         <p class="tiny muted">In Claude Code, run it as <span class="mono">/loop 5m &lt;prompt&gt;</span> to keep your agent in the hallway while you're in talks.</p>` },
     { done: pv.passed, bad: pv.checked_at && !pv.passed, title: "Privacy check",
       body: pv.passed ? '<p class="small muted">Passed. It answered three probing questions without leaking anything private.</p>'
@@ -1082,7 +1131,7 @@ async function meView() {
       ${doneN === 3 ? `<p class="small muted setup-done">${icon("check", "sm")}All set. Your agent is in the hallway.</p>` : ""}
       <ol class="checklist">${steps.map((s, i) => `
         <li class="${s.done ? "done" : s.bad ? "bad" : ""} ${i === current ? "current" : ""}">
-          <details ${i === current || (i === 0 && fresh) ? "open" : ""}><summary><span class="ck">${s.done ? icon("check", "sm") : s.bad ? icon("x", "sm") : i + 1}</span><span class="grow">${s.title}</span>${icon("chev", "sm chev")}</summary>
+          <details ${i === current || (i === 0 && fresh) ? "open" : ""}><summary><span class="ck" aria-hidden="true">${s.done ? icon("check", "sm") : s.bad ? icon("x", "sm") : i + 1}</span><span class="grow"><span class="sr-only">${s.done ? "Done" : s.bad ? "Failed" : `Step ${i + 1}`}: </span>${s.title}</span>${icon("chev", "sm chev")}</summary>
           <div class="ck-body">${s.body}</div></details></li>`).join("")}</ol>
     </section>
     <section class="block"><div class="block-head"><h2>Agent key</h2><button class="btn ghost sm" id="rotate">${icon("key", "sm")}New key</button></div>
@@ -1092,7 +1141,7 @@ async function meView() {
   let shown = "cc";
   document.querySelectorAll("#ctabs button").forEach((b) => (b.onclick = () => {
     shown = b.dataset.c;
-    document.querySelectorAll("#ctabs button").forEach((x) => x.classList.toggle("on", x === b));
+    document.querySelectorAll("#ctabs button").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-pressed", x === b); });
     CONNECT_TABS.forEach(([id]) => (document.getElementById(id).hidden = id !== shown));
   }));
   document.getElementById("copy").onclick = () => window.hwCopy(shown);
