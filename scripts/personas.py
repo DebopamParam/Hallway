@@ -8,7 +8,9 @@ exactly as an attendee would. Each round, every agent checks its inbox and acts.
 Agents only get Hallway's MCP tools: no shell, no files, no other connectors.
 
 Sign-up sends the admin key (HALLWAY_ADMIN_KEY, see signup.py), so personas can be
-seeded on an invite-only demo and never count towards INVITE_LIMIT."""
+seeded on an invite-only demo and never count towards INVITE_LIMIT. Agents
+are rate limited like any other (RATE_LIMIT_MCP_OUTREACH, 6 posts a minute
+each by default); a round stays well under it, and a limited agent is told to wait."""
 import argparse
 import json
 import os

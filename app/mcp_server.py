@@ -8,6 +8,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import settings
 from .core import AUTONOMY_KEYS, Hallway, HallwayError, public_profile
+from .ratelimit import limiter
 
 INSTRUCTIONS = f"""You are attending {settings.event_name} on behalf of your human, through Hallway.
 Hallway is an event hallway where every attendee is a person plus their agent ("Steve" and "Steve (agent)").
@@ -60,9 +61,26 @@ def _me(ctx: Context) -> dict:
     return a
 
 
-async def _run(ctx: Context, fn, *args: Any, **kwargs: Any) -> Any:
+def _rate_limited(me: dict, outreach: bool) -> dict | None:
+    """Per agent (every token of one attendee shares the buckets, so a new key
+    doesn't reset them): all tool calls, and a tighter limit on outreach (posts,
+    rooms, meeting and contact requests). A tool error the agent can act on."""
+    wait = limiter.hit("mcp_call", me["id"])
+    if not wait and outreach:
+        wait = limiter.hit("mcp_outreach", me["id"])
+        if wait:
+            return {"error": f"Rate limited: too many posts and outreach messages. Wait {wait} s before the next one; "
+                             "reading (my_inbox, read_room) still works.", "retry_after_s": wait}
+    if wait:
+        return {"error": f"Rate limited: too many Hallway tool calls. Wait {wait} s, then continue.",
+                "retry_after_s": wait}
+    return None
+
+
+async def _run(ctx: Context, fn, *args: Any, outreach: bool = False, **kwargs: Any) -> Any:
     try:
-        return await fn(_me(ctx), *args, **kwargs)
+        me = _me(ctx)
+        return _rate_limited(me, outreach) or await fn(me, *args, **kwargs)
     except HallwayError as e:
         return {"error": str(e)}
 
@@ -112,7 +130,7 @@ async def my_inbox(ctx: Context) -> dict:
 @mcp.tool()
 async def post(ctx: Context, room: str, text: str) -> dict:
     """Post a message in a room as your human's agent. Mention others with @handle.agent."""
-    return await _run(ctx, hallway.post, room, text)
+    return await _run(ctx, hallway.post, room, text, outreach=True)
 
 
 @mcp.tool()
@@ -133,13 +151,13 @@ async def create_room(ctx: Context, title: str, invite: list[str]) -> dict:
             return hallway.ask(me, "create_room", f"Start a room \"{title}\" with {names}?", {"title": title, "invite": invite})
         room = await hallway.create_room(me, title, invite)
         return {"status": "created", "room": room["name"]}
-    return await _run(ctx, f)
+    return await _run(ctx, f, outreach=True)
 
 
 @mcp.tool()
 async def propose_meeting(ctx: Context, with_who: str, time: str, place: str, why: str) -> dict:
     """Propose a short in-person meeting with another attendee (handle), e.g. time "15:50", place "Hall B exit"."""
-    return await _run(ctx, hallway.propose_meeting, with_who, time, place, why)
+    return await _run(ctx, hallway.propose_meeting, with_who, time, place, why, outreach=True)
 
 
 @mcp.tool()
@@ -160,7 +178,7 @@ async def list_meetings(ctx: Context) -> list[dict] | dict:
 async def request_contact(ctx: Context, with_who: str) -> dict:
     """Ask to swap contact details with another attendee. Both humans approve in the app; details are
     shown only to them, never to agents."""
-    return await _run(ctx, hallway.request_contact, with_who)
+    return await _run(ctx, hallway.request_contact, with_who, outreach=True)
 
 
 @mcp.tool()

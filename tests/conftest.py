@@ -45,6 +45,7 @@ import httpx  # noqa: E402
 import pytest  # noqa: E402
 
 from app import core, main, mcp_server  # noqa: E402
+from app.ratelimit import limiter  # noqa: E402
 from app.presence import Presence  # noqa: E402
 from app.store import Store  # noqa: E402
 
@@ -53,6 +54,14 @@ from .fakes import FakeMM, FakeSwitch, World  # noqa: E402
 logging.getLogger("mcp").setLevel(logging.WARNING)  # one INFO line per tool call otherwise
 
 _emails = itertools.count(1)
+
+
+@pytest.fixture(autouse=True)
+def fresh_rate_limits():
+    """Every test starts with full buckets (the limiter is a process-wide singleton)."""
+    limiter.reset()
+    yield
+    limiter.reset()
 
 
 @pytest.fixture

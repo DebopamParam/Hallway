@@ -9,12 +9,13 @@ import secrets
 import time
 from pathlib import Path
 
-from fastapi import Cookie, FastAPI, HTTPException, Request, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import guard, mailer, mcp_server, security
+from .ratelimit import RateLimited, limiter
 from . import config
 from .config import AGENDA, check_keys, check_signin, settings
 from .core import AUTONOMY_KEYS, LOCKED_ASK, Hallway, HallwayError, public_profile
@@ -59,11 +60,27 @@ async def lifespan(_app: FastAPI):
     await hallway.stop()
 
 
-app = FastAPI(title="Hallway", lifespan=lifespan)
+async def _session_write_limit(request: Request) -> None:
+    """Cookie-authenticated writes, per session (every route; the organiser's
+    admin key is exempt)."""
+    cookie = request.cookies.get(SESSION_COOKIE)
+    if (cookie and request.method in security.UNSAFE_METHODS and request.url.path.startswith("/api/")
+            and not _is_admin(request)):
+        limiter.check("session_write", token_hash(cookie))
+
+
+app = FastAPI(title="Hallway", lifespan=lifespan, dependencies=[Depends(_session_write_limit)])
 # Security headers on every response (the SPA, the API, /mcp) and the Origin
 # check on cookie-authenticated writes. Reads `settings` per request.
 app.add_middleware(security.SecurityMiddleware, get_settings=lambda: settings)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+@app.exception_handler(RateLimited)
+async def _rate_limited(_req: Request, exc: RateLimited):
+    return JSONResponse({"error": f"Too many requests. Wait {exc.retry_after} s and try again.",
+                         "code": "rate_limited", "retry_after": exc.retry_after},
+                        status_code=429, headers={"Retry-After": str(exc.retry_after)})
 
 
 @app.exception_handler(HallwayError)
@@ -289,12 +306,15 @@ def _refusal_email(code: str) -> tuple[str, str]:
 @app.post("/api/auth/start")
 async def auth_start(body: StartAuth, request: Request):
     email = body.email.strip().lower()
+    admin = _is_admin(request)
+    if not admin:
+        limiter.check("auth_start_ip", client_ip(request))
     if "@" not in email:
         raise HallwayError("Enter a valid email.")
-    admin = _is_admin(request)
     if admin:
         # Organiser tooling (scripts/personas.py): a link for any email, in any mode.
         return {"sent": True, "dev_link": _issue_link(email)}
+    limiter.check("auth_start_email", email)
     mode = settings.signin_mode
     existing = hallway.store.attendee(email=email)
     if mode == "email":
@@ -325,6 +345,7 @@ async def auth_start(body: StartAuth, request: Request):
 
 @app.get("/auth/magic")
 async def auth_magic(t: str, request: Request):
+    limiter.check("magic_ip", client_ip(request))
     rec = hallway.store.kv_pop(f"magic:{t}")  # single use: gone on first open
     if not rec or time.time() - rec["at"] > settings.magic_link_ttl_s:
         return RedirectResponse("/#/?expired=1")
@@ -393,12 +414,14 @@ class Register(BaseModel):
 
 @app.post("/api/register")
 async def register(body: Register, request: Request, response: Response, hw_session: str | None = Cookie(None)):
+    persona = _is_admin(request)
+    if not persona:
+        limiter.check("register_ip", client_ip(request))
     a, email = _session(hw_session)
     if a:
         return _me_view(a)
     if not email:
         raise HTTPException(401, "Open the sign-in link from your email first.")
-    persona = _is_admin(request)
     # Checked again here, one registration at a time when there is a limit:
     # links issued while spots were left must not let more than INVITE_LIMIT in.
     async with hallway._lock if settings.invite_limit > 0 else contextlib.nullcontext():
@@ -577,6 +600,9 @@ async def guardrails_check(request: Request):
     # Unset only on a localhost dev box (check_keys refuses a public start without it).
     if settings.guard_api_key and not _key_matches(request.headers.get("x-flintai-api-key"), settings.guard_api_key):
         raise HTTPException(401, "bad guard key")
+    # Generous: only Switch calls this. Switch fails open on errors, so a 429
+    # here lets a message through unchecked; keep RATE_LIMIT_GUARD high.
+    limiter.check("guard", client_ip(request))
     body = await request.json()
     content = "\n".join(m.get("content", "") for m in body.get("messages", []))
     outcome, findings = guard.scan(content, hallway.private_values())
