@@ -159,7 +159,7 @@ with sync_playwright() as p:
             {"offline": False, "latency": 2500, "downloadThroughput": -1, "uploadThroughput": -1},
         )
         text = f"Qafix slow send {stamp} {w}"
-        page.fill("#say", text)
+        page.locator("#say").press_sequentially(text)  # real keystrokes, not fill()
         for _ in range(3):
             page.press("#say", "Enter")
             page.wait_for_timeout(150)
@@ -239,7 +239,7 @@ with sync_playwright() as p:
             page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
             page.goto(base + "/?invite=wrongcode")
             page.wait_for_selector("#email")
-            page.fill("#email", f"qafix.gate{stamp}{w}@example.com")
+            page.locator("#email").press_sequentially(f"qafix.gate{stamp}{w}@example.com")  # real keystrokes, not fill()
             page.click("#send")
             page.wait_for_selector("#invite-code")
             page.wait_for_timeout(300)

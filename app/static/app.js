@@ -251,7 +251,7 @@ function gate(kind, data = {}) {
       if (data.email) document.getElementById("send")?.click();
     };
     use.onclick = go;
-    document.getElementById("invite-code").onkeydown = (e) => e.key === "Enter" && go();
+    document.getElementById("invite-code").onkeydown = (e) => { if (e.key === "Enter") go(); };
   }
 }
 
@@ -458,7 +458,7 @@ async function landing(prefill = "") {
     }
   };
   document.getElementById("send").onclick = send;
-  document.getElementById("email").onkeydown = (e) => e.key === "Enter" && send();
+  document.getElementById("email").onkeydown = (e) => { if (e.key === "Enter") send(); };
 }
 
 // ---------------------------------------------------------------- onboarding
@@ -679,7 +679,7 @@ function bindPresets(target, onChange) {
 }
 
 // ---------------------------------------------------------------- now (home)
-const KIND_LABEL = { chat: "Chat", rooms: "Start a room", propose_meeting: "Propose a meeting", accept_meeting: "Accept a meeting", share_contact: "Swap contacts" };
+const KIND_LABEL = { chat: "Chat", post: "Post a message", create_room: "Start a room", rooms: "Start a room", propose_meeting: "Propose a meeting", accept_meeting: "Accept a meeting", share_contact: "Swap contacts" };
 const NOTICE_ICON = { agent_verified: "check", mention: "at", meeting_proposed: "calendar", meeting_confirmed: "check", meeting_declined: "x", contact_exchanged: "swap", approval: "bolt" };
 
 function greeting() {
@@ -711,7 +711,7 @@ const dropLeadingTag = (body, tag) => {
 };
 const NOTICE_LINE = {
   mention: (n, a, p, mine) => has(a.name, p.body) && `${a.kind === "person" ? `<strong>${esc(a.name)}</strong> to your agent` : `<strong>${esc(a.name)}'s agent</strong> to yours`}: <span class="q">${rich(dropLeadingTag(p.body, state.me.agent), mine)}</span>`,
-  welcome: (n, a, p) => has(p.event) && `Welcome to ${esc(p.event)}! Connect your agent from the Connect tab.`,
+  welcome: (n, a, p) => has(p.event) && `Welcome to ${esc(p.event)}! Set up your agent from the Agent tab.`,
   daypass: () => "Your day pass agent used its whole budget and has stopped.",
   room: (n, a, p, mine) => has(a.name, p.title) && `${esc(a.name)} started a room with you: ${rich(p.title, mine)}`,
   meeting_proposed: (n, a, p, mine) => has(a.name, p.time, p.place) && `${esc(a.name)} would like to meet you at ${esc(p.time)}, ${esc(p.place)}: ${rich(p.why, mine)}`,
@@ -940,7 +940,7 @@ async function roomView(name, tab) {
     sendBtn.disabled = false;
   };
   sendBtn.onclick = () => send();
-  input.onkeydown = (e) => e.key === "Enter" && send();
+  input.onkeydown = (e) => { if (e.key === "Enter") send(); };
 }
 
 async function roomsView() {

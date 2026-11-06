@@ -26,7 +26,8 @@ os.environ.update(
         "HALLWAY_ENV": "dev",
         "SIGNIN_MODE": "dev",
         "EMAIL_SENDER": "console",
-        "INVITE_CODE": "",
+        # FAKE_INVITE_CODE turns on the invite gate (ui_regressions.py --invite).
+        "INVITE_CODE": os.environ.get("FAKE_INVITE_CODE", ""),
         "INVITE_LIMIT": "0",
         "HOST_AGENT_NAME": "hallway-fake",
         "LOBBY_ROOM_NAME": "hallway-lobby",

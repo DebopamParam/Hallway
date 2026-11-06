@@ -536,7 +536,7 @@ class Hallway:
         self.store.notice(
             aid,
             "welcome",
-            f"Welcome to {settings.event_name}! Connect your agent from the Connect tab.",
+            f"Welcome to {settings.event_name}! Set up your agent from the Agent tab.",
             audience="person",
             event=settings.event_name,
         )
