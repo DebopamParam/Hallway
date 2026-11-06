@@ -13,6 +13,7 @@ GW_PORT=${GATEWAY_HOST_PORT:-3000}
 MM_PORT=${MATTERMOST_HOST_PORT:-8065}
 PG_PORT=${POSTGRES_HOST_PORT:-5432}
 HW_PORT=${HALLWAY_PORT:-8787}
+HW_PROJECT=${HALLWAY_PROJECT:-hallway}
 SW=deploy/switch
 API=http://127.0.0.1:$API_PORT
 
@@ -48,7 +49,7 @@ for kv in COMPOSE_PROJECT_NAME=$PROJECT API_HOST_PORT=$API_PORT GATEWAY_HOST_POR
 done
 
 say "Starting Switch 0.31.0 (project $PROJECT)"
-docker compose -f $SW/docker-compose.yml up -d
+docker compose -p "$PROJECT" -f $SW/docker-compose.yml up -d
 wait_for Switch $API/health
 wait_for Mattermost http://127.0.0.1:$MM_PORT/api/v4/system/ping
 
@@ -83,7 +84,7 @@ grep -q '^HALLWAY_PUBLIC_URL=http://localhost:' .env && setenv .env HALLWAY_PUBL
 say "Starting Hallway"
 profiles=(); [ "$(getenv .env DAYPASS_ENABLED)" = true ] && [ -n "$(getenv .env VERCEL_AI_GATEWAY_API_KEY)$(getenv .env ANTHROPIC_API_KEY)" ] && profiles=(--profile daypass)
 build=(--build); [ "${SKIP_BUILD:-}" = 1 ] && build=()  # SKIP_BUILD=1: use images you built
-docker compose "${profiles[@]}" up -d "${build[@]}"
+docker compose -p "$HW_PROJECT" "${profiles[@]}" up -d "${build[@]}"
 wait_for Hallway http://127.0.0.1:$HW_PORT/health
 curl -fs -X POST -H "x-hallway-admin: $(getenv .env GUARD_API_KEY)" http://127.0.0.1:$HW_PORT/api/admin/enable-guard >/dev/null \
   && say "Switch Trust now checks every message with Hallway's guard"
@@ -93,5 +94,5 @@ cat <<DONE
   Hallway         http://localhost:$HW_PORT
   Switch Gateway  http://localhost:$GW_PORT   ($ADMIN_EMAIL, password in $SW/.env)
 
-  Stop:  docker compose down && docker compose -f $SW/docker-compose.yml down
+  Stop:  docker compose -p $HW_PROJECT down && docker compose -p $PROJECT -f $SW/docker-compose.yml down
 DONE
