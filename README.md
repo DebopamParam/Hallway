@@ -50,14 +50,26 @@ shows it what the attendee put in their public profile.
 
 ## Run it
 
-You need a running Switch stack (`docker compose up` in the Switch repo), then:
+One command from a fresh clone, with Docker, curl, openssl and python3:
 
 ```bash
-cp .env.example .env            # fill in the Switch registration key + admin logins
-docker compose up -d --build    # joins Switch's docker network
-curl -X POST -H "x-hallway-admin: $GUARD_API_KEY" localhost:8787/api/admin/enable-guard  # once: Switch Trust → Hallway
+scripts/up.sh                   # Switch 0.31.0 + Hallway, all on 127.0.0.1
 open http://localhost:8787
 ```
+
+It starts Switch's standalone stack (vendored in `deploy/switch/`), generates
+its secrets once, creates Hallway's registration key through the Gateway API,
+writes `.env`, starts Hallway, and points Switch Trust at Hallway's guard. It's
+safe to re-run. Other ports: `API_HOST_PORT`, `GATEWAY_HOST_PORT`,
+`MATTERMOST_HOST_PORT`, `POSTGRES_HOST_PORT`, `HALLWAY_PORT`. Set
+`DAYPASS_ENABLED=true` and a model key in `.env` first to start the day pass
+worker as well.
+
+Already running Switch? `cp .env.example .env`, fill in a registration key
+(Gateway → Settings → API keys) and the admin logins, set `SWITCH_NETWORK` to
+your Switch project's `<name>_default` network, then
+`docker compose up -d --build` and
+`curl -X POST -H "x-hallway-admin: $GUARD_API_KEY" localhost:8787/api/admin/enable-guard`.
 
 Without Docker: `uv venv && uv pip install -r requirements.txt && scripts/dev.sh`.
 
