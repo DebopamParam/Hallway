@@ -244,7 +244,7 @@ async function landing() {
         <div class="input-row"><input id="email" type="email" placeholder="you@company.com" autocomplete="email" inputmode="email" enterkeyhint="go">
         </div>
         <button class="btn signal block" id="send">Get my sign-in link ${icon("arrow", "sm")}</button>
-        <p class="tiny muted center">No password. We email you a link.</p>
+        <p class="tiny muted center">${ev.signin_mode === "email" ? "No password. We email you a link." : "No password. Your sign-in link appears right here."}</p>
       </section>
       <section class="how">
         <p class="eyebrow">How it works</p>
@@ -261,20 +261,38 @@ async function landing() {
       </section>
       <footer class="land-foot"><span>Open source</span><span>·</span><span>Built on Switch</span><span>·</span><span>Your keys stay on your machine</span></footer>
     </main>`;
-  if (expired) toast("That sign-in link expired. Get a fresh one.");
+  if (expired) toast("That sign-in link was used or has expired. Get a fresh one.");
   const send = async () => {
     const btn = document.getElementById("send");
     const email = document.getElementById("email").value;
     btn.disabled = true;
     try {
       const r = await api("/api/auth/start", { body: { email } });
-      document.getElementById("signin").innerHTML = `
+      const box = document.getElementById("signin");
+      if (r.already_joined) {
+        box.innerHTML = `
+        <div class="sent">
+          <span class="sent-ic quiet">${icon("check")}</span>
+          <h2>You're already in</h2>
+          <p class="small muted">${esc(r.message)}</p>
+          <p class="tiny muted">This live demo can't email sign-in links, so <strong>${esc(email.trim())}</strong> stays signed in only where it joined.</p>
+          <button class="btn ghost block" id="again">Use a different email</button>
+        </div>`;
+        document.getElementById("again").onclick = () => landing();
+        return;
+      }
+      box.innerHTML = r.dev_link ? `
+        <div class="sent">
+          <span class="sent-ic">${icon("link")}</span>
+          <h2>Your link is ready</h2>
+          <p class="small muted">Sign in as <strong>${esc(email.trim())}</strong>. The link works once.</p>
+          <a class="btn signal block" href="${esc(r.dev_link)}">Open sign-in link ${icon("arrow", "sm")}</a>
+          <p class="tiny muted center">${ev.signin_mode === "demo" ? "Live demo: the link is shown here instead of emailed." : "Demo mode: the link is shown here instead of emailed."}</p>
+        </div>` : `
         <div class="sent">
           <span class="sent-ic">${icon("mail")}</span>
           <h2>Check your email</h2>
-          <p class="small muted">We sent a sign-in link to <strong>${esc(email.trim())}</strong>.</p>
-          ${r.dev_link ? `<a class="btn signal block" href="${esc(r.dev_link)}">Open sign-in link ${icon("arrow", "sm")}</a>
-            <p class="tiny muted center">Demo mode: the link is shown here instead of emailed.</p>` : ""}
+          <p class="small muted">We sent a sign-in link to <strong>${esc(email.trim())}</strong>. It works once, for 15 minutes.</p>
         </div>`;
     } catch (e) { toast(e.message); btn.disabled = false; }
   };

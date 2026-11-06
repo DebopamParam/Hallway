@@ -165,6 +165,16 @@ class Store:
             (key, json.dumps(value)),
         )
 
+    def kv_pop(self, key: str) -> Any:
+        """Read and delete in one statement: of two concurrent callers, only one gets the value."""
+        row = self.db.execute("DELETE FROM kv WHERE key = ? RETURNING value", (key,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def kv_purge(self, prefix: str, older_than: float) -> None:
+        """Drop `prefix*` records whose JSON `at` is before `older_than`."""
+        self.db.execute("DELETE FROM kv WHERE key LIKE ? ESCAPE '\\' AND json_extract(value, '$.at') < ?",
+                        (prefix.replace("%", r"\%").replace("_", r"\_") + "%", older_than))
+
     # convenience
     def attendee(self, **where: Any) -> dict | None:
         (k, v), = where.items()

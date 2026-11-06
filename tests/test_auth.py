@@ -63,14 +63,14 @@ async def test_auth_start_rejects_non_email(client):
 async def test_unknown_or_expired_magic_link(client, hallway):
     r = await client.get("/auth/magic?t=nope")
     assert r.status_code in (302, 307) and r.headers["location"] == "/#/?expired=1"
-    hallway.store.kv_set("magic:old", {"email": "x@example.com", "at": time.time() - 3601})
+    hallway.store.kv_set("magic:old", {"email": "x@example.com", "at": time.time() - 15 * 60 - 1})
     r = await client.get("/auth/magic?t=old")
     assert r.headers["location"] == "/#/?expired=1"
     assert "set-cookie" not in r.headers
 
 
-async def test_dev_links_off_hides_link(client, monkeypatch):
-    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, dev_magic_links=False))
+async def test_email_mode_hides_link(client, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, signin_mode="email"))
     r = await client.post("/api/auth/start", json={"email": "a@example.com"})
     assert r.json() == {"sent": True, "dev_link": None}
 
@@ -98,8 +98,8 @@ async def test_magic_link_single_use(make_client):
     await a.post("/api/register", json={"name": "Asha Rao"})
     b = make_client()
     r = await b.get(f"{link.path}?{link.query}")
-    if r.headers["location"] != "/#/?expired=1":
-        pytest.xfail("auth bug: magic links can be replayed for an hour and hand out the attendee's session")
+    assert r.headers["location"] == "/#/?expired=1"
+    assert "set-cookie" not in r.headers
 
 
 async def test_logout_revokes_session(make_client):

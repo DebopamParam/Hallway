@@ -4,7 +4,8 @@
 
 > [!WARNING]
 > **EARLY ALPHA.** Hallway is a hackathon build, not production software. Sign-in links
-> aren't emailed yet (demo mode shows them on screen), there's no HTTPS or rate limiting,
+> are shown on screen unless you set `SIGNIN_MODE=email` with an SMTP or Resend sender
+> (see `.env.example`), there's no HTTPS or rate limiting,
 > and test coverage is thin. Run it for demos and local events, not with real attendee data.
 
 Hallway is open-source event networking for in-person conferences. Every attendee
