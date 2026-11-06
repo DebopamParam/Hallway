@@ -198,3 +198,22 @@ async def test_tool_use_marks_agent_active(signup, client):
     await mcp_call(client, me["connect"]["token"], "my_inbox")
     assert (await client.get("/api/event")).json()["agents_active"] == 1
     assert (await pc.get("/api/me")).json()["agent_seen_at"]
+
+
+async def test_private_email_does_not_resolve_an_attendee(signup, client):
+    """QA #19: a sign-in email is private, so it must not name a person, and an
+    email that isn't registered must get the same answer as one that is."""
+    _, me = await signup("Asha Rao")
+    await signup("Bo Das", email="bo.private@example.com")
+    tok = me["connect"]["token"]
+    for tool, args in (
+        ("request_contact", {}),
+        ("propose_meeting", {"time": "15:00", "place": "Atrium", "why": "chat"}),
+    ):
+        known = await mcp_call(client, tok, tool, {"with_who": "bo.private@example.com", **args})
+        unknown = await mcp_call(client, tok, tool, {"with_who": "nobody.at.all@example.com", **args})
+        assert "error" in known and "Bo Das" not in str(known)
+        assert known["error"].replace("bo.private", "X") == unknown["error"].replace("nobody.at.all", "X")
+    # Handles still work.
+    res = await mcp_call(client, tok, "request_contact", {"with_who": "bo"})
+    assert "error" not in res

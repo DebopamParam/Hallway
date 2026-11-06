@@ -183,6 +183,13 @@ class MMClient:
         posts.sort(key=lambda p: p["create_at"])
         return posts
 
+    async def post_by_id(self, post_id: str) -> dict | None:
+        try:
+            post: dict = await self._req("GET", f"/posts/{post_id}")
+        except MMError:
+            return None
+        return post
+
     async def post_as(self, token: str, channel_id: str, message: str, root_id: str | None = None) -> dict:
         body = {"channel_id": channel_id, "message": message}
         if root_id:

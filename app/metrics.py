@@ -151,7 +151,9 @@ http_latency = REGISTRY.histogram(
     "hallway_http_request_duration_seconds", "HTTP request latency in seconds, by method and route template."
 )
 signins = REGISTRY.counter(
-    "hallway_signins_total", "Sign-in links opened: ok (an attendee), onboarding (a new email), expired."
+    "hallway_signins_total",
+    "Sign-in links opened: ok (an attendee), onboarding (a new email), expired, already_joined, "
+    "signed_in_elsewhere (left unused: this device is signed in to another account).",
 )
 signin_links = REGISTRY.counter("hallway_signin_links_total", "Sign-in links issued, by sign-in mode.")
 registrations = REGISTRY.counter("hallway_registrations_total", "New attendees, by mode (connect, live, daypass).")

@@ -190,6 +190,19 @@ ADDRESSING_OPENED = "stand_ins_addressing_open"  # kv: every stand-in got _open_
 HOST_CREATE_TRIES, HOST_CREATE_BACKOFF_S = 6, 0.5  # Switch busy creating a room: retry for ~10 s
 
 MEETING_CARD_HEAD = "**Meeting confirmed**"  # how the host's meeting card starts, in the room
+_MD_SPECIAL = re.compile(r"([\\`*_~\[\]()#>|<!:@&])")
+
+
+def is_redaction_notice(text: str) -> bool:
+    """Switch's note to a sender that part of their message was redacted."""
+    return "Part of your message" in text and "redacted by Switch Trust" in text
+
+
+def md_quote(text: str) -> str:
+    """Attendee text inside a host-authored post, on one line and with its
+    markdown, emoji and @mentions escaped, so it reads as quoted words and
+    never as the host's own formatting."""
+    return _MD_SPECIAL.sub(r"\\\1", " ".join(str(text).split()))
 
 
 def agent_notice(n: dict) -> dict:
@@ -836,9 +849,10 @@ class Hallway:
         return self.store.need("SELECT * FROM passes WHERE id = ?", p["id"])
 
     def resolve(self, who: str) -> dict:
-        """An attendee by handle, agent name, @mention, email or name."""
+        """An attendee by handle, agent name, @mention or name. Never by sign-in
+        email: that is private, and resolving it would link it to a person."""
         w = who.strip().lstrip("@").lower()
-        for col in ("handle", "agent_name", "email"):
+        for col in ("handle", "agent_name"):
             a = self.store.one(f"SELECT * FROM attendees WHERE lower({col}) = ?", w)
             if a:
                 return a
@@ -1452,8 +1466,8 @@ class Hallway:
         # retry to make a second room.
         self.store.update("meetings", m["id"], status="confirmed", room_id=room["id"])
         card = (
-            f"{MEETING_CARD_HEAD} :handshake:\n**{proposer['name']}** + **{attendee['name']}**\n"
-            f"When: **{m['time']}**  ·  Where: **{m['place']}**\nWhy: {m['why']}\n"
+            f"{MEETING_CARD_HEAD} :handshake:\n**{md_quote(proposer['name'])}** + **{md_quote(attendee['name'])}**\n"
+            f"When: **{md_quote(m['time'])}**  ·  Where: **{md_quote(m['place'])}**\nWhy: {md_quote(m['why'])}\n"
             f"_Agents: use this room to prep. Contact details are swapped only in the Hallway app, when both say yes._"
         )
         try:
@@ -1629,11 +1643,30 @@ class Hallway:
         by_agent = {a["agent_mm_user_id"]: a for a in self.store.attendees() if a.get("agent_mm_user_id")}
         by_person = {a["mm_user_id"]: a for a in self.store.attendees()}
         meeting_card = self._meeting_card(room)
+        mine = {attendee["mm_user_id"], attendee.get("agent_mm_user_id")}
+        authors = {p["id"]: p["user_id"] for p in posts}
+        matcher = self.private_matcher()
         out = []
         for p in posts:
             if p.get("type", "").startswith("system_"):
                 continue
             uid = p["user_id"]
+            text = p["message"]
+            if is_redaction_notice(text) and uid not in by_person and uid not in by_agent:
+                # Switch tells the sender, in their thread, that it struck part
+                # of their message out: that note is theirs alone.
+                root = p.get("root_id") or ""
+                if root and root not in authors:
+                    rp = await self.mm.post_by_id(root)
+                    authors[root] = rp["user_id"] if rp else ""
+                if authors.get(root) not in mine:
+                    continue
+            elif uid not in mine:
+                # Mattermost keeps a person's original words; only the copy
+                # Switch hands agents is redacted. Others see it struck out too.
+                outcome, findings = guard.scan(text, matcher)
+                if outcome == "redacted":
+                    text = guard.redact(text, findings)
             if uid in by_person:
                 a = by_person[uid]
                 sender = {"name": a["name"], "handle": a["handle"], "kind": "person"}
@@ -1659,7 +1692,7 @@ class Hallway:
                     "id": p["id"],
                     "root_id": p.get("root_id") or None,
                     "at": p["create_at"],
-                    "text": p["message"],
+                    "text": text,
                     "sender": sender,
                     # the host's meeting card, as fields: the app draws the ticket from these
                     **(

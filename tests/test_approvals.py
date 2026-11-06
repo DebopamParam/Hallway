@@ -218,3 +218,32 @@ async def test_cannot_meet_yourself_or_nobody(signup, client):
     assert res == {"error": "You can't meet yourself."}
     res = await mcp_call(client, tok, "propose_meeting", {"with_who": "ghost", "time": "1", "place": "x", "why": "y"})
     assert "No attendee called 'ghost'" in res["error"]
+
+
+async def test_sent_anyway_is_struck_out_for_everyone_else(signup, world):
+    """QA #8: 'Send anyway' told the sender others see it struck out, but
+    people read Mattermost's unredacted copy. Only the sender sees it in full,
+    and only the sender sees Switch's note that it was redacted."""
+    ac, _ = await signup("Asha Rao")
+    bc, _ = await signup("Bo Chen")
+    r = await ac.post("/api/rooms/hallway-lobby/messages", json={"text": "call me on +91 98111 22233"})
+    warning = r.json()["warning"]
+    assert "struck out" in warning and "will see it." not in warning
+    await ac.post("/api/rooms/hallway-lobby/messages", json={"text": "call me on +91 98111 22233", "confirm": True})
+    ch = next(c for c in world.channels.values() if any("98111" in p["message"] for p in c["posts"]))
+    mine = next(p for p in ch["posts"] if "98111" in p["message"])
+    admin = world.add_user("switch-admin", is_bot=True, first_name="Switch")
+    note = "⚠️ Part of your message (contact) was redacted by Switch Trust before it was delivered."
+    world.add_post(ch, admin["id"], note, mine["id"])["create_at"] = mine["create_at"] + 1
+
+    theirs = (await bc.get("/api/rooms/hallway-lobby/messages")).json()["messages"]
+    assert not any("98111" in m["text"] for m in theirs)
+    assert any(m["text"] == "call me on [redacted]" for m in theirs)
+    assert not any("Part of your message" in m["text"] for m in theirs)
+    own = (await ac.get("/api/rooms/hallway-lobby/messages")).json()["messages"]
+    assert any("98111" in m["text"] and m["mine"] for m in own)
+    assert any("Part of your message" in m["text"] for m in own)
+    # Polling with `since`: the root post is outside the batch, still resolved.
+    since = mine["create_at"]
+    own = (await ac.get(f"/api/rooms/hallway-lobby/messages?since={since}")).json()["messages"]
+    assert [m["text"] for m in own] == [note]

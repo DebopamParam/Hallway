@@ -228,7 +228,8 @@ function gate(kind, data = {}) {
           <p class="small muted">Already joined? Open Hallway on the device you signed up with.</p>
           <button class="btn ghost block" id="back">Back to Hallway</button>` : `
           <label class="field" for="invite-code">Have an invite code?</label>
-          <div class="input-row"><input id="invite-code" type="text" placeholder="Paste it here" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go"></div>
+          <div class="input-row"><input id="invite-code" type="text" placeholder="Paste it here" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go"${data.badCode ? ` value="${esc(data.badCode)}" aria-invalid="true" aria-describedby="invite-err"` : ""}></div>
+          ${data.badCode ? `<p class="field-error" id="invite-err" role="alert">That invite code isn't valid. Check the invite link you were sent.</p>` : ""}
           <button class="btn signal block" id="use-code">Continue ${icon("arrow", "sm")}</button>
           <p class="small muted">Already joined? Open Hallway on the device you signed up with.</p>
           <button class="btn ghost block" id="back">Back</button>`}
@@ -245,6 +246,9 @@ function gate(kind, data = {}) {
       if (!code) return document.getElementById("invite-code").focus();
       setInvite(code);
       back();
+      // With an email already typed, check the code now: a wrong one comes
+      // straight back here, saying so.
+      if (data.email) document.getElementById("send")?.click();
     };
     use.onclick = go;
     document.getElementById("invite-code").onkeydown = (e) => e.key === "Enter" && go();
@@ -274,7 +278,11 @@ async function render() {
   const [path, arg] = location.hash.replace(/^#\/?/, "").split("?")[0].split("/");
   if (!state.event) state.event = await api("/api/event").catch(() => ({ name: "Hallway" }));
   if (path && path !== "onboard") {
-    try { state.me = await api("/api/me"); } catch { state.me = null; }
+    // Only a 401 means signed out: offline or a server hiccup is not a sign-out.
+    try { state.me = await api("/api/me"); } catch (e) {
+      if (e.status !== 401) return offline();
+      state.me = null;
+    }
     if (!state.me) return go("");
     if (state.me.onboarding) return go("onboard");
   } else if (!path && !/expired=1|joined=1/.test(location.hash)) {
@@ -287,11 +295,31 @@ async function render() {
   const changed = state.route !== path;
   state.route = path;
   const view = routes[path] || landing;
-  await view(arg ? decodeURIComponent(arg) : undefined);
+  try { await view(arg ? decodeURIComponent(arg) : undefined); } catch (e) {
+    if (!e.status) return offline();  // fetch failed: no answer at all
+    throw e;
+  }
+  if (/[?&]signedin=1/.test(location.hash)) {
+    // A sign-in link opened while already signed in: the server kept this session.
+    history.replaceState(null, "", "#/" + path);
+    toast(`You're already signed in as ${state.me.name}. Sign out first to use a different sign-in link.`);
+  }
   if (changed) $app.querySelector(".view")?.classList.add("enter");
   if (path !== "lobby" && path !== "room") window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", render);
+
+// Can't reach Hallway: stay where we are and carry on once it answers again.
+function offline() {
+  clearTimers();
+  state.route = "offline";
+  $app.innerHTML = `<main class="view"><div class="page"><div class="empty" role="status">${MARK("empty-mark")}<h2>Can't reach Hallway</h2>
+    <p class="small muted">You may be offline. This page picks up again as soon as the connection is back.</p>
+    <button class="btn ghost" id="retry">Try again</button></div></div></main>`;
+  document.getElementById("retry").onclick = render;
+  state.timers.push(setInterval(() => { if (navigator.onLine) api("/api/session").then(render, () => {}); }, 3000));
+}
+window.addEventListener("online", () => { if (state.route === "offline") render(); });
 
 function agentActive(seen = state.me && state.me.agent_seen_at) {
   return Boolean(seen && Date.now() / 1000 - seen < 900);
@@ -301,7 +329,7 @@ function agentPill() {
   const paused = me.pass && me.pass.status !== "active";
   const on = agentActive() && !paused;
   const label = me.pass && me.pass.status === "spent" ? "Budget used" : paused ? "Paused" : on ? "Agent on" : me.agent_seen_at ? "Agent idle" : me.pass ? "Starting" : "Not connected";
-  return `<span class="pulse ${on ? "on" : ""}"></span><span>${label}</span>`;
+  return `<span class="pulse ${on ? "on" : ""}"></span>${icon("agent", "sm pill-ic")}<span class="pill-label">${label}</span>`;
 }
 
 const TABS = [["now", "Now", "now"], ["lobby", "Lobby", "lobby"], ["rooms", "Rooms", "rooms"], ["people", "People", "people"], ["me", "Agent", "agent"]];
@@ -315,7 +343,7 @@ function shell(active, inner, { title, sub, back, right, chat } = {}) {
     <header class="topbar ${chat ? "chatbar" : ""}">
       ${back ? `<button class="iconbtn" id="topbar-back" aria-label="Back">${icon("back")}</button>`
         : `<a class="home-mark" href="#/now" aria-label="Hallway home">${MARK()}</a>`}
-      <div class="grow topbar-title">${title ? `<h1 class="t">${esc(title)}</h1>${sub ? `<div class="s">${sub}</div>` : ""}` : ""}</div>
+      <div class="grow topbar-title">${title ? `<h1 class="t" title="${esc(title)}">${esc(title)}</h1>${sub ? `<div class="s">${sub}</div>` : ""}` : ""}</div>
       ${right || ""}
       <a class="agent-pill" id="agent-status" href="#/me">${agentPill()}</a>
     </header>
@@ -422,7 +450,9 @@ async function landing(prefill = "") {
     } catch (e) {
       if (e.code === "invite_only" || e.code === "demo_full") {
         if (e.code === "demo_full") state.event = { ...ev, spots_left: 0 };
-        return gate(e.code, { ...e.data, email: email.trim() });
+        const badCode = e.code === "invite_only" ? getInvite() : "";
+        if (badCode) setInvite("");  // refused: don't keep sending it
+        return gate(e.code, { ...e.data, email: email.trim(), badCode });
       }
       toast(e.message); btn.disabled = false;
     }
@@ -435,6 +465,22 @@ async function landing(prefill = "") {
 const draft = { step: 1, name: "", profile: { interests: [], talks: [], links: {} }, contact: {}, mode: "connect",
   live_agent_name: "", autonomy: { chat: "auto", rooms: "ask", propose_meeting: "ask", accept_meeting: "ask", share_contact: "ask" } };
 const STEPS = ["You", "Private", "Agent", "Rules"];
+// The draft lives in this tab's sessionStorage, for this email only, so a
+// reload or an evicted tab picks up where it was. Gone once registered.
+const DRAFT_KEY = "hw-onboard";
+let draftFor = null;  // the email whose saved draft is already in `draft`
+function loadDraft(email) {
+  if (draftFor === email) return;
+  draftFor = email;
+  try {
+    const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || "null");
+    if (d && d.email === email) Object.assign(draft, d.draft);
+  } catch { /* private mode or bad JSON: start fresh */ }
+}
+function keepDraft(email) {
+  try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ email, draft })); } catch { /* private mode */ }
+}
+function dropDraft() { try { sessionStorage.removeItem(DRAFT_KEY); } catch { /* private mode */ } }
 
 function badgeCard(p, { preview = false } = {}) {
   const name = p.name || "Your name";
@@ -450,9 +496,16 @@ function badgeCard(p, { preview = false } = {}) {
     </div></div>`;
 }
 
-async function onboard() {
+async function onboard(step) {
   try { state.me = await api("/api/me"); } catch { return go(""); }
   if (!state.me.onboarding) return go("now");
+  const email = state.me.email;
+  loadDraft(email);
+  // Each step is its own history entry (#/onboard/2), so browser Back steps back.
+  draft.step = Math.min(Math.max(Number(step) || draft.step || 1, 1), 4);
+  if (draft.step > 1 && !draft.name) draft.step = 1;
+  if (Number(step) !== draft.step) history.replaceState(null, "", `#/onboard/${draft.step}`);
+  keepDraft(email);
   const s = draft.step;
   const field = (id, label, value, placeholder, { hint = "", type = "text", ac = "" } = {}) => `
     <div class="fieldset"><label class="field" for="${id}">${label}</label><input id="${id}" type="${type}" value="${esc(value)}" placeholder="${placeholder}" ${ac ? `autocomplete="${ac}"` : ""}>${hint ? `<div class="hint">${hint}</div>` : ""}</div>`;
@@ -524,8 +577,8 @@ async function onboard() {
   </main>`;
   $app.querySelector(".view").classList.add("enter");
   window.scrollTo(0, 0);
-  bindAutonomy(draft.autonomy);
-  bindPresets(draft.autonomy);
+  bindAutonomy(draft.autonomy, () => keepDraft(email));
+  bindPresets(draft.autonomy, () => keepDraft(email));
   const v = (id) => document.getElementById(id)?.value?.trim() ?? "";
   const save = () => {
     if (s === 1) {
@@ -538,7 +591,9 @@ async function onboard() {
     }
     if (s === 2) draft.contact = Object.fromEntries([["email", v("c_email")], ["phone", v("c_phone")], ["linkedin", v("c_linkedin")]].filter(([, x]) => x));
     if (s === 3 && draft.mode === "live") draft.live_agent_name = v("live_name");
+    keepDraft(email);
   };
+  document.querySelector(".ob-body").addEventListener("input", save);
   if (s === 1) {
     const preview = document.getElementById("badge-preview");
     const live = () => {
@@ -548,16 +603,17 @@ async function onboard() {
     ["name", "role", "company", "here_for", "interests"].forEach((id) => document.getElementById(id).addEventListener("input", live));
   }
   document.querySelectorAll('input[name="mode"]').forEach((r) => (r.onchange = () => { save(); draft.mode = r.value; onboard(); }));
-  document.getElementById("back")?.addEventListener("click", () => { save(); draft.step--; onboard(); });
+  document.getElementById("back")?.addEventListener("click", () => { save(); go(`onboard/${s - 1}`); });
   document.getElementById("next").onclick = async () => {
     save();
     if (s === 1 && !draft.name) { toast("Add your name first"); document.getElementById("name").focus(); return; }
-    if (s < 4) { draft.step++; return onboard(); }
+    if (s < 4) return go(`onboard/${s + 1}`);
     const btn = document.getElementById("next");
     btn.disabled = true;
     try {
       state.me = keepKey(await api("/api/register", { body: { name: draft.name, profile: draft.profile, contact: draft.contact,
         autonomy: draft.autonomy, mode: draft.mode, live_agent_name: draft.live_agent_name || null } }));
+      dropDraft();
       go("me");
       toast(draft.mode === "daypass" ? "You're in. Your agent starts within a minute." : "You're in. Now connect your agent.", "ok");
     } catch (e) {
@@ -858,24 +914,29 @@ async function roomView(name, tab) {
   every(8000, refreshCounts);
   const input = document.getElementById("say");
   const sendBtn = document.getElementById("send");
+  let sending = false;  // Enter doesn't care that the button is disabled
   const send = async (confirm = false) => {
     const text = input.value.trim();
     if (!text) return input.focus();
+    if (sending) return;
+    sending = true;
     sendBtn.disabled = true;
     try {
       const res = await api(`/api/rooms/${encodeURIComponent(name)}/messages`, { body: { text, confirm } });
       if (res.warning) {
-        const ans = await sheet(`<div class="sheet-ic warn">${icon("shield")}</div><h2>Share that with everyone?</h2>
+        const ans = await sheet(`<div class="sheet-ic warn">${icon("shield")}</div><h2>Send private info?</h2>
           <p class="muted">${esc(res.warning.replace(/ Send anyway\?$/, ""))}</p>
-          <p class="small">Switch will strike it out for others anyway: <span class="redacted"><span>private</span></span></p>
+          <p class="small">They'll see it like this: <span class="redacted"><span>private</span></span>. You'll see your own words.</p>
           <div class="sheet-actions"><button class="btn ghost" data-answer="edit">Edit message</button><button class="btn primary" data-answer="send">Send anyway</button></div>`);
+        sending = false;
         sendBtn.disabled = false;
         if (ans === "send") return send(true);
         return input.focus();
       }
-      input.value = "";
+      if (input.value.trim() === text) input.value = "";
       setTimeout(() => toBottom(true), 50);
     } catch (e) { toast(e.message); }
+    sending = false;
     sendBtn.disabled = false;
   };
   sendBtn.onclick = () => send();

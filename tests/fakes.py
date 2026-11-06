@@ -336,6 +336,9 @@ class FakeMM:
         posts = [p for p in self.w.channels[channel_id]["posts"] if not since_ms or p["create_at"] > since_ms]
         return sorted(posts, key=lambda p: p["create_at"])[-per_page:]
 
+    async def post_by_id(self, post_id: str) -> dict | None:
+        return next((p for c in self.w.channels.values() for p in c["posts"] if p["id"] == post_id), None)
+
     async def post_as(self, token: str, channel_id: str, message: str, root_id: str | None = None) -> dict:
         uid = self.tokens.get(token)
         if not uid:
