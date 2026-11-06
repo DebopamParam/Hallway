@@ -13,6 +13,7 @@ import uuid
 
 import websockets
 
+from . import metrics
 from .config import settings
 from .store import Store
 
@@ -23,6 +24,7 @@ class Presence:
     def __init__(self, store: Store):
         self.store = store
         self.tasks: dict[str, asyncio.Task] = {}
+        self.connected: set[str] = set()  # attendee ids whose socket Switch has confirmed
         self._ws_base = settings.switch_url.replace("http://", "ws://").replace("https://", "wss://")
 
     def ensure(self, attendee: dict) -> None:
@@ -39,6 +41,11 @@ class Presence:
     def stop(self) -> None:
         for t in self.tasks.values():
             t.cancel()
+
+    def counts(self) -> dict[str, int]:
+        """Stand-ins Hallway is holding a socket for, and how many Switch has confirmed."""
+        held = sum(1 for t in self.tasks.values() if not t.done())
+        return {"connected": len(self.connected), "connecting": max(0, held - len(self.connected))}
 
     async def _hold(self, attendee_id: str) -> None:
         conn_key = f"conn:{attendee_id}"
@@ -79,6 +86,7 @@ class Presence:
                             cursor = data.get("cursor", cursor)
                             state["cursor"] = cursor
                             self.store.kv_set(conn_key, state)
+                            self.connected.add(attendee_id)
                             log.info("stand-in %s connected", a["agent_name"])
                         elif kind == "gap":
                             cursor = data.get("resumed_at", cursor)
@@ -95,9 +103,13 @@ class Presence:
                         if kind != "connection_state":
                             self.store.kv_set(conn_key, state)
             except asyncio.CancelledError:
+                self.connected.discard(attendee_id)
                 raise
             except Exception as e:
                 log.info("stand-in %s socket closed: %r", a["agent_name"], e)
+            if attendee_id in self.connected:
+                self.connected.discard(attendee_id)
+                metrics.presence_drops.inc()
             self.store.kv_set(conn_key, state)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30)

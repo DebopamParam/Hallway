@@ -4,7 +4,7 @@ import pytest
 
 from app import guard
 
-from .conftest import GUARD_KEY
+from .conftest import ADMIN_KEY, GUARD_KEY
 
 
 def outcome(text: str, extra: list[str] | None = None) -> tuple[str, set[str]]:
@@ -177,7 +177,8 @@ async def test_guardrails_check_requires_key_when_set(client, monkeypatch):
 
 
 async def _guard_stats(client) -> dict:
-    return (await client.get("/health")).json()["guard"]
+    """The organiser's view of /health (the public one says only ok)."""
+    return (await client.get("/health", headers={"x-hallway-admin": ADMIN_KEY})).json()["guard"]
 
 
 async def test_guard_error_answers_blocked_not_500(client, monkeypatch):

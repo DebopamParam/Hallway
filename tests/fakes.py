@@ -39,6 +39,7 @@ class World:
         # freshly created users: add_users answers 200 {"ok": false, "unresolved": [...]}
         # and invite_agent answers {"ok": true} without adding anyone.
         self.unresolvable: set[str] = set()
+        self.switch_down = False  # FakeSwitch.health fails (for /ready)
 
     # helpers
     def user_by_name(self, username: str) -> dict | None:
@@ -96,6 +97,10 @@ class FakeSwitch:
         if not a or a["key"] != creds.key:
             raise SwitchError(401, "bad agent key")
         return a
+
+    async def health(self) -> None:
+        if self.w.switch_down:
+            raise SwitchError(503, "switch is down")
 
     async def register_agent(self, name: str, display_name: str, description: str) -> AgentCreds:
         await asyncio.sleep(0)

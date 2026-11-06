@@ -91,6 +91,8 @@ class Settings:
     trust_cf_connecting_ip: bool = _bool("TRUST_CF_CONNECTING_IP", True)
     host_agent_name: str = os.environ.get("HOST_AGENT_NAME", "hallway")
     lobby_room_name: str = os.environ.get("LOBBY_ROOM_NAME", "lobby")
+    # text (default, for a terminal) or json (one object per line, for production log tooling).
+    log_format: str = os.environ.get("LOG_FORMAT", "text").strip().lower()
 
 
 AGENDA = [
