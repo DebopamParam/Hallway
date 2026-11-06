@@ -5,6 +5,7 @@ rotated from the Agent tab, day pass run tokens, and the v1 -> v2 migration."""
 import hashlib
 import sqlite3
 import time
+from urllib.parse import urlparse
 
 from app import core
 from app import store as store_mod
@@ -259,3 +260,29 @@ async def test_session_state_never_401s(client, signup):
     assert r.status_code == 200 and r.json() == {"signed_in": False, "onboarding": False}
     pc, _ = await signup("Asha Rao")
     assert (await pc.get("/api/session")).json() == {"signed_in": True, "onboarding": False}
+
+
+async def test_magic_link_never_replaces_a_signed_in_session(make_client):
+    """QA #43: opening a sign-in link for another email while signed in leaves
+    the current session alone, and the link stays unused for its own email."""
+    victim, other = make_client(), make_client()
+    await register(victim, "Asha Rao", email="asha@example.com")
+    before = victim.cookies.get("hw_session")
+    r = await other.post("/api/auth/start", json={"email": "someone.new@example.com"})
+    link = urlparse(r.json()["dev_link"])
+    r = await victim.get(f"{link.path}?{link.query}")
+    assert r.status_code in (302, 303, 307) and "signedin=1" in r.headers["location"]
+    assert victim.cookies.get("hw_session") == before
+    assert (await victim.get("/api/me")).json()["handle"] == "asha"
+    # Not consumed: it still works on a device that isn't signed in.
+    r = await other.get(f"{link.path}?{link.query}")
+    assert r.headers["location"].endswith("/#/onboard")
+
+
+async def test_own_magic_link_while_signed_in_still_signs_in(make_client):
+    a = make_client()
+    await register(a, "Asha Rao", email="asha@example.com")
+    before = a.cookies.get("hw_session")
+    r = await sign_in(a, "asha@example.com")
+    assert r.headers["location"].endswith("/#/home")
+    assert a.cookies.get("hw_session") != before

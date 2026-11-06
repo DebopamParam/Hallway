@@ -288,6 +288,11 @@ async function render() {
   state.route = path;
   const view = routes[path] || landing;
   await view(arg ? decodeURIComponent(arg) : undefined);
+  if (/[?&]signedin=1/.test(location.hash)) {
+    // A sign-in link opened while already signed in: the server kept this session.
+    history.replaceState(null, "", "#/" + path);
+    toast(`You're already signed in as ${state.me.name}. Sign out first to use a different sign-in link.`);
+  }
   if (changed) $app.querySelector(".view")?.classList.add("enter");
   if (path !== "lobby" && path !== "room") window.scrollTo(0, 0);
 }

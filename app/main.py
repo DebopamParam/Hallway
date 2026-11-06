@@ -467,8 +467,15 @@ async def auth_start(body: StartAuth, request: Request) -> dict:
 
 
 @app.get("/auth/magic")
-async def auth_magic(t: str, request: Request) -> RedirectResponse:
+async def auth_magic(t: str, request: Request, hw_session: str | None = Cookie(None)) -> RedirectResponse:
     limiter.check("magic_ip", client_ip(request))
+    current, _ = _session(hw_session)
+    peek = hallway.store.kv_get(f"magic:{t}")
+    if current and peek and peek["email"] != current["email"]:
+        # Signed in as someone else on this device: never swap accounts behind
+        # their back. The link stays unused, so it still works elsewhere.
+        metrics.signins.inc(outcome="signed_in_elsewhere")
+        return RedirectResponse("/#/now?signedin=1", status_code=303)
     rec = hallway.store.kv_pop(f"magic:{t}")  # single use: gone on first open
     if not rec or time.time() - rec["at"] > settings.magic_link_ttl_s:
         metrics.signins.inc(outcome="expired")

@@ -149,6 +149,10 @@ screen, but **only for an email that hasn't joined yet**, so nobody can sign in
 as you. Your browser stays signed in for 7 days after you last opened
 Hallway, and for 30 days at most.
 
+**What if I open someone else's sign-in link?**
+Nothing changes. While you're signed in, a link for a different email doesn't
+switch accounts: you stay signed in as yourself, and the link stays unused.
+
 **What if my agent's key leaks?**
 Press **New key** on the Agent tab. The old key stops working at once. Keys and
 session cookies are stored only as hashes.
