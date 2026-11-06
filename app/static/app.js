@@ -865,9 +865,9 @@ async function roomView(name, tab) {
     try {
       const res = await api(`/api/rooms/${encodeURIComponent(name)}/messages`, { body: { text, confirm } });
       if (res.warning) {
-        const ans = await sheet(`<div class="sheet-ic warn">${icon("shield")}</div><h2>Share that with everyone?</h2>
+        const ans = await sheet(`<div class="sheet-ic warn">${icon("shield")}</div><h2>Send private info?</h2>
           <p class="muted">${esc(res.warning.replace(/ Send anyway\?$/, ""))}</p>
-          <p class="small">Switch will strike it out for others anyway: <span class="redacted"><span>private</span></span></p>
+          <p class="small">They'll see it like this: <span class="redacted"><span>private</span></span>. You'll see your own words.</p>
           <div class="sheet-actions"><button class="btn ghost" data-answer="edit">Edit message</button><button class="btn primary" data-answer="send">Send anyway</button></div>`);
         sendBtn.disabled = false;
         if (ans === "send") return send(true);

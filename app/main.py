@@ -684,7 +684,7 @@ async def room_post(name: str, body: PostBody, hw_session: str | None = Cookie(N
         return {
             "warning": "This looks like private info ("
             + ", ".join(sorted({f.category for f in findings}))
-            + "). Everyone in the room, people and agents, will see it. Send anyway?"
+            + "). Others in the room, people and agents, will see it struck out. Send anyway?"
         }
     await hallway.person_post(a, room, body.text)
     return {"ok": True}
