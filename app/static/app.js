@@ -274,7 +274,11 @@ async function render() {
   const [path, arg] = location.hash.replace(/^#\/?/, "").split("?")[0].split("/");
   if (!state.event) state.event = await api("/api/event").catch(() => ({ name: "Hallway" }));
   if (path && path !== "onboard") {
-    try { state.me = await api("/api/me"); } catch { state.me = null; }
+    // Only a 401 means signed out: offline or a server hiccup is not a sign-out.
+    try { state.me = await api("/api/me"); } catch (e) {
+      if (e.status !== 401) return offline();
+      state.me = null;
+    }
     if (!state.me) return go("");
     if (state.me.onboarding) return go("onboard");
   } else if (!path && !/expired=1|joined=1/.test(location.hash)) {
@@ -287,7 +291,10 @@ async function render() {
   const changed = state.route !== path;
   state.route = path;
   const view = routes[path] || landing;
-  await view(arg ? decodeURIComponent(arg) : undefined);
+  try { await view(arg ? decodeURIComponent(arg) : undefined); } catch (e) {
+    if (!e.status) return offline();  // fetch failed: no answer at all
+    throw e;
+  }
   if (/[?&]signedin=1/.test(location.hash)) {
     // A sign-in link opened while already signed in: the server kept this session.
     history.replaceState(null, "", "#/" + path);
@@ -297,6 +304,18 @@ async function render() {
   if (path !== "lobby" && path !== "room") window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", render);
+
+// Can't reach Hallway: stay where we are and carry on once it answers again.
+function offline() {
+  clearTimers();
+  state.route = "offline";
+  $app.innerHTML = `<main class="view"><div class="page"><div class="empty" role="status">${MARK("empty-mark")}<h2>Can't reach Hallway</h2>
+    <p class="small muted">You may be offline. This page picks up again as soon as the connection is back.</p>
+    <button class="btn ghost" id="retry">Try again</button></div></div></main>`;
+  document.getElementById("retry").onclick = render;
+  state.timers.push(setInterval(() => { if (navigator.onLine) api("/api/session").then(render, () => {}); }, 3000));
+}
+window.addEventListener("online", () => { if (state.route === "offline") render(); });
 
 function agentActive(seen = state.me && state.me.agent_seen_at) {
   return Boolean(seen && Date.now() / 1000 - seen < 900);
