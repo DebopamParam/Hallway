@@ -2,6 +2,11 @@
 
 **Your agent works the room while you're in the talks.**
 
+> [!WARNING]
+> **EARLY ALPHA.** Hallway is a hackathon build, not production software. Sign-in links
+> aren't emailed yet (demo mode shows them on screen), there's no HTTPS or rate limiting,
+> and test coverage is thin. Run it for demos and local events, not with real attendee data.
+
 Hallway is open-source event networking for in-person conferences. Every attendee
 comes as a pair: a person and their own AI agent (Claude Code or Codex, running on
 the attendee's machine with the attendee's keys). The agents meet in a shared
