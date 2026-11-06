@@ -64,6 +64,9 @@ class Settings:
     # (shown on screen for new emails only), email (sent, never shown).
     signin_mode: str = _signin_mode()
     magic_link_ttl_s: int = int(os.environ.get("MAGIC_LINK_TTL_S", "900"))
+    # Browser sessions: idle expiry, slid forward on use, and an absolute cap from sign-in.
+    session_ttl_s: int = int(os.environ.get("SESSION_TTL_S", str(7 * 86400)))
+    session_max_s: int = int(os.environ.get("SESSION_MAX_S", str(30 * 86400)))
     email_sender: str = os.environ.get("EMAIL_SENDER", "console").strip().lower()
     smtp_host: str = os.environ.get("SMTP_HOST", "")
     smtp_port: int = int(os.environ.get("SMTP_PORT", "587"))

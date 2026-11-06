@@ -14,7 +14,6 @@ Vocabulary
 import asyncio
 import logging
 import re
-import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -23,7 +22,7 @@ from . import guard
 from .config import settings
 from .mm import TEAM_HEADROOM, MMClient, MMError
 from .presence import Presence
-from .store import Store, new_id
+from .store import Store, new_id, new_mcp_token, token_hash, token_hint
 from .switch import AgentCreds, SwitchClient, SwitchError
 
 log = logging.getLogger("hallway")
@@ -203,10 +202,11 @@ class Hallway:
             log.error("register %s: %s", handle, e)
             raise HallwayError("We couldn't set up your Hallway account just now. Please try again in a minute.")
         aid = new_id()
+        mcp_token = new_mcp_token()  # shown to the attendee once, in this registration's response
         row: dict[str, Any] = dict(
             id=aid, name=name, email=email, handle=handle, agent_name=agent_name, mode=mode,
             profile=profile, contact=contact, autonomy=self._autonomy(autonomy),
-            mcp_token="hw_" + secrets.token_urlsafe(24), session_token=secrets.token_urlsafe(32),
+            mcp_token_hash=token_hash(mcp_token), mcp_token_hint=token_hint(mcp_token),
             mm_user_id=mm_user["id"], mm_password=mm_password, is_persona=int(is_persona), created_at=time.time(),
         )
         if mode in STAND_IN_MODES:
@@ -219,6 +219,7 @@ class Hallway:
         if mode == "daypass":
             self.store.insert("passes", id=new_id(), attendee_id=aid, cap_usd=settings.daypass_cap_usd, created_at=time.time())
         attendee = self.store.attendee(id=aid)
+        attendee["mcp_token"] = mcp_token
         self.presence.ensure(attendee)
         await self._join(attendee, self.lobby)
         self.store.notice(
@@ -274,7 +275,7 @@ class Hallway:
         """Active passes whose agent hasn't run for `every_s` seconds."""
         cutoff = time.time() - every_s
         return self.store.all(
-            "SELECT p.*, a.name, a.handle, a.mcp_token, a.profile FROM passes p JOIN attendees a ON a.id = p.attendee_id "
+            "SELECT p.*, a.name, a.handle, a.profile FROM passes p JOIN attendees a ON a.id = p.attendee_id "
             "WHERE p.status = 'active' AND (p.last_run_at IS NULL OR p.last_run_at < ?) ORDER BY p.last_run_at", cutoff,
         )
 
