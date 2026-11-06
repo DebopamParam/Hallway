@@ -29,6 +29,39 @@ jobs:
       - name: Tests
         run: python -m pytest
 
+  # axe-core plus Hallway's own checks (tap targets, focus, sheets, live
+  # regions, reduced motion) in headless Chromium, light and dark. The app
+  # runs against the in-memory Switch from tests/fakes.py: no Switch stack.
+  a11y:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install
+        run: pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+      - name: Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Accessibility
+        run: |
+          python scripts/fake_stack.py 8799 > fake_stack.log 2>&1 &
+          for i in $(seq 30); do curl -sf http://localhost:8799/health > /dev/null && break; sleep 1; done
+          python scripts/a11y.py a11y-out http://localhost:8799
+      - name: Report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: a11y-report
+          path: |
+            a11y-out
+            fake_stack.log
+
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 15
