@@ -355,7 +355,10 @@ NOTICE_COLUMNS = (
 # Old notice text, for _m4: the wording Hallway used before notices were structured.
 _OLD_TEXT = {
     "mention": re.compile(r"^(?P<who>.+?) → your agent: (?P<body>.*)$", re.S),
-    "welcome": re.compile(r"^Welcome to (?P<event>.+)! (?:Connect your agent from the Connect tab|Set up your agent from the Agent tab)\.$", re.S),
+    "welcome": re.compile(
+        r"^Welcome to (?P<event>.+)! (?:Connect your agent from the Connect tab|Set up your agent from the Agent tab)\.$",
+        re.S,
+    ),
     "room": re.compile(r"^(?P<who>.+?) started a room with you: (?P<title>.*)$", re.S),
     "approval": re.compile(r"^(?P<who>.+?) (?P<verb>approved|declined): (?P<summary>.*)$", re.S),
     "contact_exchanged": re.compile(r"^Contact details swapped with (?P<who>.+?)\. They're in the app", re.S),

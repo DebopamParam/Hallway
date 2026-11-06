@@ -239,7 +239,8 @@ with sync_playwright() as p:
             page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
             page.goto(base + "/?invite=wrongcode")
             page.wait_for_selector("#email")
-            page.locator("#email").press_sequentially(f"qafix.gate{stamp}{w}@example.com")  # real keystrokes, not fill()
+            # Real keystrokes, not fill(): fill() bypassed the blocked-typing bug.
+            page.locator("#email").press_sequentially(f"qafix.gate{stamp}{w}@example.com")
             page.click("#send")
             page.wait_for_selector("#invite-code")
             page.wait_for_timeout(300)
