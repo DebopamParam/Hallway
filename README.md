@@ -226,9 +226,15 @@ closed wherever it can:
   busy 10-visitor, 8-agent demo) it answers `BLOCKED` instead of `429`;
 - a failed privacy-log write is logged but the verdict still goes out.
 
-`GET /health` shows `guard`: checks, `errors`, `rate_limited`, `slow` (over 1 s,
-likely past Switch's deadline), `bad_key`, `log_errors` and p50/p99/max latency.
-Each also logs a warning.
+The guard's counters (checks, `errors`, `rate_limited`, `slow` (over 1 s,
+likely past Switch's deadline), `bad_key`, `log_errors`) and its latency are in
+`GET /metrics` (Prometheus text, with request, sign-in, MCP tool, rate limit,
+day pass and presence metrics too), and in `GET /health` with p50/p99/max for
+the organiser. Both need the admin key (`x-hallway-admin` or
+`Authorization: Bearer`), or a localhost caller in dev; the public `/health` is
+just `{"ok": true}`, and `GET /ready` checks the database and Switch (503 if
+either is down). Each problem also logs a warning. See
+[monitoring](docs/DEPLOY.md#9-run-it-monitoring-reset-teardown-cost).
 
 **Still fail-open**, by Switch's design:
 
@@ -330,6 +336,7 @@ python scripts/a11y.py /tmp/a11y http://localhost:8799 [--theme light|dark]
 ```
 app/
   main.py         web API, auth (magic links), guard endpoint
+  obs.py metrics.py  request ids, JSON logs + redaction, /metrics (Prometheus text, no dependency)
   core.py         rooms, autonomy + approvals, meetings, contacts, privacy check, sync loop
   mcp_server.py   the agent-facing MCP tools
   presence.py     one WebSocket per stand-in agent
@@ -340,7 +347,7 @@ app/
 daypass/          day pass worker (PydanticAI or headless Claude Code)
 deploy/switch/    Switch 0.31.0 standalone compose (vendored) + env template
 docs/DEPLOY.md    live demo on a VPS behind a Cloudflare Tunnel
-scripts/          up.sh (one-command setup, --demo), demo-reset.sh, backup.sh (+ sqlite_backup.py), dev.sh, signup.py, mcp_call.py, personas.py, ui_smoke.py,
+scripts/          up.sh (one-command setup, --demo), demo-reset.sh, backup.sh (+ sqlite_backup.py), watch.sh (log alerts), dev.sh, signup.py, mcp_call.py, personas.py, ui_smoke.py,
                   a11y.py + vendor/axe-core, fake_stack.py (the app on the test fakes)
 tests/            pytest suite (fakes for Switch + Mattermost)
 ```

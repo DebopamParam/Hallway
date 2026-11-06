@@ -47,6 +47,12 @@ class SwitchClient:
             raise SwitchError(r.status_code, r.text)
         return r.json() if r.content else None
 
+    async def health(self) -> None:
+        """Raises unless Switch answers its /health with a 2xx within 3 s."""
+        r = await self._http.get("/health", timeout=3)
+        if r.status_code >= 300:
+            raise SwitchError(r.status_code, r.text)
+
     async def register_agent(self, name: str, display_name: str, description: str) -> AgentCreds:
         res = await self._send(
             "POST",

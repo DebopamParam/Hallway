@@ -1,45 +1,36 @@
 """Hallway web server: the attendee app (SPA + JSON API), the MCP endpoint at
 /mcp, and the privacy guard Switch calls at /guardrails/check."""
 
+import asyncio
 import contextlib
 import ipaddress
 import logging
 import os
-import re
 import secrets
+import sqlite3
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, guard, mailer, mcp_server, security
+from . import config, guard, mailer, mcp_server, metrics, obs, security
 from .config import AGENDA, check_keys, check_signin, settings
 from .core import AUTONOMY_KEYS, LOCKED_ASK, Hallway, HallwayError, public_profile
 from .ratelimit import RateLimited, limiter
 from .store import token_hash
 from .switch import GatewayClient
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# LOG_FORMAT=json|text (app/obs.py). Request ids and the attendee id on every
+# line; sign-in tokens (?t=), MCP keys (?key=, hw_...) and bearer headers are
+# redacted everywhere, uvicorn's access log included.
+obs.setup_logging(settings.log_format)
 log = logging.getLogger("hallway")
 logging.getLogger("httpx").setLevel(logging.WARNING)
-
-
-class _RedactSecrets(logging.Filter):
-    """Access logs print the full path: hide sign-in tokens (?t=) and MCP keys (?key=)."""
-
-    PATTERN = re.compile(r"([?&](?:t|key)=)[^&\s\"]+")
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if isinstance(record.args, tuple):
-            record.args = tuple(self.PATTERN.sub(r"\1[redacted]", a) if isinstance(a, str) else a for a in record.args)
-        return True
-
-
-logging.getLogger("uvicorn.access").addFilter(_RedactSecrets())
+_RedactSecrets = obs.RedactSecrets  # the access log's filter, under its old name
 
 STATIC = Path(__file__).parent / "static"
 hallway = Hallway()
@@ -90,6 +81,7 @@ app = FastAPI(
 # Security headers on every response (the SPA, the API, /mcp) and the Origin
 # check on cookie-authenticated writes. Reads `settings` per request.
 app.add_middleware(security.SecurityMiddleware, get_settings=lambda: settings)
+app.add_middleware(obs.RequestMiddleware)  # added last: outermost, so it times and ids everything
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -125,6 +117,7 @@ def _lookup(hw_session: str | None) -> tuple[dict | None, str | None, dict | Non
     s = hallway.store.session(hw_session)
     a = hallway.store.attendee(id=s["attendee_id"]) if s else None
     if a:
+        obs.set_attendee(a["id"])
         return a, a["email"], s
     return None, hallway.store.kv_get(f"pre:{token_hash(hw_session)}"), None
 
@@ -346,6 +339,7 @@ def _issue_link(email: str) -> str:
     hallway.store.kv_purge("magic:", now - settings.magic_link_ttl_s)
     token = secrets.token_urlsafe(24)
     hallway.store.kv_set(f"magic:{token}", {"email": email, "at": now})
+    metrics.signin_links.inc(mode=settings.signin_mode)
     log.info("sign-in link issued for %s (%s mode)", mailer.mask_email(email), settings.signin_mode)
     return f"{settings.public_url}/auth/magic?t={token}"
 
@@ -414,9 +408,12 @@ async def auth_magic(t: str, request: Request) -> RedirectResponse:
     limiter.check("magic_ip", client_ip(request))
     rec = hallway.store.kv_pop(f"magic:{t}")  # single use: gone on first open
     if not rec or time.time() - rec["at"] > settings.magic_link_ttl_s:
+        metrics.signins.inc(outcome="expired")
         return RedirectResponse("/#/?expired=1")
     a = hallway.store.attendee(email=rec["email"])
+    metrics.signins.inc(outcome="ok" if a else "onboarding")
     if a:  # every sign-in is a new session; other devices stay signed in
+        obs.set_attendee(a["id"])
         session, target = hallway.store.create_session(a["id"], _ua(request)), "/#/home"
     else:
         session, target = secrets.token_urlsafe(32), "/#/onboard"
@@ -503,6 +500,10 @@ async def register(body: Register, request: Request, response: Response, hw_sess
             live_agent_name=body.live_agent_name,
             is_persona=persona,
         )
+    obs.set_attendee(a["id"])
+    if a.get("mcp_token"):  # only a new attendee gets their key in the response
+        metrics.registrations.inc(mode=a["mode"], persona=str(persona).lower())
+        log.info("registered attendee %s (%s mode)", a["id"], a["mode"])
     # The onboarding token is retired; the new account gets a fresh session.
     if hw_session:  # always: the pending email came from it
         hallway.store.kv_pop(f"pre:{token_hash(hw_session)}")
@@ -710,6 +711,7 @@ class GuardStats:
         self.recent_ms: list[float] = []
 
     def timed(self, ms: float) -> None:
+        metrics.guard_latency.observe(ms / 1000)
         self.checks += 1
         self.max_ms = max(self.max_ms, ms)
         self.recent_ms.append(ms)
@@ -770,13 +772,16 @@ async def guardrails_check(request: Request) -> dict:
         # that as fail-open, so over the limit the message is blocked instead.
         if limiter.hit("guard", client_ip(request)):
             guard_stats.rate_limited += 1
+            metrics.guard_verdicts.inc(outcome="blocked_rate_limited")
             log.warning("guard: over RATE_LIMIT_GUARD, answering BLOCKED")
             return guard.blocked_response("rate_limited")
         content, role = _guard_messages(await request.json())
         outcome, findings = guard.scan(content, hallway.private_matcher())
         response = guard.wire_response(outcome, findings)
+        metrics.guard_verdicts.inc(outcome=outcome)
     except Exception:
         guard_stats.errors += 1
+        metrics.guard_verdicts.inc(outcome="blocked_error")
         log.exception("guard: check failed, answering BLOCKED")
         return guard.blocked_response("guard_error")
     finally:
@@ -873,8 +878,136 @@ async def index() -> FileResponse:
 
 
 @app.get("/health")
-async def health() -> dict:
-    return {"ok": True, "guard": guard_stats.as_dict()}
+async def health(request: Request) -> dict:
+    """Liveness, for Docker and uptime monitors: public, touches nothing, says
+    nothing. The guard's counters (a stream of bad_key would tell anyone the
+    guard is being bypassed) only go to the organiser: admin key or a dev box."""
+    if _metrics_caller(request):
+        return {"ok": True, "guard": guard_stats.as_dict()}
+    return {"ok": True}
+
+
+READY_CACHE_S = 5.0  # /ready is public: at most one Switch probe per this many seconds
+_ready_cache: tuple[float, dict[str, str]] = (0.0, {})
+
+
+async def _readiness() -> dict[str, str]:
+    global _ready_cache
+    at, checks = _ready_cache
+    if checks and time.monotonic() - at < READY_CACHE_S:
+        return checks
+    checks = {}
+    try:
+        hallway.store.db.execute("SELECT 1 FROM kv LIMIT 1").fetchall()
+        checks["db"] = "ok"
+    except sqlite3.Error as e:
+        log.error("ready: database: %s", e)
+        checks["db"] = "error"
+    try:
+        await asyncio.wait_for(hallway.switch.health(), timeout=4)
+        checks["switch"] = "ok"
+    except Exception as e:
+        log.warning("ready: Switch: %r", e)
+        checks["switch"] = "error"
+    checks["started"] = "ok" if hallway.host and hallway.lobby else "error"
+    _ready_cache = (time.monotonic(), checks)
+    return checks
+
+
+@app.get("/ready")
+async def ready() -> JSONResponse:
+    """Readiness: the DB answers, Switch answers, startup finished. 503 if not.
+    Only ok/error per check; the reasons go to the log."""
+    checks = await _readiness()
+    ok = all(v == "ok" for v in checks.values())
+    return JSONResponse({"ok": ok, "checks": checks}, status_code=200 if ok else 503)
+
+
+def _metrics_caller(request: Request) -> bool:
+    """The organiser (x-hallway-admin, or the same key as a bearer token, which
+    is what Prometheus' `authorization` scrape setting sends), or a dev box."""
+    auth = request.headers.get("authorization", "")
+    bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else None
+    return _is_admin(request) or _key_matches(bearer, config.admin_key(settings)) or _local_dev_caller(request)
+
+
+@app.get("/metrics")
+async def metrics_endpoint(request: Request) -> PlainTextResponse:
+    """Prometheus text format. Needs the admin key (header or bearer); a
+    localhost caller needs none only on a dev box."""
+    if not _metrics_caller(request):
+        raise HTTPException(403, "send the admin key in x-hallway-admin or as a bearer token")
+    return PlainTextResponse(metrics.REGISTRY.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+# Read at scrape time. hallway.store is looked up on every scrape: tests swap it.
+_STARTED = time.time()
+GUARD_COUNTERS = {
+    "checks": "Privacy guard checks answered.",
+    "errors": "Guard checks that failed internally and answered BLOCKED.",
+    "rate_limited": "Guard checks over RATE_LIMIT_GUARD, answered BLOCKED.",
+    "slow": "Guard checks slower than 1 s: Switch may have delivered the message unchecked.",
+    "bad_key": "Guard calls with a wrong key (if from Switch, every message goes through unchecked).",
+    "log_errors": "Privacy log writes that failed (the verdict still went out).",
+}
+
+
+def _guard_counter(field: str) -> metrics.Collected:
+    return metrics.REGISTRY.collected(
+        f"hallway_guard_{field}_total", GUARD_COUNTERS[field], lambda: [({}, getattr(guard_stats, field))], "counter"
+    )
+
+
+for _field in GUARD_COUNTERS:
+    _guard_counter(_field)
+
+
+def _rows(sql: str) -> list[sqlite3.Row]:
+    return hallway.store.db.execute(sql).fetchall()
+
+
+metrics.REGISTRY.collected(
+    "hallway_daypass_spend_usd_total",
+    "Model spend reported by day pass runs, in USD.",
+    lambda: [({}, _rows("SELECT COALESCE(SUM(spent_usd), 0) FROM passes")[0][0])],
+    "counter",
+)
+metrics.REGISTRY.collected(
+    "hallway_daypass_cap_usd",
+    "Sum of all day passes' budgets, in USD.",
+    lambda: [({}, _rows("SELECT COALESCE(SUM(cap_usd), 0) FROM passes")[0][0])],
+)
+metrics.REGISTRY.collected(
+    "hallway_daypass_passes",
+    "Day passes by status (active, paused, spent).",
+    lambda: [({"status": r[0]}, r[1]) for r in _rows("SELECT status, COUNT(*) FROM passes GROUP BY status")],
+)
+metrics.REGISTRY.collected(
+    "hallway_daypass_runs_total",
+    "Day pass agent runs reported, by whether they succeeded.",
+    lambda: [
+        ({"ok": "true" if r[0] else "false"}, r[1]) for r in _rows("SELECT ok, COUNT(*) FROM pass_runs GROUP BY ok")
+    ],
+    "counter",
+)
+metrics.REGISTRY.collected(
+    "hallway_presence_sockets",
+    "Stand-in agents' WebSockets to Switch: connected (confirmed by Switch) or connecting.",
+    lambda: [({"state": k}, v) for k, v in hallway.presence.counts().items()],
+)
+metrics.REGISTRY.collected(
+    "hallway_attendees",
+    "Attendees, by mode.",
+    lambda: [({"mode": r[0]}, r[1]) for r in _rows("SELECT mode, COUNT(*) FROM attendees GROUP BY mode")],
+)
+metrics.REGISTRY.collected(
+    "hallway_agents_active",
+    "Attendees whose agent called Hallway in the last 15 minutes.",
+    lambda: [({}, _rows(f"SELECT COUNT(*) FROM attendees WHERE agent_seen_at > {time.time() - AGENT_ACTIVE_S}")[0][0])],
+)
+metrics.REGISTRY.collected(
+    "hallway_process_start_time_seconds", "When this Hallway process started (Unix time).", lambda: [({}, _STARTED)]
+)
 
 
 app.mount("/", mcp_app)  # serves /mcp; registered last so the routes above win

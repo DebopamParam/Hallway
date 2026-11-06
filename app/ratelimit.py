@@ -17,7 +17,10 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from . import config  # noqa: F401  (loads ./.env into the environment first)
+from . import (
+    config,  # noqa: F401  (loads ./.env into the environment first)
+    metrics,
+)
 
 # Demo defaults. Conference Wi-Fi puts many attendees behind one IP, so the
 # per-IP limits are loose; the per-email, per-agent and per-session ones are tight.
@@ -96,6 +99,7 @@ class RateLimiter:
                 self._prune(now)
             return 0
         self.buckets[(name, key)] = (tokens, now)
+        metrics.rate_limited.inc(limit=name)
         return max(1, math.ceil((1 - tokens) / limit.rate))
 
     def check(self, name: str, key: str) -> None:

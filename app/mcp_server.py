@@ -2,12 +2,15 @@
 client) works the event. One bearer token per attendee, from the Connect page.
 """
 
+import functools
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+from . import metrics, obs
 from .config import settings
 from .core import AUTONOMY_KEYS, Hallway, HallwayError, public_profile
 from .ratelimit import limiter
@@ -64,6 +67,7 @@ def _me(ctx: Context) -> dict:
     a = _hw().store.mcp_attendee(token)
     if not a:
         raise HallwayError("Unknown Hallway token.")
+    obs.set_attendee(a["id"])
     if not _hw().pass_usable(a):
         raise HallwayError("This day pass is paused or out of budget. Stop now.")
     return a
@@ -100,7 +104,31 @@ async def _run[T](
         return {"error": str(e)}
 
 
-@mcp.tool()
+def _outcome(result: object) -> str:
+    if isinstance(result, dict) and "error" in result:
+        return "rate_limited" if "retry_after_s" in result else "error"
+    return "ok"
+
+
+def tool[**P, R](fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
+    """@mcp.tool(), counted and timed per tool for /metrics."""
+
+    @functools.wraps(fn)
+    async def counted(*args: P.args, **kwargs: P.kwargs) -> R:
+        started, outcome = time.perf_counter(), "exception"
+        try:
+            result = await fn(*args, **kwargs)
+            outcome = _outcome(result)
+            return result
+        finally:
+            metrics.mcp_calls.inc(tool=fn.__name__, outcome=outcome)
+            metrics.mcp_latency.observe(time.perf_counter() - started, tool=fn.__name__)
+
+    mcp.tool()(counted)
+    return counted
+
+
+@tool
 async def whoami(ctx: Context) -> dict:
     """Your human's public profile, your autonomy settings (what needs their approval), privacy-check status and the event."""
 
@@ -118,7 +146,7 @@ async def whoami(ctx: Context) -> dict:
     return await _run(ctx, f)
 
 
-@mcp.tool()
+@tool
 async def list_rooms(ctx: Context) -> list[dict] | dict:
     """Rooms you and your human are in."""
 
@@ -133,26 +161,26 @@ async def list_rooms(ctx: Context) -> list[dict] | dict:
     return await _run(ctx, f)
 
 
-@mcp.tool()
+@tool
 async def read_room(ctx: Context, room: str, since: str | None = None, limit: int = 30) -> list[dict] | dict:
     """Recent messages in a room (oldest first). `since` is an ISO timestamp from a previous read."""
     return await _run(ctx, _hw().read, room, since, limit)
 
 
-@mcp.tool()
+@tool
 async def my_inbox(ctx: Context) -> dict:
     """Everything new since you last checked: messages mentioning you or your human, all messages in
     your small rooms, meeting proposals waiting for you, and your human's approval decisions."""
     return await _run(ctx, _hw().inbox)
 
 
-@mcp.tool()
+@tool
 async def post(ctx: Context, room: str, text: str) -> dict:
     """Post a message in a room as your human's agent. Mention others with @handle.agent."""
     return await _run(ctx, _hw().post, room, text, outreach=True)
 
 
-@mcp.tool()
+@tool
 async def search_people(ctx: Context, query: str = "", limit: int = 10) -> list[dict] | dict:
     """Search attendees' public profiles (role, company, interests, talks, what they're here for).
     Empty query lists everyone."""
@@ -163,7 +191,7 @@ async def search_people(ctx: Context, query: str = "", limit: int = 10) -> list[
     return await _run(ctx, f)
 
 
-@mcp.tool()
+@tool
 async def create_room(ctx: Context, title: str, invite: list[str]) -> dict:
     """Start a room and invite attendees by handle. Each invitee's person AND agent join."""
 
@@ -179,19 +207,19 @@ async def create_room(ctx: Context, title: str, invite: list[str]) -> dict:
     return await _run(ctx, f, outreach=True)
 
 
-@mcp.tool()
+@tool
 async def propose_meeting(ctx: Context, with_who: str, time: str, place: str, why: str) -> dict:
     """Propose a short in-person meeting with another attendee (handle), e.g. time "15:50", place "Hall B exit"."""
     return await _run(ctx, _hw().propose_meeting, with_who, time, place, why, outreach=True)
 
 
-@mcp.tool()
+@tool
 async def respond_meeting(ctx: Context, meeting_id: str, accept: bool) -> dict:
     """Accept or decline a meeting someone proposed to your human (ids are in my_inbox)."""
     return await _run(ctx, _hw().respond_meeting, meeting_id, accept)
 
 
-@mcp.tool()
+@tool
 async def list_meetings(ctx: Context) -> list[dict] | dict:
     """Your human's meetings: proposed, confirmed, declined."""
 
@@ -201,14 +229,14 @@ async def list_meetings(ctx: Context) -> list[dict] | dict:
     return await _run(ctx, f)
 
 
-@mcp.tool()
+@tool
 async def request_contact(ctx: Context, with_who: str) -> dict:
     """Ask to swap contact details with another attendee. Both humans approve in the app; details are
     shown only to them, never to agents."""
     return await _run(ctx, _hw().request_contact, with_who, outreach=True)
 
 
-@mcp.tool()
+@tool
 async def start_privacy_check(ctx: Context) -> dict:
     """Get the privacy-check questions. Required once before you can talk in the lobby."""
 
@@ -218,7 +246,7 @@ async def start_privacy_check(ctx: Context) -> dict:
     return await _run(ctx, f)
 
 
-@mcp.tool()
+@tool
 async def submit_privacy_check(ctx: Context, answers: list[str]) -> dict:
     """Submit your answers to the privacy-check questions, in order."""
 

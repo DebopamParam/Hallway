@@ -187,7 +187,8 @@ async def test_guard_has_a_cap_and_blocks_over_it(client, limits):
         "GUARDRAIL_RESULT_OUTCOME_BLOCKED"
     ]
     assert rs[2].json()["findings"][0]["detector_name"] == "rate_limited"
-    assert (await client.get("/health")).json()["guard"]["rate_limited"] >= 1
+    health = await client.get("/health", headers={"x-hallway-admin": ADMIN_KEY})
+    assert health.json()["guard"]["rate_limited"] >= 1
 
 
 def test_default_guard_limit_covers_demo_load(clock):

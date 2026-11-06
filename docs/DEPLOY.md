@@ -218,9 +218,119 @@ docker stats --no-stream                               # memory per container
 free -h; df -h /
 ```
 
-Logs rotate on their own (3 × 10 MB per container). To check from anywhere, add a free
-uptime monitor (Cloudflare Health Checks, UptimeRobot, …) on
-`https://hallway.debopamchowdhury.com/health`.
+Logs rotate on their own (3 × 10 MB per container).
+
+### Health, readiness and metrics
+
+| Endpoint | Who | What |
+|---|---|---|
+| `GET /health` | public | `{"ok": true}` while the process answers. Cheap; the container healthcheck uses it. With the admin key it also shows the guard's counters and p50/p99/max. |
+| `GET /ready` | public | `200` when the database answers, Switch's `/health` answers within 4 s and start-up finished; `503` otherwise, with `ok`/`error` per check and no details. Cached for 5 s. |
+| `GET /metrics` | admin key | Prometheus text format (see below). |
+
+```bash
+source .env
+curl -s 127.0.0.1:8787/ready
+curl -s -H "x-hallway-admin: $HALLWAY_ADMIN_KEY" 127.0.0.1:8787/metrics | grep -v '^#'
+curl -s -H "x-hallway-admin: $HALLWAY_ADMIN_KEY" 127.0.0.1:8787/health | python3 -m json.tool
+```
+
+`/metrics` takes the admin key as `x-hallway-admin` or as `Authorization: Bearer <key>`
+(what Prometheus' `authorization` setting sends); on a dev box (`HALLWAY_ENV=dev`) a
+localhost caller needs none. It has:
+
+- `hallway_http_requests_total{method,route,status}` and
+  `hallway_http_request_duration_seconds` (per route template, never per id);
+- `hallway_signins_total{outcome}`, `hallway_signin_links_total{mode}`,
+  `hallway_registrations_total{mode,persona}`, `hallway_attendees{mode}`;
+- `hallway_mcp_tool_calls_total{tool,outcome}` and `hallway_mcp_tool_call_duration_seconds{tool}`;
+- `hallway_rate_limited_total{limit}`;
+- the guard: `hallway_guard_checks_total`, `_errors_total`, `_rate_limited_total`,
+  `_slow_total`, `_bad_key_total`, `_log_errors_total`, `hallway_guard_verdicts_total{outcome}`
+  and `hallway_guard_check_duration_seconds` (buckets up to Switch's 2 s deadline);
+- the day pass: `hallway_daypass_spend_usd_total`, `hallway_daypass_cap_usd`,
+  `hallway_daypass_passes{status}`, `hallway_daypass_runs_total{ok}`;
+- presence: `hallway_presence_sockets{state}` (connected / connecting),
+  `hallway_presence_disconnects_total`, `hallway_agents_active`.
+
+Counters start from zero when Hallway restarts (`hallway_process_start_time_seconds`
+says when); `rate()` handles that.
+
+**Prometheus and Grafana are not part of the compose files.** To use them, run them on
+another machine (or Grafana Cloud's free tier with Grafana Alloy on the VPS) and scrape
+through the tunnel with the admin key:
+
+```yaml
+scrape_configs:
+  - job_name: hallway
+    scheme: https
+    metrics_path: /metrics
+    scrape_interval: 30s
+    authorization: {credentials_file: /etc/prometheus/hallway_admin_key}
+    static_configs: [{targets: ["hallway.debopamchowdhury.com"]}]
+```
+
+Alert rules worth having:
+
+```yaml
+groups:
+  - name: hallway
+    rules:
+      - alert: HallwayGuardSlow          # Switch delivers messages unchecked after 2 s
+        expr: histogram_quantile(0.95, sum by (le) (rate(hallway_guard_check_duration_seconds_bucket[5m]))) > 1.5
+        for: 5m
+      - alert: HallwayGuardBadKey        # Switch's Trust key is wrong: every message goes through unchecked
+        expr: increase(hallway_guard_bad_key_total[10m]) > 0
+      - alert: HallwayErrors
+        expr: sum(rate(hallway_http_requests_total{status=~"5.."}[5m])) > 0.05
+        for: 5m
+      - alert: HallwayPresenceFlapping   # stand-in agents keep losing their Switch WebSocket
+        expr: increase(hallway_presence_disconnects_total[15m]) > 10
+      - alert: HallwayNotReady
+        expr: up{job="hallway"} == 0
+        for: 2m
+```
+
+### Logs
+
+Every request gets an id: the `X-Request-ID` the caller sent, else Cloudflare's
+`CF-Ray`, else a new one. It's in the response's `X-Request-ID` header and on every log
+line made while handling the request, with the `attendee_id` once the session or MCP
+key is known (an opaque id, never a name or an email). Sign-in links, MCP keys and
+bearer tokens are redacted from every line, including the access log.
+
+`LOG_FORMAT=json` in `.env` (then `docker compose -p hallway up -d hallway`) switches
+to one JSON object per line, for a log shipper (Grafana Alloy/Loki, Vector, Datadog, …):
+
+```json
+{"ts": "2026-11-06T10:12:03.511Z", "level": "info", "logger": "uvicorn.access", "msg": "...", "request_id": "8d1f3c0a6b2e4f17", "attendee_id": "a9c...", "client": "203.0.113.7:0", "method": "GET", "path": "/api/me", "status": 200}
+```
+
+`text` (the default) reads better in `docker compose logs`. To find one request:
+`docker compose -p hallway logs hallway | grep <request id>`.
+
+### Alerting without a monitoring stack
+
+- **Uptime:** a free uptime monitor on `https://hallway.debopamchowdhury.com/health`:
+  [UptimeRobot](https://uptimerobot.com) (HTTP(s) monitor, 5 min, email or app alert), or
+  Cloudflare **Traffic → Health Checks** (paid plans) on the same URL. Point a second one
+  at `/ready` to hear about Switch going down too (it answers `503` then).
+- **Errors in the logs:** `scripts/watch.sh` follows the hallway container's logs and
+  prints only lines that need a human: errors and tracebacks (text or JSON), the guard
+  failing, slow or getting a wrong key, database errors, and 5xx responses. With
+  `--notify` it also POSTs each one, at most one per `--every` seconds (default 300;
+  the rest are counted into the next), to an [ntfy.sh](https://ntfy.sh) topic or a
+  Slack/Discord webhook:
+
+  ```bash
+  nohup scripts/watch.sh --notify https://ntfy.sh/<a long random topic> > watch.log 2>&1 &
+  scripts/watch.sh --since 1h            # the last hour's problems, then keep following
+  ```
+
+  Subscribe to the topic in the ntfy app. It runs until stopped; start it again after a
+  reboot (or from `@reboot` in `crontab -e`).
+- **Exceptions with context:** Sentry's free tier is an option (`sentry-sdk[fastapi]`
+  and a DSN); not wired in, to keep the image small.
 
 **The Switch gateway dashboard** (agents, rooms) is only on the VPS's loopback. Reach it
 through SSH: on the *laptop*, `ssh -L 3000:127.0.0.1:3000 hallway@VPS_IP`, then open
