@@ -8,7 +8,7 @@ import secrets
 import time
 from pathlib import Path
 
-from fastapi import Cookie, FastAPI, HTTPException, Request
+from fastapi import Cookie, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from . import guard, mailer, mcp_server
 from .config import AGENDA, check_signin, settings
 from .core import AUTONOMY_KEYS, LOCKED_ASK, Hallway, HallwayError, public_profile
+from .store import token_hash
 from .switch import GatewayClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -64,14 +65,35 @@ async def _hallway_error(_req: Request, exc: HallwayError):
 
 
 # ------------------------------------------------------------------ session
+# The hw_session cookie is a random token; the server keeps only its sha256:
+# a row in `sessions` once the person has an account, or `pre:<hash>` -> email
+# between opening the magic link and finishing onboarding.
+SESSION_COOKIE = "hw_session"
+
+
+def _lookup(hw_session: str | None) -> tuple[dict | None, str | None, dict | None]:
+    """(attendee, pending_email, session row). Any may be None."""
+    if not hw_session:
+        return None, None, None
+    s = hallway.store.session(hw_session)
+    a = hallway.store.attendee(id=s["attendee_id"]) if s else None
+    if a:
+        return a, a["email"], s
+    return None, hallway.store.kv_get(f"pre:{token_hash(hw_session)}"), None
+
+
 def _session(hw_session: str | None) -> tuple[dict | None, str | None]:
     """(attendee, pending_email). Either may be None."""
-    if not hw_session:
-        return None, None
-    a = hallway.store.attendee(session_token=hw_session)
-    if a:
-        return a, a["email"]
-    return None, hallway.store.kv_get(f"pre:{hw_session}")
+    return _lookup(hw_session)[:2]
+
+
+def _set_session_cookie(resp: Response, token: str, max_age: int) -> None:
+    resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=max(0, int(max_age)),
+                    secure=settings.public_url.startswith("https://"))
+
+
+def _ua(request: Request) -> str:
+    return request.headers.get("user-agent", "")
 
 
 def _me(hw_session: str | None) -> dict:
@@ -108,7 +130,13 @@ def _pass_view(a: dict) -> dict | None:
             "last_run_at": p["last_run_at"], "every_s": settings.daypass_every_s, "recent": runs}
 
 
-def _me_view(a: dict) -> dict:
+KEY_PLACEHOLDER = "<your-hallway-key>"
+
+
+def _me_view(a: dict, token: str | None = None) -> dict:
+    """`token` is the plain MCP key, passed only right after it was issued
+    (registration or rotation): it is stored hashed and can't be shown again."""
+    key = token or KEY_PLACEHOLDER
     return {
         **public_profile(a),
         "email": a["email"],
@@ -122,11 +150,12 @@ def _me_view(a: dict) -> dict:
         "pass": _pass_view(a),
         "connect": {
             "mcp_url": _mcp_url(),
-            "token": a["mcp_token"],
-            "claude_code": f'claude mcp add --transport http hallway {_mcp_url()} --header "Authorization: Bearer {a["mcp_token"]}"',
+            "token": token,
+            "token_hint": a["mcp_token_hint"],
+            "claude_code": f'claude mcp add --transport http hallway {_mcp_url()} --header "Authorization: Bearer {key}"',
             "codex": (f'[mcp_servers.hallway]\nurl = "{_mcp_url()}"\n'
-                      f'http_headers = {{ "Authorization" = "Bearer {a["mcp_token"]}" }}'),
-            "url_with_key": f"{_mcp_url()}?key={a['mcp_token']}",
+                      f'http_headers = {{ "Authorization" = "Bearer {key}" }}'),
+            "url_with_key": f"{_mcp_url()}?key={key}",
             "kickoff": (f"You are my agent at {settings.event_name}. Use the hallway MCP tools: call whoami, do the privacy "
                         "check, then work the lobby for me. Check my_inbox every few minutes."),
         },
@@ -265,37 +294,62 @@ async def auth_start(body: StartAuth, request: Request):
 
 
 @app.get("/auth/magic")
-async def auth_magic(t: str):
+async def auth_magic(t: str, request: Request):
     rec = hallway.store.kv_pop(f"magic:{t}")  # single use: gone on first open
     if not rec or time.time() - rec["at"] > settings.magic_link_ttl_s:
         return RedirectResponse("/#/?expired=1")
     a = hallway.store.attendee(email=rec["email"])
-    if a:
-        session, target = a["session_token"], "/#/home"
+    if a:  # every sign-in is a new session; other devices stay signed in
+        session, target = hallway.store.create_session(a["id"], _ua(request)), "/#/home"
     else:
         session, target = secrets.token_urlsafe(32), "/#/onboard"
-        hallway.store.kv_set(f"pre:{session}", rec["email"])
+        hallway.store.kv_set(f"pre:{token_hash(session)}", rec["email"])
     resp = RedirectResponse(target, status_code=303)
-    resp.set_cookie("hw_session", session, httponly=True, samesite="lax", max_age=7 * 86400,
-                    secure=settings.public_url.startswith("https://"))
+    _set_session_cookie(resp, session, settings.session_ttl_s)
     return resp
 
 
 @app.post("/api/auth/logout")
-async def logout():
+async def logout(hw_session: str | None = Cookie(None)):
+    """Ends this session on the server too: a copied cookie stops working."""
+    if hw_session:
+        hallway.store.revoke_session(hw_session)
+        hallway.store.kv_pop(f"pre:{token_hash(hw_session)}")
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie("hw_session")
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@app.post("/api/auth/logout-all")
+async def logout_all(hw_session: str | None = Cookie(None)):
+    """Sign out everywhere: every session of this attendee, this one included."""
+    a = _me(hw_session)
+    n = hallway.store.revoke_sessions(a["id"])
+    log.info("signed out everywhere: %s (%d sessions)", a["handle"], n)
+    resp = JSONResponse({"ok": True, "sessions": n})
+    resp.delete_cookie(SESSION_COOKIE)
     return resp
 
 
 @app.get("/api/me")
-async def me(hw_session: str | None = Cookie(None)):
-    a, email = _session(hw_session)
+async def me(response: Response, hw_session: str | None = Cookie(None)):
+    a, email, s = _lookup(hw_session)
     if a:
+        # The cookie slides with the server-side expiry (the app loads /api/me on open).
+        _set_session_cookie(response, hw_session, s["expires_at"] - time.time())
         return _me_view(a)
     if email:
         return {"onboarding": True, "email": email}
     raise HTTPException(401, "Sign in first.")
+
+
+@app.post("/api/me/agent-key")
+async def rotate_agent_key(hw_session: str | None = Cookie(None)):
+    """A new MCP key, shown once in this response. The old one stops working now."""
+    a = _me(hw_session)
+    token = hallway.store.set_mcp_token(a["id"])
+    log.info("agent key rotated: %s", a["handle"])
+    return _me_view(hallway.store.attendee(id=a["id"]), token=token)
 
 
 class Register(BaseModel):
@@ -308,7 +362,7 @@ class Register(BaseModel):
 
 
 @app.post("/api/register")
-async def register(body: Register, request: Request, hw_session: str | None = Cookie(None)):
+async def register(body: Register, request: Request, response: Response, hw_session: str | None = Cookie(None)):
     a, email = _session(hw_session)
     if a:
         return _me_view(a)
@@ -324,8 +378,10 @@ async def register(body: Register, request: Request, hw_session: str | None = Co
             name=body.name, email=email, profile=body.profile, contact=body.contact, autonomy=body.autonomy,
             mode=body.mode, live_agent_name=body.live_agent_name, is_persona=persona,
         )
-    hallway.store.update("attendees", a["id"], session_token=hw_session)
-    return _me_view(hallway.store.attendee(id=a["id"]))
+    # The onboarding token is retired; the new account gets a fresh session.
+    hallway.store.kv_pop(f"pre:{token_hash(hw_session)}")
+    _set_session_cookie(response, hallway.store.create_session(a["id"], _ua(request)), settings.session_ttl_s)
+    return _me_view(hallway.store.attendee(id=a["id"]), token=a.get("mcp_token"))
 
 
 class UpdateMe(BaseModel):
@@ -532,12 +588,14 @@ def _worker(request: Request) -> None:
 
 @app.get("/internal/daypass/due")
 async def daypass_due(request: Request, every_s: int | None = None):
-    """Passes whose agent should run now, with what the worker needs to run them."""
+    """Passes whose agent should run now, with what the worker needs to run them.
+    `token` is a fresh MCP token for this run only (the attendee's own key is
+    stored hashed): it expires within the hour and is revoked when the run reports."""
     _worker(request)
     out = []
     for p in hallway.due_passes(settings.daypass_every_s if every_s is None else every_s):
         out.append({"attendee_id": p["attendee_id"], "name": p["name"], "handle": p["handle"],
-                    "mcp_url": _mcp_url(), "token": p["mcp_token"], "runs": p["runs"],
+                    "mcp_url": _mcp_url(), "token": hallway.store.worker_token(p["attendee_id"]), "runs": p["runs"],
                     "remaining_usd": _remaining_usd(p), "here_for": p["profile"].get("here_for", "")})
     return out
 
@@ -554,6 +612,7 @@ class RunReport(BaseModel):
 async def daypass_report(attendee_id: str, body: RunReport, request: Request):
     _worker(request)
     p = hallway.record_run(attendee_id, body.engine, body.cost_usd, body.tool_calls, body.summary, body.ok)
+    hallway.store.revoke_worker_tokens(attendee_id)
     return {"status": p["status"], "spent_usd": p["spent_usd"], "remaining_usd": _remaining_usd(p)}
 
 

@@ -37,7 +37,8 @@ async def test_due_lists_active_passes(client, daypass, signup):
     r = await client.get("/internal/daypass/due", headers=W)
     assert r.status_code == 200
     [due] = r.json()
-    assert due["handle"] == "sana" and due["token"] == me["connect"]["token"]
+    # A run token for the worker, not the attendee's own (hashed, unrecoverable) key.
+    assert due["handle"] == "sana" and due["token"].startswith("hwp_") and due["token"] != me["connect"]["token"]
     assert due["mcp_url"] == "http://testserver/mcp"
     assert due["remaining_usd"] == 0.5 and due["runs"] == 0 and due["here_for"] == "payments partners"
 

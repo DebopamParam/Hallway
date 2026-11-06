@@ -93,6 +93,8 @@ with sync_playwright() as p:
     page.click("#next")
     page.wait_for_url("**#/me")
     shot("06-me")
+    if "<your-hallway-key>" in page.inner_text("#cc") or "Bearer hw_" not in page.inner_text("#cc"):
+        problems.append("the new attendee's MCP key is not shown after sign-up")
     page.screenshot(path=str(out / "06b-me-full.png"), full_page=True)
     for tab in ("now", "lobby", "rooms", "people"):
         page.click(f"[data-tab='{tab}']")
@@ -114,6 +116,44 @@ with sync_playwright() as p:
     page.click("#edit")
     shot("11-edit-badge")
     page.keyboard.press("Escape")
+    page.wait_for_timeout(300)
+
+    # Agent key: hidden after a reload (shown once), a new one on request.
+    page.reload()
+    page.wait_for_selector("#rotate")
+    if "Bearer hw_" in page.inner_text("#cc"):
+        problems.append("the MCP key is still shown after a reload")
+    first_key = page.inner_text("#keyhint")
+    page.wait_for_timeout(3000)  # let the sign-up toast go
+    page.evaluate("document.getElementById('rotate').scrollIntoView({block: 'center'})")
+    shot("15-key-hidden")
+    page.click("#rotate")
+    shot("15b-new-key-sheet")
+    page.click("[data-answer='yes']")
+    page.wait_for_timeout(800)
+    if "Bearer hw_" not in page.inner_text("#cc") or page.inner_text("#keyhint") == first_key:
+        problems.append("New key did not show a new MCP key")
+    page.wait_for_timeout(3000)
+    shot("16-new-key")
+    page.evaluate("document.getElementById('rotate').scrollIntoView({block: 'center'})")
+    shot("16b-new-key-hint")
+
+    # Sign out everywhere: a second browser signed in as the same person goes too.
+    cookies = page.context.cookies()
+    other = httpx.Client(base_url=base, cookies={c["name"]: c["value"] for c in cookies if c["name"] == "hw_session"})
+    if other.get("/api/me").status_code != 200:
+        problems.append("the copied session did not work before signing out")
+    page.evaluate("document.getElementById('logout-all').scrollIntoView({block: 'center'})")
+    shot("17-signout-buttons")
+    page.click("#logout-all")
+    shot("18-signout-everywhere-sheet")
+    page.click("[data-answer='yes']")
+    page.wait_for_timeout(800)
+    if page.locator("#email").count() == 0:
+        problems.append("sign out everywhere did not land on the sign-in screen")
+    expect.add(401)
+    if other.get("/api/me").status_code != 401:
+        problems.append("sign out everywhere left another session signed in")
 
     if opts.invite:
         expect.update({403, 409})

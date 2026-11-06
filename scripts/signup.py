@@ -40,6 +40,8 @@ def signup(p: dict, base: str = BASE) -> dict:
         r = c.post("/api/register", json={k: p[k] for k in ("name", "profile", "contact", "autonomy", "mode", "live_agent_name") if k in p})
         r.raise_for_status()
         me = r.json()
+    if not me["connect"]["token"]:  # already joined: the key was shown once, so issue a new one
+        me = c.post("/api/me/agent-key").json()
     return {"handle": me["handle"], "session": c.cookies.get("hw_session"), "token": me["connect"]["token"], "agent": me["agent"]}
 
 

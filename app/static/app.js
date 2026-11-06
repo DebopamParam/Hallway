@@ -1,6 +1,9 @@
 // Hallway attendee app. No build step: one module, hash routes, polling.
 const $app = document.getElementById("app");
-const state = { me: null, event: null, timers: [], counts: { now: 0 }, route: "" };
+const state = { me: null, event: null, timers: [], counts: { now: 0 }, route: "", freshConnect: null };
+// The MCP key is stored hashed: the server returns it only right after it is
+// issued (registration, "New key"). Keep that copy in memory for this page.
+function keepKey(me) { if (me && me.connect && me.connect.token) state.freshConnect = me.connect; return me; }
 
 // ---------------------------------------------------------------- helpers
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -508,8 +511,8 @@ async function onboard() {
     const btn = document.getElementById("next");
     btn.disabled = true;
     try {
-      state.me = await api("/api/register", { body: { name: draft.name, profile: draft.profile, contact: draft.contact,
-        autonomy: draft.autonomy, mode: draft.mode, live_agent_name: draft.live_agent_name || null } });
+      state.me = keepKey(await api("/api/register", { body: { name: draft.name, profile: draft.profile, contact: draft.contact,
+        autonomy: draft.autonomy, mode: draft.mode, live_agent_name: draft.live_agent_name || null } }));
       go("me");
       toast(draft.mode === "daypass" ? "You're in. Your agent starts within a minute." : "You're in. Now connect your agent.", "ok");
     } catch (e) {
@@ -945,7 +948,8 @@ function commonSections(me) {
       <p class="vault-note">${icon("lock", "xs")}${plural(nContact, "private detail")} in your vault. No agent can see ${nContact === 1 ? "it" : "them"}.</p></section>
     <section class="block"><div class="block-head"><h2>Appearance</h2></div>
       <div class="seg wide" id="theme" data-v="${theme}">${THEMES.map((t) => `<button data-t="${t}" class="${theme === t ? "on" : ""}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div></section>
-    <button class="btn ghost block signout" id="logout">Sign out</button>`;
+    <button class="btn ghost block signout" id="logout">Sign out</button>
+    <button class="btn ghost block signout-all" id="logout-all">Sign out everywhere</button>`;
 }
 
 function bindCommon(me) {
@@ -960,7 +964,19 @@ function bindCommon(me) {
     document.getElementById("theme").dataset.v = b.dataset.t;
   }));
   document.getElementById("edit").onclick = () => editProfile(me);
-  document.getElementById("logout").onclick = async () => { await api("/api/auth/logout", { body: {} }); state.me = null; go(""); };
+  // Demo sign-in gives no new link to an email that already joined: signing out is for good there.
+  const demo = state.event && state.event.signin_mode === "demo";
+  const demoNote = demo ? `<p class="small"><strong>On this demo you can't sign back in with the same email.</strong></p>` : "";
+  const signOut = async (path, confirmSheet) => {
+    if (confirmSheet && (await sheet(confirmSheet)) !== "yes") return;
+    try { await api(path, { body: {} }); } catch (e) { if (e.status !== 401) return toast(e.message); }
+    state.me = null; state.freshConnect = null; go("");
+  };
+  document.getElementById("logout").onclick = () => signOut("/api/auth/logout", demo && `<h2>Sign out?</h2>${demoNote}
+    <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-answer="yes">Sign out</button></div>`);
+  document.getElementById("logout-all").onclick = () => signOut("/api/auth/logout-all", `<h2>Sign out everywhere?</h2>
+    <p class="small muted">Every browser signed in as you is signed out, this one too. Your agent's key keeps working.</p>${demoNote}
+    <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-answer="yes">Sign out everywhere</button></div>`);
 }
 
 async function editProfile(me) {
@@ -1032,7 +1048,8 @@ const CONNECT_TABS = [["cc", "Claude Code"], ["cx", "Codex"]];
 async function meView() {
   const me = state.me;
   if (me.pass) return passView(me);
-  const c = me.connect;
+  const fresh = state.freshConnect && state.freshConnect.token_hint === me.connect.token_hint ? state.freshConnect : null;
+  const c = fresh || me.connect;
   const pv = me.privacy || {};
   const live = me.mode === "live";
   const connected = Boolean(me.agent_seen_at);
@@ -1043,7 +1060,8 @@ async function meView() {
         <div class="code-card"><div class="code-tabs"><div class="seg" id="ctabs">${CONNECT_TABS.map(([id, label], i) => `<button data-c="${id}" class="${i ? "" : "on"}">${label}</button>`).join("")}</div>
           <button class="iconbtn sm" id="copy" aria-label="Copy">${icon("copy", "sm")}</button></div>
           <pre class="code" id="cc">${esc(c.claude_code)}</pre><pre class="code" id="cx" hidden>${esc(c.codex)}</pre></div>
-        <p class="tiny muted">${icon("key", "xs")} The token works like a password. Don't paste it anywhere public.</p>` },
+        <p class="tiny muted">${icon("key", "xs")} ${fresh ? "Copy it now: Hallway shows your key only once. It works like a password, so don't paste it anywhere public."
+          : `Your key (<span class="mono">${esc(c.token_hint)}</span>) is hidden: Hallway shows it only once. Lost it? Make a new one under Agent key.`}</p>` },
     { done: started || connected, title: "Give it the kickoff prompt",
       body: `<div class="code-card"><pre class="code prompt" id="ko">${esc(c.kickoff)}</pre><button class="iconbtn sm copy-float" onclick="hwCopy('ko')" aria-label="Copy prompt">${icon("copy", "sm")}</button></div>
         <p class="tiny muted">In Claude Code, run it as <span class="mono">/loop 5m &lt;prompt&gt;</span> to keep your agent in the hallway while you're in talks.</p>` },
@@ -1062,9 +1080,11 @@ async function meView() {
       ${doneN === 3 ? `<p class="small muted setup-done">${icon("check", "sm")}All set. Your agent is in the hallway.</p>` : ""}
       <ol class="checklist">${steps.map((s, i) => `
         <li class="${s.done ? "done" : s.bad ? "bad" : ""} ${i === current ? "current" : ""}">
-          <details ${i === current ? "open" : ""}><summary><span class="ck">${s.done ? icon("check", "sm") : s.bad ? icon("x", "sm") : i + 1}</span><span class="grow">${s.title}</span>${icon("chev", "sm chev")}</summary>
+          <details ${i === current || (i === 0 && fresh) ? "open" : ""}><summary><span class="ck">${s.done ? icon("check", "sm") : s.bad ? icon("x", "sm") : i + 1}</span><span class="grow">${s.title}</span>${icon("chev", "sm chev")}</summary>
           <div class="ck-body">${s.body}</div></details></li>`).join("")}</ol>
     </section>
+    <section class="block"><div class="block-head"><h2>Agent key</h2><button class="btn ghost sm" id="rotate">${icon("key", "sm")}New key</button></div>
+      <p class="small muted"><span class="mono" id="keyhint">${esc(c.token_hint)}</span> · A new key replaces this one at once. Your agent needs the new key to keep working.</p></section>
     ${commonSections(me)}
   </div>`, { title: "" });
   let shown = "cc";
@@ -1074,6 +1094,14 @@ async function meView() {
     CONNECT_TABS.forEach(([id]) => (document.getElementById(id).hidden = id !== shown));
   }));
   document.getElementById("copy").onclick = () => window.hwCopy(shown);
+  document.getElementById("rotate").onclick = async () => {
+    const ok = await sheet(`<h2>Make a new agent key?</h2>
+      <p class="small muted">Your current key (<span class="mono">${esc(c.token_hint)}</span>) stops working right away. Give your agent the new one to reconnect.</p>
+      <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-answer="yes">New key</button></div>`);
+    if (ok !== "yes") return;
+    try { state.me = keepKey(await api("/api/me/agent-key", { body: {} })); toast("New key ready. Copy it now: it's shown once.", "ok"); render(); }
+    catch (e) { toast(e.message); }
+  };
   bindCommon(me);
   const key = JSON.stringify([connected, pv.passed, pv.checked_at, started]);
   every(5000, async () => {

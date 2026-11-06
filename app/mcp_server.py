@@ -52,7 +52,7 @@ def _me(ctx: Context) -> dict:
         token = token or req.query_params.get("key") or req.headers.get("x-hallway-key")
     if not token:
         raise HallwayError("Missing Hallway token. Add the Authorization header from your Connect page.")
-    a = hallway.store.attendee(mcp_token=token)
+    a = hallway.store.mcp_attendee(token)
     if not a:
         raise HallwayError("Unknown Hallway token.")
     if not hallway.pass_usable(a):

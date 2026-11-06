@@ -4,7 +4,6 @@ import time
 from urllib.parse import urlparse
 
 import httpx
-import pytest
 
 from app import core, main
 
@@ -39,8 +38,11 @@ async def test_magic_link_flow_to_registered(client, world):
     assert me["connect"]["mcp_url"] == "http://testserver/mcp"
     assert me["pass"] is None
 
+    # The MCP key is shown once: afterwards only its first characters.
     again = (await client.get("/api/me")).json()
-    assert again["handle"] == "asha" and again["connect"]["token"] == me["connect"]["token"]
+    assert again["handle"] == "asha" and again["connect"]["token"] is None
+    assert again["connect"]["token_hint"] == me["connect"]["token"][:7] + "…"
+    assert me["connect"]["token"] not in again["connect"]["claude_code"]
     # Connect mode registers a stand-in agent in Switch and joins the lobby.
     assert ("register_agent", "asha.agent") in world.calls
 
@@ -109,8 +111,7 @@ async def test_logout_revokes_session(make_client):
     await a.post("/api/auth/logout")
     b = make_client()
     b.cookies.set("hw_session", stolen)
-    if (await b.get("/api/me")).status_code == 200:
-        pytest.xfail("auth bug: logout only deletes the cookie; the session token stays valid forever")
+    assert (await b.get("/api/me")).status_code == 401
 
 
 # ------------------------------------------------------------ registration

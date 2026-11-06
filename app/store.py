@@ -1,5 +1,11 @@
-"""SQLite persistence. Small and synchronous on purpose: one event, <=1000 people."""
+"""SQLite persistence. Small and synchronous on purpose: one event, <=1000 people.
+
+Secrets that grant access (session cookies, MCP keys, day pass worker tokens)
+are stored as sha256 hashes and looked up by hash; the plain value only ever
+lives in the browser cookie or the attendee's agent config."""
+import hashlib
 import json
+import secrets
 import sqlite3
 import time
 import uuid
@@ -8,8 +14,10 @@ from typing import Any
 
 from .config import settings
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS attendees (
+SCHEMA_VERSION = 2  # PRAGMA user_version. 1 (unset, 0) = plain session/MCP tokens on attendees
+
+ATTENDEES = """
+CREATE TABLE IF NOT EXISTS {name} (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   email TEXT UNIQUE NOT NULL,
@@ -19,8 +27,8 @@ CREATE TABLE IF NOT EXISTS attendees (
   profile TEXT NOT NULL DEFAULT '{}',
   contact TEXT NOT NULL DEFAULT '{}',
   autonomy TEXT NOT NULL DEFAULT '{}',
-  mcp_token TEXT UNIQUE NOT NULL,
-  session_token TEXT UNIQUE NOT NULL,
+  mcp_token_hash TEXT UNIQUE NOT NULL,
+  mcp_token_hint TEXT NOT NULL DEFAULT '',
   mm_user_id TEXT,
   mm_password TEXT,
   mm_token TEXT,
@@ -32,6 +40,24 @@ CREATE TABLE IF NOT EXISTS attendees (
   agent_seen_at REAL,
   is_persona INTEGER NOT NULL DEFAULT 0,
   created_at REAL NOT NULL
+);
+"""
+
+SCHEMA = ATTENDEES.replace("{name}", "attendees") + """
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  attendee_id TEXT NOT NULL,
+  user_agent TEXT NOT NULL DEFAULT '',
+  created_at REAL NOT NULL,
+  last_seen_at REAL NOT NULL,
+  expires_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessions_attendee ON sessions (attendee_id);
+CREATE TABLE IF NOT EXISTS worker_tokens (
+  id TEXT PRIMARY KEY,
+  attendee_id TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  expires_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS rooms (
   id TEXT PRIMARY KEY,
@@ -117,8 +143,25 @@ CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 JSON_COLS = {"profile", "contact", "autonomy", "cursors", "privacy", "payload"}
 
 
+SESSION_TOUCH_S = 300  # slide a session's expiry at most this often, not on every request
+WORKER_TOKEN_TTL_S = 3600  # a day pass run token outlives the longest run (the worker's 600 s timeout)
+
+
 def new_id() -> str:
     return uuid.uuid4().hex[:12]
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def token_hint(token: str) -> str:
+    """What the app may show of an MCP key once the key itself is gone: its first characters."""
+    return token[:7] + "…"
+
+
+def new_mcp_token() -> str:
+    return "hw_" + secrets.token_urlsafe(24)
 
 
 class Store:
@@ -127,7 +170,53 @@ class Store:
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.create_function("sha256_hex", 1, lambda t: token_hash(t) if t is not None else None, deterministic=True)
         self.db.executescript(SCHEMA)
+        self.migrate()
+
+    # ------------------------------------------------------------ migrations
+    def migrate(self) -> None:
+        """Bring an older DB up to SCHEMA_VERSION. Each step runs in one
+        transaction and checks the layout it changes, so running it twice (or
+        after a crash halfway) is safe."""
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(attendees)")}
+        if "session_token" in cols:
+            self._migrate_hash_tokens(cols)
+        if self.db.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+            self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def _migrate_hash_tokens(self, old_cols: set[str]) -> None:
+        """v1 -> v2: each attendee's lifelong plain `session_token` becomes a
+        hashed row in `sessions` (a normal 7-day session from now, so nobody is
+        signed out), the plain `mcp_token` becomes `mcp_token_hash` + a hint,
+        and onboarding `pre:<token>` keys become `pre:<hash>`. SQLite can't drop
+        a UNIQUE column, so the attendees table is rebuilt without the plain ones."""
+        now = time.time()
+        db = self.db
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            db.execute(
+                "INSERT OR IGNORE INTO sessions (id, attendee_id, user_agent, created_at, last_seen_at, expires_at) "
+                "SELECT sha256_hex(session_token), id, '', ?, ?, ? FROM attendees WHERE session_token IS NOT NULL",
+                (now, now, now + settings.session_ttl_s),
+            )
+            db.execute("DROP TABLE IF EXISTS attendees_v2")
+            db.execute(ATTENDEES.replace("{name}", "attendees_v2").strip().rstrip(";"))
+            keep = [c for c in (r[1] for r in db.execute("PRAGMA table_info(attendees_v2)")) if c in old_cols]
+            cols = ", ".join(keep)
+            db.execute(f"INSERT INTO attendees_v2 ({cols}, mcp_token_hash, mcp_token_hint) "
+                       f"SELECT {cols}, sha256_hex(mcp_token), substr(mcp_token, 1, 7) || '…' FROM attendees")
+            db.execute("DROP TABLE attendees")
+            db.execute("ALTER TABLE attendees_v2 RENAME TO attendees")
+            for key, value in db.execute("SELECT key, value FROM kv WHERE key LIKE 'pre:%'").fetchall():
+                db.execute("DELETE FROM kv WHERE key = ?", (key,))
+                db.execute("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                           ("pre:" + token_hash(key[4:]), value))
+            db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict | None:
@@ -188,3 +277,65 @@ class Store:
             "notices", attendee_id=attendee_id, audience=audience, kind=kind, text=text,
             payload=payload, created_at=time.time(),
         )
+
+    # ------------------------------------------------------------- sessions
+    def create_session(self, attendee_id: str, user_agent: str = "") -> str:
+        """A new browser session: returns the cookie value; only its hash is kept."""
+        now = time.time()
+        self.db.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+        token = secrets.token_urlsafe(32)
+        self.insert("sessions", id=token_hash(token), attendee_id=attendee_id, user_agent=(user_agent or "")[:200],
+                    created_at=now, last_seen_at=now, expires_at=min(now + settings.session_ttl_s, now + settings.session_max_s))
+        return token
+
+    def session(self, token: str) -> dict | None:
+        """The live session for a cookie value, or None. Use slides the expiry
+        (written at most every SESSION_TOUCH_S) up to the absolute cap."""
+        sid = token_hash(token)
+        s = self.one("SELECT * FROM sessions WHERE id = ?", sid)
+        now = time.time()
+        if not s:
+            return None
+        if s["expires_at"] <= now:
+            self.db.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+            return None
+        if now - s["last_seen_at"] >= SESSION_TOUCH_S:
+            s["last_seen_at"], s["expires_at"] = now, min(now + settings.session_ttl_s, s["created_at"] + settings.session_max_s)
+            self.db.execute("UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?",
+                            (s["last_seen_at"], s["expires_at"], sid))
+        return s
+
+    def revoke_session(self, token: str) -> None:
+        self.db.execute("DELETE FROM sessions WHERE id = ?", (token_hash(token),))
+
+    def revoke_sessions(self, attendee_id: str) -> int:
+        return self.db.execute("DELETE FROM sessions WHERE attendee_id = ?", (attendee_id,)).rowcount
+
+    # ------------------------------------------------------------ MCP keys
+    def set_mcp_token(self, attendee_id: str) -> str:
+        """Issue a new MCP key for an attendee, replacing (and so revoking) the old one."""
+        token = new_mcp_token()
+        self.update("attendees", attendee_id, mcp_token_hash=token_hash(token), mcp_token_hint=token_hint(token))
+        return token
+
+    def worker_token(self, attendee_id: str) -> str:
+        """A short-lived MCP token for one day pass run, handed to the worker
+        only. The attendee's own key is never needed (or recoverable) for it."""
+        now = time.time()
+        self.db.execute("DELETE FROM worker_tokens WHERE expires_at < ?", (now,))
+        token = "hwp_" + secrets.token_urlsafe(24)
+        self.insert("worker_tokens", id=token_hash(token), attendee_id=attendee_id, created_at=now,
+                    expires_at=now + WORKER_TOKEN_TTL_S)
+        return token
+
+    def revoke_worker_tokens(self, attendee_id: str) -> None:
+        self.db.execute("DELETE FROM worker_tokens WHERE attendee_id = ?", (attendee_id,))
+
+    def mcp_attendee(self, token: str) -> dict | None:
+        """The attendee an MCP bearer token belongs to: their own key, or a live day pass run token."""
+        h = token_hash(token)
+        a = self.attendee(mcp_token_hash=h)
+        if a or not token.startswith("hwp_"):
+            return a
+        w = self.one("SELECT attendee_id FROM worker_tokens WHERE id = ? AND expires_at > ?", h, time.time())
+        return self.attendee(id=w["attendee_id"]) if w else None
