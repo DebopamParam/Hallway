@@ -135,6 +135,57 @@ def _me_view(a: dict) -> dict:
 
 class StartAuth(BaseModel):
     email: str
+    invite: str | None = None
+
+
+# ------------------------------------------------------------- invite gate
+def _is_admin(request: Request) -> bool:
+    """The organiser's scripts (seeding personas): GUARD_API_KEY in x-hallway-admin.
+    Deliberately not "any localhost caller": behind a tunnel or reverse proxy
+    every visitor arrives from 127.0.0.1."""
+    key = settings.guard_api_key
+    if not key or key == "change-me":
+        return False
+    return secrets.compare_digest(request.headers.get("x-hallway-admin", "").encode(), key.encode())
+
+
+def _joined() -> int:
+    """People who joined as attendees. Seeded personas don't take a demo spot."""
+    return hallway.store.one("SELECT COUNT(*) AS n FROM attendees WHERE is_persona = 0")["n"]
+
+
+def _spots_left() -> int | None:
+    return max(0, settings.invite_limit - _joined()) if settings.invite_limit > 0 else None
+
+
+class JoinRefused(Exception):
+    def __init__(self, code: str):
+        self.code = code
+
+
+INVITE_ONLY = "Hallway's live demo is invite only. Open the invite link you were sent."
+
+
+def _demo_full_message() -> str:
+    return f"This demo is full: all {settings.invite_limit} spots are taken."
+
+
+def _check_invite(invite: str | None) -> None:
+    if settings.invite_code and not secrets.compare_digest((invite or "").strip().encode(), settings.invite_code.encode()):
+        raise JoinRefused("invite_only")
+
+
+def _check_spots() -> None:
+    if _spots_left() == 0:
+        raise JoinRefused("demo_full")
+
+
+@app.exception_handler(JoinRefused)
+async def _join_refused(_req: Request, exc: JoinRefused):
+    if exc.code == "invite_only":
+        return JSONResponse({"error": INVITE_ONLY, "code": "invite_only"}, status_code=403)
+    return JSONResponse({"error": _demo_full_message(), "code": "demo_full",
+                         "demo_video_url": settings.demo_video_url or None}, status_code=409)
 
 
 @app.get("/api/event")
@@ -143,7 +194,9 @@ async def event():
     return {"name": settings.event_name, "signin_mode": settings.signin_mode, "daypass_enabled": settings.daypass_enabled,
             "daypass": {"price": settings.daypass_price, "cap_usd": settings.daypass_cap_usd} if settings.daypass_enabled else None,
             "max_attendees": settings.max_attendees, "lobby": settings.lobby_room_name, "attendees": len(people),
-            "agents_active": sum(_agent_active(a) for a in people), "agenda": AGENDA}
+            "agents_active": sum(_agent_active(a) for a in people), "agenda": AGENDA,
+            "invite_only": bool(settings.invite_code), "invite_limit": settings.invite_limit or None,
+            "spots_left": _spots_left(), "demo_video_url": settings.demo_video_url or None}
 
 
 ALREADY_JOINED = "This email already joined. Open Hallway on the device you signed up with."
@@ -166,25 +219,48 @@ def _signin_email(link: str) -> tuple[str, str]:
             f"It works once, for the next {minutes} minutes. If you didn't ask for it, ignore this email.")
 
 
+def _refusal_email(code: str) -> tuple[str, str]:
+    why = INVITE_ONLY if code == "invite_only" else _demo_full_message()
+    video = f"\n\nWatch the demo instead: {settings.demo_video_url}" if settings.demo_video_url else ""
+    return (f"About signing in to {settings.event_name}",
+            f"Someone asked to join Hallway at {settings.event_name} with this email.\n\n{why}{video}\n\n"
+            "If it wasn't you, ignore this email.")
+
+
 @app.post("/api/auth/start")
-async def auth_start(body: StartAuth):
+async def auth_start(body: StartAuth, request: Request):
     email = body.email.strip().lower()
     if "@" not in email:
         raise HallwayError("Enter a valid email.")
+    admin = _is_admin(request)
+    if admin:
+        # Organiser tooling (scripts/personas.py): a link for any email, in any mode.
+        return {"sent": True, "dev_link": _issue_link(email)}
     mode = settings.signin_mode
+    existing = hallway.store.attendee(email=email)
     if mode == "email":
-        # Same answer whether or not the email has an account: no enumeration.
-        subject, text = _signin_email(_issue_link(email))
+        # Same answer whether or not the email has an account, and whether or
+        # not it may join: no enumeration. A refusal goes to the inbox instead.
+        try:
+            if not existing:
+                _check_invite(body.invite)
+                _check_spots()
+            subject, text = _signin_email(_issue_link(email))
+        except JoinRefused as refused:
+            subject, text = _refusal_email(refused.code)
         try:
             await mailer.make_sender(settings).send(email, subject, text)
         except mailer.SendError as e:
             log.error("sign-in email to %s failed: %s", mailer.mask_email(email), e)
             raise HTTPException(503, "We couldn't send the email just now. Try again in a minute.")
         return {"sent": True, "dev_link": None}
-    if mode == "demo" and hallway.store.attendee(email=email):
+    if mode == "demo" and existing:
         # No email provider, so a link on screen for an existing account would
         # be a sign-in as somebody else. They're already signed in on their device.
         return {"sent": False, "dev_link": None, "already_joined": True, "message": ALREADY_JOINED}
+    if not existing:
+        _check_invite(body.invite)
+        _check_spots()
     return {"sent": True, "dev_link": _issue_link(email)}
 
 
@@ -232,16 +308,22 @@ class Register(BaseModel):
 
 
 @app.post("/api/register")
-async def register(body: Register, hw_session: str | None = Cookie(None)):
+async def register(body: Register, request: Request, hw_session: str | None = Cookie(None)):
     a, email = _session(hw_session)
     if a:
         return _me_view(a)
     if not email:
         raise HTTPException(401, "Open the sign-in link from your email first.")
-    a = await hallway.register(
-        name=body.name, email=email, profile=body.profile, contact=body.contact, autonomy=body.autonomy,
-        mode=body.mode, live_agent_name=body.live_agent_name,
-    )
+    persona = _is_admin(request)
+    # Checked again here, one registration at a time when there is a limit:
+    # links issued while spots were left must not let more than INVITE_LIMIT in.
+    async with hallway._lock if settings.invite_limit > 0 else contextlib.nullcontext():
+        if not persona and not hallway.store.attendee(email=email):
+            _check_spots()
+        a = await hallway.register(
+            name=body.name, email=email, profile=body.profile, contact=body.contact, autonomy=body.autonomy,
+            mode=body.mode, live_agent_name=body.live_agent_name, is_persona=persona,
+        )
     hallway.store.update("attendees", a["id"], session_token=hw_session)
     return _me_view(hallway.store.attendee(id=a["id"]))
 

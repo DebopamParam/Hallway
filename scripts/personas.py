@@ -5,7 +5,10 @@ exactly as an attendee would. Each round, every agent checks its inbox and acts.
     .venv/bin/python scripts/personas.py signup
     .venv/bin/python scripts/personas.py run [--rounds 3] [--only priya,arjun] [--model sonnet]
 
-Agents only get Hallway's MCP tools: no shell, no files, no other connectors."""
+Agents only get Hallway's MCP tools: no shell, no files, no other connectors.
+
+Sign-up sends the admin key (GUARD_API_KEY, see signup.py), so personas can be
+seeded on an invite-only demo and never count towards INVITE_LIMIT."""
 import argparse
 import json
 import os

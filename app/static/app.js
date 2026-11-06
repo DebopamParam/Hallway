@@ -89,6 +89,8 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     const err = new Error((data && (data.error || data.detail)) || `HTTP ${res.status}`);
     err.status = res.status;
+    err.code = data && data.code;
+    err.data = data;
     throw err;
   }
   return data;
@@ -147,6 +149,79 @@ function setTheme(t) {
   try { localStorage.setItem("hw-theme", t); } catch { /* private mode */ }
   if (t === "system") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = t;
+}
+
+// ---------------------------------------------------------------- invite
+// An invite arrives as /?invite=<code>. Keep it for this tab (it survives the
+// sign-in link's redirect) and take it out of the address bar.
+function getInvite() { try { return sessionStorage.getItem("hw-invite") || ""; } catch { return ""; } }
+function setInvite(code) { try { sessionStorage.setItem("hw-invite", code); } catch { /* private mode */ } }
+(() => {
+  const url = new URL(location.href);
+  const code = url.searchParams.get("invite");
+  if (code === null) return;
+  setInvite(code.trim());
+  url.searchParams.delete("invite");
+  history.replaceState(null, "", url.pathname + url.search + url.hash);
+})();
+
+// The invite-only and demo-full screens: whole-page, like the landing.
+function gate(kind, data = {}) {
+  clearTimers();
+  state.route = `gate-${kind}`;
+  const ev = state.event || {};
+  const limit = data.limit || ev.invite_limit;
+  const video = data.demo_video_url || ev.demo_video_url;
+  const full = kind === "demo_full";
+  const seats = limit && limit <= 24 ? `<div class="seats" aria-hidden="true">${Array.from({ length: limit }, () => '<span class="seat"></span>').join("")}</div>` : "";
+  $app.innerHTML = `
+    <main class="view landing gate enter">
+      <header class="land-top">${LOGO()}<span class="live-dot"><span class="pulse ${full ? "" : "on"}"></span>${full ? "Full" : "Live"}</span></header>
+      <section class="hero">
+        <div class="gate-badge ${full ? "full" : ""}">${icon(full ? "people" : "lock")}</div>
+        <p class="eyebrow">${esc(ev.name || "Hallway")} · live demo</p>
+        <h1 class="display">${full ? "This demo is full." : "Hallway's live demo is invite only."}</h1>
+        <p class="lede">${full
+          ? `${limit === 1 ? "The only spot is" : `All ${limit ? `<strong>${limit}</strong> ` : ""}spots are`} taken, so new sign-ups are closed. Thanks for stopping by.`
+          : "We keep the demo small so the people and agents in it are real. Joining needs the invite link you were sent."}</p>
+        ${full ? seats : ""}
+      </section>
+      <section class="card gate-card">
+        ${full ? `
+          ${video ? `<a class="btn signal block" href="${esc(video)}" target="_blank" rel="noopener">${icon("play", "sm")} Watch the demo video</a>` : ""}
+          <p class="small muted">Already joined? Open Hallway on the device you signed up with.</p>
+          <button class="btn ghost block" id="back">Back to Hallway</button>` : `
+          <label class="field" for="invite-code">Have an invite code?</label>
+          <div class="input-row"><input id="invite-code" type="text" placeholder="Paste it here" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go"></div>
+          <button class="btn signal block" id="use-code">Continue ${icon("arrow", "sm")}</button>
+          <p class="small muted">Already joined? Open Hallway on the device you signed up with.</p>
+          <button class="btn ghost block" id="back">Back</button>`}
+      </section>
+      <footer class="land-foot"><span>Open source</span><span>·</span><span>Built on Switch</span></footer>
+    </main>`;
+  window.scrollTo(0, 0);
+  const back = () => { history.replaceState(null, "", "/"); landing(data.email); };
+  document.getElementById("back").onclick = back;
+  const use = document.getElementById("use-code");
+  if (use) {
+    const go = () => {
+      const code = document.getElementById("invite-code").value.trim();
+      if (!code) return document.getElementById("invite-code").focus();
+      setInvite(code);
+      back();
+    };
+    use.onclick = go;
+    document.getElementById("invite-code").onkeydown = (e) => e.key === "Enter" && go();
+  }
+}
+
+function spotsLine(ev) {
+  if (!ev.invite_only && !ev.invite_limit) return "";
+  const left = ev.spots_left;
+  const count = ev.invite_limit
+    ? (left === 0 ? "<strong>0</strong> spots left · demo full" : `<strong>${left}</strong> of ${ev.invite_limit} ${left === 1 ? "spot" : "spots"} left`)
+    : "";
+  return `<p class="spots">${icon("lock", "sm")}<span>${ev.invite_only ? "Invite only" : "Live demo"}${count ? ` · ${count}` : ""}</span></p>`;
 }
 
 // ---------------------------------------------------------------- router
@@ -226,7 +301,8 @@ function refreshPill() {
 }
 
 // ---------------------------------------------------------------- landing
-async function landing() {
+async function landing(prefill = "") {
+  state.route = "";
   const ev = state.event;
   const expired = /expired=1/.test(location.hash);
   $app.innerHTML = `
@@ -239,9 +315,10 @@ async function landing() {
         <p class="lede">Every attendee comes as a pair: you, and your own AI agent. The agents find who you should meet and set it up. You just say yes.</p>
         <p class="live-count"><strong>${ev.attendees || 0}</strong> ${ev.attendees === 1 ? "person" : "people"} here${ev.agents_active ? ` · <strong>${ev.agents_active}</strong> ${ev.agents_active === 1 ? "agent" : "agents"} working the room now` : ", each with their own agent"}</p>
       </section>
+      ${spotsLine(ev)}
       <section class="signin card" id="signin">
         <label class="field" for="email">Your RSVP email</label>
-        <div class="input-row"><input id="email" type="email" placeholder="you@company.com" autocomplete="email" inputmode="email" enterkeyhint="go">
+        <div class="input-row"><input id="email" type="email" value="${esc(prefill)}" placeholder="you@company.com" autocomplete="email" inputmode="email" enterkeyhint="go">
         </div>
         <button class="btn signal block" id="send">Get my sign-in link ${icon("arrow", "sm")}</button>
         <p class="tiny muted center">${ev.signin_mode === "email" ? "No password. We email you a link." : "No password. Your sign-in link appears right here."}</p>
@@ -267,7 +344,7 @@ async function landing() {
     const email = document.getElementById("email").value;
     btn.disabled = true;
     try {
-      const r = await api("/api/auth/start", { body: { email } });
+      const r = await api("/api/auth/start", { body: { email, invite: getInvite() || null } });
       const box = document.getElementById("signin");
       if (r.already_joined) {
         box.innerHTML = `
@@ -294,7 +371,13 @@ async function landing() {
           <h2>Check your email</h2>
           <p class="small muted">We sent a sign-in link to <strong>${esc(email.trim())}</strong>. It works once, for 15 minutes.</p>
         </div>`;
-    } catch (e) { toast(e.message); btn.disabled = false; }
+    } catch (e) {
+      if (e.code === "invite_only" || e.code === "demo_full") {
+        if (e.code === "demo_full") state.event = { ...ev, spots_left: 0 };
+        return gate(e.code, { ...e.data, email: email.trim() });
+      }
+      toast(e.message); btn.disabled = false;
+    }
   };
   document.getElementById("send").onclick = send;
   document.getElementById("email").onkeydown = (e) => e.key === "Enter" && send();
@@ -429,7 +512,10 @@ async function onboard() {
         autonomy: draft.autonomy, mode: draft.mode, live_agent_name: draft.live_agent_name || null } });
       go("me");
       toast(draft.mode === "daypass" ? "You're in. Your agent starts within a minute." : "You're in. Now connect your agent.", "ok");
-    } catch (e) { toast(e.message); btn.disabled = false; }
+    } catch (e) {
+      if (e.code === "demo_full") return gate("demo_full", e.data);
+      toast(e.message); btn.disabled = false;
+    }
   };
 }
 

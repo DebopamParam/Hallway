@@ -288,6 +288,21 @@ input[type="checkbox"], input[type="radio"] { width: auto; }
 .sent-ic.quiet { background: var(--sunken); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
 .sent h2 { font-size: 22px; font-weight: 800; font-stretch: 120%; letter-spacing: -.02em; }
 .sent .btn { margin-top: 4px; }
+.spots { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; margin: -6px 0 -4px; padding: 7px 12px 7px 10px; border-radius: 11px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); font-size: 13px; color: var(--muted); }
+.spots .i { color: var(--ink); }
+.spots strong { color: var(--ink); font-family: var(--mono); font-weight: 700; }
+.gate .hero { padding-top: 18px; }
+.gate .lede strong { color: var(--ink); font-family: var(--mono); }
+.gate-badge { width: 64px; height: 64px; border-radius: 18px; background: var(--signal); color: var(--on-signal); display: grid; place-items: center; animation: enter .4s var(--ease); }
+.gate-badge .i { width: 30px; height: 30px; }
+.gate-badge.full { background: var(--ink); color: var(--paper); }
+.gate-card { padding: 18px; display: grid; gap: 12px; }
+.gate-card .field { margin-bottom: -4px; }
+.gate-card .btn.block { margin-top: 0; }
+.gate-card .btn.block + .small { margin-top: 2px; }
+.seats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.seat { width: 22px; height: 22px; border-radius: 7px; background: var(--ink); position: relative; }
+.seat::after { content: ""; position: absolute; left: 6px; right: 6px; top: 5px; height: 5px; border-radius: 3px; background: var(--paper); }
 .how, .promise { display: grid; gap: 14px; }
 .steps-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .steps-list li { display: flex; gap: 14px; align-items: flex-start; padding: 14px 0; border-top: 1.5px solid var(--ink); }
