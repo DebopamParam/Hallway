@@ -1,0 +1,65 @@
+# Tool configuration only: Hallway isn't packaged. Dependencies live in the
+# hashed locks (requirements*.in -> requirements*.txt).
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+extend-exclude = ["scripts/vendor", "spike", "deploy"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import order
+    "B",        # bugbear
+    "UP",       # pyupgrade
+    "SIM",      # simplify
+    "ASYNC",    # blocking calls in async code
+    "RUF",      # ruff's own
+]
+ignore = [
+    "E501",     # the formatter wraps code; long strings and URLs stay as they are
+    "RUF001",   # "…", "→" and friends are deliberate in user-facing text
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# conftest pins the environment before importing the app; fake_stack does the same.
+"tests/conftest.py" = ["E402"]
+"scripts/fake_stack.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tests"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["app", "daypass"]
+explicit_package_bases = true
+mypy_path = "daypass"   # test_engine.py imports worker as a top-level module
+warn_unused_configs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+# app/ is checked strictly. `strict = true` can't be scoped to a module (it
+# leaks into the whole run), so the strict flags are spelled out here, minus
+# disallow_any_generics: rows from SQLite and Switch/Mattermost JSON travel as
+# plain dicts, and dict[str, Any] on every one adds noise, not safety.
+[[tool.mypy.overrides]]
+module = ["app.*"]
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+warn_return_any = true
+no_implicit_reexport = true
+strict_equality = true
+extra_checks = true
+
+# The day pass worker's own dependencies (daypass/requirements.txt) aren't
+# installed with the app's; check its code, not theirs.
+[[tool.mypy.overrides]]
+module = ["pydantic_ai.*"]
+ignore_missing_imports = true

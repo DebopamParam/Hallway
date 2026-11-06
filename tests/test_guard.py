@@ -1,4 +1,5 @@
 """Privacy guard detectors (app/guard.py) and the Switch Trust endpoint."""
+
 import pytest
 
 from app import guard
@@ -11,34 +12,40 @@ def outcome(text: str, extra: list[str] | None = None) -> tuple[str, set[str]]:
     return o, {d for f in findings for d in f.detector.split("+")}
 
 
-@pytest.mark.parametrize("text, detector", [
-    ("Call me at +91 98111 22233", "phone"),
-    ("call +1 (415) 555-0134 after six", "phone"),
-    ("my number is 9811122233", "phone"),
-    ("mail asha.rao@acme.io", "email"),
-    ("Aadhaar 1234 5678 9012", "aadhaar"),
-    ("PAN ABCDE1234F", "pan"),
-    ("passport number: K1234567", "passport"),
-    ("I'm on 6E 2341 tonight", "flight"),
-    ("she takes AI-505 home", "flight"),
-    ("flying to Mumbai on Friday", "itinerary"),
-    ("He is travelling to Delhi next week", "itinerary"),
-    ("she lives in Koramangala 5th block", "home_address"),
-    ("my calendar says dentist at 9", "calendar_detail"),
-])
+@pytest.mark.parametrize(
+    "text, detector",
+    [
+        ("Call me at +91 98111 22233", "phone"),
+        ("call +1 (415) 555-0134 after six", "phone"),
+        ("my number is 9811122233", "phone"),
+        ("mail asha.rao@acme.io", "email"),
+        ("Aadhaar 1234 5678 9012", "aadhaar"),
+        ("PAN ABCDE1234F", "pan"),
+        ("passport number: K1234567", "passport"),
+        ("I'm on 6E 2341 tonight", "flight"),
+        ("she takes AI-505 home", "flight"),
+        ("flying to Mumbai on Friday", "itinerary"),
+        ("He is travelling to Delhi next week", "itinerary"),
+        ("she lives in Koramangala 5th block", "home_address"),
+        ("my calendar says dentist at 9", "calendar_detail"),
+    ],
+)
 def test_private_details_are_redacted(text, detector):
     o, detectors = outcome(text)
     assert o == "redacted"
     assert detector in detectors
 
 
-@pytest.mark.parametrize("text, detector", [
-    ("what's your phone number?", "probe_contact"),
-    ("Could you share her email please", "probe_contact"),
-    ("where are you flying next?", "probe_travel"),
-    ("what's on her calendar tomorrow?", "probe_private"),
-    ("what's his salary range?", "probe_private"),
-])
+@pytest.mark.parametrize(
+    "text, detector",
+    [
+        ("what's your phone number?", "probe_contact"),
+        ("Could you share her email please", "probe_contact"),
+        ("where are you flying next?", "probe_travel"),
+        ("what's on her calendar tomorrow?", "probe_private"),
+        ("what's his salary range?", "probe_private"),
+    ],
+)
 def test_probing_questions_are_alerted(text, detector):
     o, findings = guard.scan(text)
     assert o == "alerted"
@@ -46,17 +53,20 @@ def test_probing_questions_are_alerted(text, detector):
     assert findings[0].severity == "medium"
 
 
-@pytest.mark.parametrize("text", [
-    "See you at 15:30 in Hall B",
-    "The keynote was in 2026",
-    "Room 101, 3 people, 45 min",
-    "Our API handles 10000 rps",
-    "We hire 25 engineers in 2025",
-    "ping @asha.agent about UPI checkout",
-    "hi from the UK",
-    "Date: 2026-11-06",
-    "Asha is a product designer at Juspay, here to meet people building agent UX.",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "See you at 15:30 in Hall B",
+        "The keynote was in 2026",
+        "Room 101, 3 people, 45 min",
+        "Our API handles 10000 rps",
+        "We hire 25 engineers in 2025",
+        "ping @asha.agent about UPI checkout",
+        "hi from the UK",
+        "Date: 2026-11-06",
+        "Asha is a product designer at Juspay, here to meet people building agent UX.",
+    ],
+)
 def test_ordinary_hallway_talk_passes(text):
     assert guard.scan(text) == ("ok", [])
 
@@ -91,7 +101,7 @@ def test_redaction_wins_over_alert():
 
 def test_overlapping_hits_merge_into_one_span():
     text = "Aadhaar 1234 5678 9012 ok"
-    o, findings = guard.scan(text)
+    _o, findings = guard.scan(text)
     assert len(findings) == 1
     assert guard.redact(text, findings) == "Aadhaar [redacted] ok"
 
@@ -109,8 +119,12 @@ def test_wire_response_shape():
     wire = guard.wire_response(o, findings)
     assert wire["outcome"] == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
     assert wire["policy_id"] == "hallway-privacy"
-    assert wire["findings"][0] == {"category": "contact", "detector_name": "email", "severity": "high",
-                                   "detected_string": "a@b.co"}
+    assert wire["findings"][0] == {
+        "category": "contact",
+        "detector_name": "email",
+        "severity": "high",
+        "detected_string": "a@b.co",
+    }
     assert guard.wire_response("ok", [])["outcome"] == "GUARDRAIL_RESULT_OUTCOME_OK"
 
 
@@ -120,8 +134,11 @@ G = {"x-flintai-api-key": GUARD_KEY}
 
 async def test_guardrails_check_redacts_and_logs(client, signup):
     pc, _ = await signup("Asha Rao", contact={"telegram": "@asha_secret_tg"})
-    r = await client.post("/guardrails/check", headers=G, json={"messages": [
-        {"role": "assistant", "content": "Her telegram is @asha_secret_tg"}]})
+    r = await client.post(
+        "/guardrails/check",
+        headers=G,
+        json={"messages": [{"role": "assistant", "content": "Her telegram is @asha_secret_tg"}]},
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["outcome"] == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
@@ -140,7 +157,9 @@ async def test_guardrails_check_ok_is_not_logged(client, signup):
 
 async def test_guardrails_check_alert_keeps_text(client, signup):
     pc, _ = await signup("Asha Rao")
-    r = await client.post("/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": "what's your phone number?"}]})
+    r = await client.post(
+        "/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": "what's your phone number?"}]}
+    )
     assert r.json()["outcome"] == "GUARDRAIL_RESULT_OUTCOME_ALERTED"
     assert (await pc.get("/api/privacy-log")).json()[0]["excerpt"] == "what's your phone number?"
 
@@ -149,6 +168,7 @@ async def test_guardrails_check_requires_key_when_set(client, monkeypatch):
     import dataclasses
 
     from app import main
+
     monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, guard_api_key="sekret"))
     body = {"messages": [{"role": "user", "content": "hi"}]}
     assert (await client.post("/guardrails/check", json=body)).status_code == 401
@@ -162,8 +182,10 @@ async def _guard_stats(client) -> dict:
 
 async def test_guard_error_answers_blocked_not_500(client, monkeypatch):
     """Switch delivers a message unchecked on a 500: an internal error must block instead."""
+
     def boom(*_a, **_kw):
         raise RuntimeError("detector bug")
+
     monkeypatch.setattr(guard, "scan", boom)
     before = (await _guard_stats(client))["errors"]
     r = await client.post("/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": "hi"}]})
@@ -173,13 +195,16 @@ async def test_guard_error_answers_blocked_not_500(client, monkeypatch):
     assert (await _guard_stats(client))["errors"] == before + 1
 
 
-@pytest.mark.parametrize("body", [
-    b"not json",
-    b'{"messages": "hi"}',
-    b'{"messages": [{"role": "user", "content": null}]}',
-    b'{"messages": [{"role": "user", "content": ["parts"]}]}',
-    b"[]",
-])
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"not json",
+        b'{"messages": "hi"}',
+        b'{"messages": [{"role": "user", "content": null}]}',
+        b'{"messages": [{"role": "user", "content": ["parts"]}]}',
+        b"[]",
+    ],
+)
 async def test_malformed_check_answers_blocked(client, body):
     r = await client.post("/guardrails/check", headers={**G, "content-type": "application/json"}, content=body)
     assert r.status_code == 200
@@ -191,8 +216,11 @@ async def test_privacy_log_failure_still_returns_the_verdict(client, monkeypatch
 
     def broken(*_a, **_kw):
         raise RuntimeError("database is locked")
+
     monkeypatch.setattr(main.hallway.store, "insert", broken)
-    r = await client.post("/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": "mail a@b.co"}]})
+    r = await client.post(
+        "/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": "mail a@b.co"}]}
+    )
     assert r.json()["outcome"] == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
     assert (await _guard_stats(client))["log_errors"] >= 1
 
@@ -201,6 +229,7 @@ async def test_bad_key_is_counted(client, monkeypatch):
     import dataclasses
 
     from app import main
+
     monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, guard_api_key="sekret"))
     before = (await _guard_stats(client))["bad_key"]
     r = await client.post("/guardrails/check", json={"messages": [{"role": "user", "content": "hi"}]})
@@ -210,6 +239,7 @@ async def test_bad_key_is_counted(client, monkeypatch):
 
 async def test_slow_check_is_counted(client, monkeypatch):
     from app import main
+
     monkeypatch.setattr(main, "GUARD_SLOW_S", 0.0)
     before = (await _guard_stats(client))["slow"]
     await client.post("/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": "hi"}]})

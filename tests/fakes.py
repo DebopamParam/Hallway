@@ -7,6 +7,7 @@ channel. Only the methods Hallway calls are implemented, with the same
 signatures as app/switch.py and app/mm.py. Every call is recorded in
 `World.calls` so tests can assert on what reached Switch.
 """
+
 import itertools
 import time
 from datetime import datetime
@@ -25,10 +26,10 @@ def _ms() -> int:
 
 class World:
     def __init__(self) -> None:
-        self.users: dict[str, dict] = {}        # mm user id -> user
-        self.channels: dict[str, dict] = {}     # channel id -> channel (+ members, posts)
-        self.rooms: dict[str, str] = {}         # switch room id -> channel id
-        self.agents: dict[str, dict] = {}       # switch agent id -> {name, key, ...}
+        self.users: dict[str, dict] = {}  # mm user id -> user
+        self.channels: dict[str, dict] = {}  # channel id -> channel (+ members, posts)
+        self.rooms: dict[str, str] = {}  # switch room id -> channel id
+        self.agents: dict[str, dict] = {}  # switch agent id -> {name, key, ...}
         self.calls: list[tuple[str, Any]] = []
         # Names Switch can't resolve right now. The live stack does this for
         # freshly created users: add_users answers 200 {"ok": false, "unresolved": [...]}
@@ -42,8 +43,13 @@ class World:
     def add_user(self, username: str, *, is_bot: bool = False, first_name: str = "", email: str = "") -> dict:
         u = self.user_by_name(username)
         if u is None:
-            u = {"id": f"u_{username}", "username": username, "first_name": first_name, "email": email,
-                 "is_bot": is_bot}
+            u = {
+                "id": f"u_{username}",
+                "username": username,
+                "first_name": first_name,
+                "email": email,
+                "is_bot": is_bot,
+            }
             self.users[u["id"]] = u
         return u
 
@@ -53,15 +59,25 @@ class World:
         return self.channels[self.rooms[room_id]]
 
     def add_post(self, channel: dict, user_id: str, message: str, root_id: str | None = None) -> dict:
-        p = {"id": f"p{next(_ids)}", "channel_id": channel["id"], "user_id": user_id, "message": message,
-             "create_at": _ms(), "root_id": root_id or "", "type": "", "delete_at": 0}
+        p = {
+            "id": f"p{next(_ids)}",
+            "channel_id": channel["id"],
+            "user_id": user_id,
+            "message": message,
+            "create_at": _ms(),
+            "root_id": root_id or "",
+            "type": "",
+            "delete_at": 0,
+        }
         channel["posts"].append(p)
         return p
 
     def all_text_sent_by_agents(self) -> str:
         """Everything any Switch agent posted (what other agents can read)."""
         agent_users = {f"u_{a['name']}" for a in self.agents.values()}
-        return "\n".join(p["message"] for c in self.channels.values() for p in c["posts"] if p["user_id"] in agent_users)
+        return "\n".join(
+            p["message"] for c in self.channels.values() for p in c["posts"] if p["user_id"] in agent_users
+        )
 
 
 class FakeSwitch:
@@ -86,14 +102,22 @@ class FakeSwitch:
         self.w.add_user(name, is_bot=True, first_name=display_name)
         return AgentCreds(aid, key)
 
-    async def create_room(self, agent: AgentCreds, name: str, description: str, agent_names: list[str],
-                          user_names: list[str]) -> dict:
+    async def create_room(
+        self, agent: AgentCreds, name: str, description: str, agent_names: list[str], user_names: list[str]
+    ) -> dict:
         host = self._agent(agent)
         self.w.calls.append(("create_room", {"name": name, "agents": agent_names, "users": user_names}))
         cid = f"ch{next(_ids)}"
         rid = f"room{next(_ids)}"
-        ch = {"id": cid, "name": name, "display_name": name, "create_at": _ms(), "delete_at": 0,
-              "members": set(), "posts": []}
+        ch = {
+            "id": cid,
+            "name": name,
+            "display_name": name,
+            "create_at": _ms(),
+            "delete_at": 0,
+            "members": set(),
+            "posts": [],
+        }
         self.w.channels[cid] = ch
         self.w.rooms[rid] = cid
         for n in [host["name"], *agent_names, *user_names]:
@@ -137,8 +161,9 @@ class FakeSwitch:
         p = self.w.add_post(ch, uid, content)
         return {"event_id": p["id"]}
 
-    async def read_context(self, agent: AgentCreds, room_id: str, since: str | None = None,
-                           limit: int = 50) -> list[dict]:
+    async def read_context(
+        self, agent: AgentCreds, room_id: str, since: str | None = None, limit: int = 50
+    ) -> list[dict]:
         self._agent(agent)
         ch = self.w.channel_for_room(room_id)
         since_ms = datetime.fromisoformat(since).timestamp() * 1000 if since else None
@@ -146,9 +171,16 @@ class FakeSwitch:
         for p in ch["posts"]:
             if since_ms is not None and p["create_at"] <= since_ms:
                 continue
-            out.append({"kind": "message", "id": p["id"], "thread_id": p["root_id"] or p["id"],
-                        "sender_name": self.w.users[p["user_id"]]["username"], "body": p["message"],
-                        "timestamp": p["create_at"]})
+            out.append(
+                {
+                    "kind": "message",
+                    "id": p["id"],
+                    "thread_id": p["root_id"] or p["id"],
+                    "sender_name": self.w.users[p["user_id"]]["username"],
+                    "body": p["message"],
+                    "timestamp": p["create_at"],
+                }
+            )
         return out[-limit:]
 
     async def list_rooms(self, agent: AgentCreds) -> list[dict]:

@@ -5,6 +5,7 @@ stand-in (see presence.py), so Switch treats them as present: no "I read
 asynchronously" auto-replies. The attendee's own agent reads and answers on its
 next check-in through MCP.
 """
+
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,9 +42,7 @@ class SwitchClient:
         await self._http.aclose()
 
     async def _send(self, method: str, path: str, token: str, body: Any = None) -> Any:
-        r = await self._http.request(
-            method, path, json=body, headers={"Authorization": f"Bearer {token}"}
-        )
+        r = await self._http.request(method, path, json=body, headers={"Authorization": f"Bearer {token}"})
         if r.status_code >= 400:
             raise SwitchError(r.status_code, r.text)
         return r.json() if r.content else None
@@ -69,9 +68,10 @@ class SwitchClient:
         return res.get("result") if isinstance(res, dict) else res
 
     async def post(self, agent: AgentCreds, room_id: str, content: str) -> dict:
-        return await self._send(
+        res: dict = await self._send(
             "POST", f"/agents/{agent.id}/message", agent.key, {"room_id": room_id, "content": content}
         )
+        return res
 
     async def read_context(
         self, agent: AgentCreds, room_id: str, since: str | None = None, limit: int = 50
@@ -96,10 +96,15 @@ class SwitchClient:
     ) -> dict:
         # The creating agent is not added implicitly; the host must be in every
         # room it manages, so it always lists itself.
-        return await self.op(
-            agent, "create_room", name=name, description=description,
-            agent_names=[settings.host_agent_name, *agent_names], user_names=user_names,
+        room: dict = await self.op(
+            agent,
+            "create_room",
+            name=name,
+            description=description,
+            agent_names=[settings.host_agent_name, *agent_names],
+            user_names=user_names,
         )
+        return room
 
     async def invite_agent(self, agent: AgentCreds, room_id: str, agent_name: str) -> Any:
         return await self.op(agent, "invite_agent_to_room", room_id=room_id, agent_name=agent_name)
@@ -132,7 +137,8 @@ class GatewayClient:
     async def get_trust_settings(self) -> dict:
         r = await self._http.get("/trust-settings")
         r.raise_for_status()
-        return r.json()
+        settings_: dict = r.json()
+        return settings_
 
     async def put_trust_settings(self, endpoint: str, policy_id: str, api_key: str) -> dict:
         r = await self._http.put(
@@ -140,7 +146,8 @@ class GatewayClient:
         )
         if r.status_code >= 400:
             raise SwitchError(r.status_code, r.text)
-        return r.json()
+        updated: dict = r.json()
+        return updated
 
     async def set_agent_greetings(self, enabled: bool) -> int:
         """Turn agents' join greetings on/off for every collaboration bridge."""

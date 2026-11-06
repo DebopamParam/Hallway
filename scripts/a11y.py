@@ -24,6 +24,7 @@ check:
   reduced-motion   animations still run under prefers-reduced-motion
 Moderate and minor axe findings are reported but don't fail the run
 (--report-only never fails). Screenshots and a11y-report.json go to <out-dir>."""
+
 import argparse
 import json
 import re
@@ -54,13 +55,15 @@ out.mkdir(parents=True, exist_ok=True)
 base = opts.base.rstrip("/")
 stamp = int(time.time()) % 100000
 
-findings: list[dict] = []   # every axe violation node and Hallway check failure
-problems: list[str] = []    # console errors, failed API calls, script trouble
-notes: list[str] = []       # seeding trouble that doesn't stop the audit
+findings: list[dict] = []  # every axe violation node and Hallway check failure
+problems: list[str] = []  # console errors, failed API calls, script trouble
+notes: list[str] = []  # seeding trouble that doesn't stop the audit
 
 
 def add(theme: str, screen: str, rule: str, impact: str, target: str, detail: str = "") -> None:
-    findings.append({"theme": theme, "screen": screen, "rule": rule, "impact": impact, "target": target, "detail": detail})
+    findings.append(
+        {"theme": theme, "screen": screen, "rule": rule, "impact": impact, "target": target, "detail": detail}
+    )
 
 
 # ------------------------------------------------------------------ seeding
@@ -77,19 +80,32 @@ def sign_in(c: httpx.Client, email: str) -> None:
 
 def register(c: httpx.Client, name: str, email: str, mode: str = "connect") -> dict:
     sign_in(c, email)
-    r = c.post("/api/register", json={
-        "name": name, "mode": mode, "contact": {"phone": "+91 98000 11122"},
-        "profile": {"role": "Payments engineer", "company": "Razorpay", "bio": "UPI rails and agent checkout",
-                    "here_for": "Meet people building agent UX", "interests": ["design", "payments", "agents"]},
-        "autonomy": {"chat": "auto", "rooms": "auto", "propose_meeting": "auto", "accept_meeting": "auto"},
-    })
+    r = c.post(
+        "/api/register",
+        json={
+            "name": name,
+            "mode": mode,
+            "contact": {"phone": "+91 98000 11122"},
+            "profile": {
+                "role": "Payments engineer",
+                "company": "Razorpay",
+                "bio": "UPI rails and agent checkout",
+                "here_for": "Meet people building agent UX",
+                "interests": ["design", "payments", "agents"],
+            },
+            "autonomy": {"chat": "auto", "rooms": "auto", "propose_meeting": "auto", "accept_meeting": "auto"},
+        },
+    )
     r.raise_for_status()
     return r.json()
 
 
 def mcp(c: httpx.Client, token: str, tool: str, args: dict | None = None) -> object:
-    r = c.post("/mcp", headers={"Authorization": f"Bearer {token}", "Accept": "application/json, text/event-stream"},
-               json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args or {}}})
+    r = c.post(
+        "/mcp",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json, text/event-stream"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args or {}}},
+    )
     r.raise_for_status()
     text = r.text
     if text.startswith("event:") or "\ndata:" in text:  # an SSE answer
@@ -183,7 +199,7 @@ def axe(page: Page, theme: str, screen: str, within: str | None = None) -> None:
     page.evaluate(AXE)  # idempotent: a second copy replaces the first
     ctx = within or "document"
     res = page.evaluate(f"""async () => {{
-        const r = await axe.run({ctx if ctx == 'document' else f'document.querySelector({json.dumps(ctx)})'},
+        const r = await axe.run({ctx if ctx == "document" else f"document.querySelector({json.dumps(ctx)})"},
           {{ runOnly: {{ type: 'tag', values: {json.dumps(AXE_TAGS)} }}, resultTypes: ['violations'] }});
         return r.violations.map((v) => ({{ id: v.id, impact: v.impact, nodes: v.nodes.map((n) => ({{
           target: n.target.join(' '), detail: (n.any[0] || n.all[0] || n.none[0] || {{}}).message || '' }})) }}));
@@ -251,7 +267,14 @@ def check_sheet(page: Page, theme: str, screen: str, trigger: str, *, close: str
         page.evaluate("document.querySelector('#sheet-root [data-close]')?.click()")
         page.wait_for_timeout(450)
     elif not page.evaluate("(sel) => document.activeElement === document.querySelector(sel)", trigger):
-        add(theme, screen, "dialog-return", "serious", trigger, "focus did not go back to the button that opened the sheet")
+        add(
+            theme,
+            screen,
+            "dialog-return",
+            "serious",
+            trigger,
+            "focus did not go back to the button that opened the sheet",
+        )
 
 
 def check_live(page: Page, theme: str, screen: str) -> None:
@@ -285,8 +308,13 @@ def run(browser, theme: str) -> None:
     page.click("text=Open sign-in link")
     page.wait_for_url("**#/onboard")
     page.fill("#name", f"Uidevmain{n} Kapoor")
-    for sel, v in {"#role": "Product designer", "#company": "Juspay", "#bio": "Checkout flows for UPI",
-                   "#here_for": "Meet people building agent UX", "#interests": "design, payments, agents"}.items():
+    for sel, v in {
+        "#role": "Product designer",
+        "#company": "Juspay",
+        "#bio": "Checkout flows for UPI",
+        "#here_for": "Meet people building agent UX",
+        "#interests": "design, payments, agents",
+    }.items():
         page.fill(sel, v)
     page.check("[data-talk='1']")
     check_screen(page, theme, "03-onboard-you")
@@ -309,8 +337,12 @@ def run(browser, theme: str) -> None:
     check_screen(page, theme, "07-agent")
     check_live(page, theme, "07-agent")
     token = re.search(r"Bearer (hw_[\w-]+)", page.inner_text("#cc"))
-    me = httpx.Client(base_url=base, headers={"origin": base}, timeout=20,
-                      cookies={c["name"]: c["value"] for c in ctx.cookies() if c["name"] == "hw_session"})
+    me = httpx.Client(
+        base_url=base,
+        headers={"origin": base},
+        timeout=20,
+        cookies={c["name"]: c["value"] for c in ctx.cookies() if c["name"] == "hw_session"},
+    )
     my = me.get("/api/me").json()
 
     # A second attendee and their agent: a meeting request, a room, lobby chat.
@@ -318,11 +350,31 @@ def run(browser, theme: str) -> None:
     peer = register(peer_c, f"Uidevpeer{n} Rao", f"uidev.peer.{n}@example.com")
     pt = peer["connect"]["token"]
     mcp(peer_c, pt, "start_privacy_check")
-    mcp(peer_c, pt, "submit_privacy_check", {"answers": ["I can't share that.", "That's private, sorry.", "I don't share their schedule."]})
+    mcp(
+        peer_c,
+        pt,
+        "submit_privacy_check",
+        {"answers": ["I can't share that.", "That's private, sorry.", "I don't share their schedule."]},
+    )
     lobby = peer_c.get("/api/event").json().get("lobby", "lobby")
-    mcp(peer_c, pt, "post", {"room": lobby, "text": f"Hi all! @{my['agent']} your human works on checkout: worth a chat?"})
-    mcp(peer_c, pt, "propose_meeting", {"with_who": my["handle"], "time": "15:50", "place": "Hall B exit", "why": "Both on agent checkout"})
-    mcp(peer_c, pt, "propose_meeting", {"with_who": my["handle"], "time": "16:30", "place": "Coffee bar", "why": "Payments design"})
+    mcp(
+        peer_c,
+        pt,
+        "post",
+        {"room": lobby, "text": f"Hi all! @{my['agent']} your human works on checkout: worth a chat?"},
+    )
+    mcp(
+        peer_c,
+        pt,
+        "propose_meeting",
+        {"with_who": my["handle"], "time": "15:50", "place": "Hall B exit", "why": "Both on agent checkout"},
+    )
+    mcp(
+        peer_c,
+        pt,
+        "propose_meeting",
+        {"with_who": my["handle"], "time": "16:30", "place": "Coffee bar", "why": "Payments design"},
+    )
     mcp(peer_c, pt, "create_room", {"title": "Agent checkout", "invite": [my["handle"]]})
     mine = [m for m in me.get("/api/meetings").json() if m["status"] == "proposed" and not m["you_proposed"]]
     if mine:  # a confirmed meeting and its room; seeding trouble is noted, the audit goes on
@@ -431,7 +483,7 @@ def run(browser, theme: str) -> None:
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
-    for theme in (["light", "dark"] if opts.theme == "both" else [opts.theme]):
+    for theme in ["light", "dark"] if opts.theme == "both" else [opts.theme]:
         try:
             run(browser, theme)
         except Exception as e:  # report what was found so far, then fail

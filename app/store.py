@@ -3,6 +3,7 @@
 Secrets that grant access (session cookies, MCP keys, day pass worker tokens)
 are stored as sha256 hashes and looked up by hash; the plain value only ever
 lives in the browser cookie or the attendee's agent config."""
+
 import hashlib
 import json
 import re
@@ -44,7 +45,9 @@ CREATE TABLE IF NOT EXISTS {name} (
 );
 """
 
-SCHEMA = ATTENDEES.replace("{name}", "attendees") + """
+SCHEMA = (
+    ATTENDEES.replace("{name}", "attendees")
+    + """
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   attendee_id TEXT NOT NULL,
@@ -140,6 +143,7 @@ CREATE TABLE IF NOT EXISTS pass_runs (
 );
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
+)
 
 JSON_COLS = {"profile", "contact", "autonomy", "cursors", "privacy", "payload"}
 
@@ -226,14 +230,17 @@ class Store:
             db.execute(ATTENDEES.replace("{name}", "attendees_v2").strip().rstrip(";"))
             keep = [c for c in (r[1] for r in db.execute("PRAGMA table_info(attendees_v2)")) if c in old_cols]
             cols = ", ".join(keep)
-            db.execute(f"INSERT INTO attendees_v2 ({cols}, mcp_token_hash, mcp_token_hint) "
-                       f"SELECT {cols}, sha256_hex(mcp_token), substr(mcp_token, 1, 7) || '…' FROM attendees")
+            db.execute(
+                f"INSERT INTO attendees_v2 ({cols}, mcp_token_hash, mcp_token_hint) "
+                f"SELECT {cols}, sha256_hex(mcp_token), substr(mcp_token, 1, 7) || '…' FROM attendees"
+            )
             db.execute("DROP TABLE attendees")
             db.execute("ALTER TABLE attendees_v2 RENAME TO attendees")
             for key, value in db.execute("SELECT key, value FROM kv WHERE key LIKE 'pre:%'").fetchall():
                 db.execute("DELETE FROM kv WHERE key = ?", (key,))
-                db.execute("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
-                           ("pre:" + token_hash(key[4:]), value))
+                db.execute(
+                    "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", ("pre:" + token_hash(key[4:]), value)
+                )
             db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             db.execute("COMMIT")
         except BaseException:
@@ -242,8 +249,10 @@ class Store:
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict | None:
-        if row is None:
-            return None
+        return None if row is None else Store._dict(row)
+
+    @staticmethod
+    def _dict(row: sqlite3.Row) -> dict:
         d = dict(row)
         for k in JSON_COLS & d.keys():
             d[k] = json.loads(d[k]) if d[k] else {}
@@ -252,8 +261,15 @@ class Store:
     def one(self, sql: str, *args: Any) -> dict | None:
         return self._row(self.db.execute(sql, args).fetchone())
 
+    def need(self, sql: str, *args: Any) -> dict:
+        """Like one(), for rows the caller knows exist (just written, or held by a foreign key)."""
+        row = self.one(sql, *args)
+        if row is None:
+            raise LookupError(f"no row for {sql!r} {args!r}")
+        return row
+
     def all(self, sql: str, *args: Any) -> list[dict]:
-        return [self._row(r) for r in self.db.execute(sql, args).fetchall()]
+        return [self._dict(r) for r in self.db.execute(sql, args).fetchall()]
 
     def insert(self, table: str, **values: Any) -> None:
         raw = values
@@ -284,8 +300,10 @@ class Store:
         guard doesn't scan the attendees table on every message."""
         now = time.monotonic()
         if self._private is None or now - self._private_read_at > self.PRIVATE_MAX_AGE_S:
-            fresh = {r["id"]: contact_private_values(json.loads(r["contact"] or "{}"))
-                     for r in self.db.execute("SELECT id, contact FROM attendees")}
+            fresh = {
+                r["id"]: contact_private_values(json.loads(r["contact"] or "{}"))
+                for r in self.db.execute("SELECT id, contact FROM attendees")
+            }
             if fresh != self._private:
                 self.private_version += 1
             self._private, self._private_read_at = fresh, now
@@ -308,21 +326,32 @@ class Store:
 
     def kv_purge(self, prefix: str, older_than: float) -> None:
         """Drop `prefix*` records whose JSON `at` is before `older_than`."""
-        self.db.execute("DELETE FROM kv WHERE key LIKE ? ESCAPE '\\' AND json_extract(value, '$.at') < ?",
-                        (prefix.replace("%", r"\%").replace("_", r"\_") + "%", older_than))
+        self.db.execute(
+            "DELETE FROM kv WHERE key LIKE ? ESCAPE '\\' AND json_extract(value, '$.at') < ?",
+            (prefix.replace("%", r"\%").replace("_", r"\_") + "%", older_than),
+        )
 
     # convenience
     def attendee(self, **where: Any) -> dict | None:
-        (k, v), = where.items()
+        ((k, v),) = where.items()
         return self.one(f"SELECT * FROM attendees WHERE {k} = ?", v)
+
+    def need_attendee(self, **where: Any) -> dict:
+        ((k, v),) = where.items()
+        return self.need(f"SELECT * FROM attendees WHERE {k} = ?", v)
 
     def attendees(self) -> list[dict]:
         return self.all("SELECT * FROM attendees ORDER BY created_at")
 
     def notice(self, attendee_id: str, kind: str, text: str, audience: str = "both", **payload: Any) -> None:
         self.insert(
-            "notices", attendee_id=attendee_id, audience=audience, kind=kind, text=text,
-            payload=payload, created_at=time.time(),
+            "notices",
+            attendee_id=attendee_id,
+            audience=audience,
+            kind=kind,
+            text=text,
+            payload=payload,
+            created_at=time.time(),
         )
 
     # ------------------------------------------------------------- sessions
@@ -331,8 +360,15 @@ class Store:
         now = time.time()
         self.db.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
         token = secrets.token_urlsafe(32)
-        self.insert("sessions", id=token_hash(token), attendee_id=attendee_id, user_agent=(user_agent or "")[:200],
-                    created_at=now, last_seen_at=now, expires_at=min(now + settings.session_ttl_s, now + settings.session_max_s))
+        self.insert(
+            "sessions",
+            id=token_hash(token),
+            attendee_id=attendee_id,
+            user_agent=(user_agent or "")[:200],
+            created_at=now,
+            last_seen_at=now,
+            expires_at=min(now + settings.session_ttl_s, now + settings.session_max_s),
+        )
         return token
 
     def session(self, token: str) -> dict | None:
@@ -347,9 +383,14 @@ class Store:
             self.db.execute("DELETE FROM sessions WHERE id = ?", (sid,))
             return None
         if now - s["last_seen_at"] >= SESSION_TOUCH_S:
-            s["last_seen_at"], s["expires_at"] = now, min(now + settings.session_ttl_s, s["created_at"] + settings.session_max_s)
-            self.db.execute("UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?",
-                            (s["last_seen_at"], s["expires_at"], sid))
+            s["last_seen_at"], s["expires_at"] = (
+                now,
+                min(now + settings.session_ttl_s, s["created_at"] + settings.session_max_s),
+            )
+            self.db.execute(
+                "UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?",
+                (s["last_seen_at"], s["expires_at"], sid),
+            )
         return s
 
     def revoke_session(self, token: str) -> None:
@@ -371,8 +412,13 @@ class Store:
         now = time.time()
         self.db.execute("DELETE FROM worker_tokens WHERE expires_at < ?", (now,))
         token = "hwp_" + secrets.token_urlsafe(24)
-        self.insert("worker_tokens", id=token_hash(token), attendee_id=attendee_id, created_at=now,
-                    expires_at=now + WORKER_TOKEN_TTL_S)
+        self.insert(
+            "worker_tokens",
+            id=token_hash(token),
+            attendee_id=attendee_id,
+            created_at=now,
+            expires_at=now + WORKER_TOKEN_TTL_S,
+        )
         return token
 
     def revoke_worker_tokens(self, attendee_id: str) -> None:

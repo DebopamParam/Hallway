@@ -11,6 +11,7 @@ Sign-up sends the admin key (HALLWAY_ADMIN_KEY, see signup.py), so personas can 
 seeded on an invite-only demo and never count towards INVITE_LIMIT. Agents
 are rate limited like any other (RATE_LIMIT_MCP_OUTREACH, 6 posts a minute
 each by default); a round stays well under it, and a limited agent is told to wait."""
+
 import argparse
 import json
 import os
@@ -21,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from signup import signup  # noqa: E402
+from signup import signup
 
 ROOT = Path(__file__).resolve().parent.parent
 PERSONAS = ROOT / "personas" / "personas.json"
@@ -72,8 +73,11 @@ def cmd_signup(_args) -> None:
 
 
 def run_round(p: dict, s: dict, model: str) -> str:
-    cfg = {"mcpServers": {"hallway": {"type": "http", "url": f"{BASE}/mcp",
-                                      "headers": {"Authorization": f"Bearer {s['token']}"}}}}
+    cfg = {
+        "mcpServers": {
+            "hallway": {"type": "http", "url": f"{BASE}/mcp", "headers": {"Authorization": f"Bearer {s['token']}"}}
+        }
+    }
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(cfg, f)
     first = p["name"].split()[0]
@@ -81,12 +85,31 @@ def run_round(p: dict, s: dict, model: str) -> str:
     env = {**os.environ, "ENABLE_CLAUDEAI_MCP_SERVERS": "false"}
     try:
         out = subprocess.run(
-            ["claude", "-p", prompt, "--model", model, "--mcp-config", f.name, "--strict-mcp-config",
-             "--allowedTools", "mcp__hallway", "--disallowedTools", "Bash,Edit,Write,Read,WebFetch,WebSearch,Task",
-             "--append-system-prompt", SYSTEM.format(name=p["name"], brief=p.get("brief", ""))],
-            capture_output=True, text=True, timeout=600, env=env, cwd=tempfile.gettempdir(),
+            [
+                "claude",
+                "-p",
+                prompt,
+                "--model",
+                model,
+                "--mcp-config",
+                f.name,
+                "--strict-mcp-config",
+                "--allowedTools",
+                "mcp__hallway",
+                "--disallowedTools",
+                "Bash,Edit,Write,Read,WebFetch,WebSearch,Task",
+                "--append-system-prompt",
+                SYSTEM.format(name=p["name"], brief=p.get("brief", "")),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env=env,
+            cwd=tempfile.gettempdir(),
         )
-        return (out.stdout or out.stderr).strip().splitlines()[-1] if (out.stdout or out.stderr).strip() else "(no output)"
+        return (
+            (out.stdout or out.stderr).strip().splitlines()[-1] if (out.stdout or out.stderr).strip() else "(no output)"
+        )
     finally:
         os.unlink(f.name)
 

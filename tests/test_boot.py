@@ -1,5 +1,4 @@
 """Startup against the fake Switch, and the person+agent sync loop."""
-import pytest
 
 
 async def test_startup_registers_host_and_lobby(hallway, world, client):
@@ -17,7 +16,9 @@ async def test_startup_registers_host_and_lobby(hallway, world, client):
 async def test_restart_reuses_host_and_lobby(hallway, world):
     await hallway.start()
     assert [c[0] for c in world.calls if c[0] in ("register_agent", "create_room")] == [
-        "register_agent", "create_room"]  # from the first start only
+        "register_agent",
+        "create_room",
+    ]  # from the first start only
     hallway._sync_task.cancel()
 
 

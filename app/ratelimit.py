@@ -9,11 +9,12 @@ Every limit is set by an env var, RATE_LIMIT_<NAME>, as "<count>/<period>":
 the period in seconds, or with an s/m/h suffix ("20/60", "6/m", "100/h").
 "off" (or 0) turns that limit off; RATE_LIMITS=off turns them all off.
 """
+
 import math
 import os
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from . import config  # noqa: F401  (loads ./.env into the environment first)
@@ -21,14 +22,14 @@ from . import config  # noqa: F401  (loads ./.env into the environment first)
 # Demo defaults. Conference Wi-Fi puts many attendees behind one IP, so the
 # per-IP limits are loose; the per-email, per-agent and per-session ones are tight.
 DEFAULTS = {
-    "auth_start_ip": "20/60",      # POST /api/auth/start, per client IP
-    "auth_start_email": "5/900",   # ... and per email address (no inbox flooding)
-    "magic_ip": "30/60",           # GET /auth/magic, per client IP
-    "register_ip": "10/60",        # POST /api/register, per client IP
-    "session_write": "60/60",      # cookie-authenticated POST/PUT/DELETE on /api/*, per session
-    "mcp_call": "120/60",          # every MCP tool call, per agent
-    "mcp_outreach": "6/60",        # post, create_room, propose_meeting, request_contact, per agent
-    "guard": "1200/60",            # POST /guardrails/check (Switch only), per caller; over it: BLOCKED, never 429
+    "auth_start_ip": "20/60",  # POST /api/auth/start, per client IP
+    "auth_start_email": "5/900",  # ... and per email address (no inbox flooding)
+    "magic_ip": "30/60",  # GET /auth/magic, per client IP
+    "register_ip": "10/60",  # POST /api/register, per client IP
+    "session_write": "60/60",  # cookie-authenticated POST/PUT/DELETE on /api/*, per session
+    "mcp_call": "120/60",  # every MCP tool call, per agent
+    "mcp_outreach": "6/60",  # post, create_room, propose_meeting, request_contact, per agent
+    "guard": "1200/60",  # POST /guardrails/check (Switch only), per caller; over it: BLOCKED, never 429
 }
 UNITS = {"": 1, "s": 1, "m": 60, "min": 60, "h": 3600, "hour": 3600}
 
@@ -44,7 +45,7 @@ class Limit:
 
 
 def parse(spec: str) -> Limit | None:
-    """"20/60" -> Limit(20, 60); "off" / "0" -> None (no limit)."""
+    """ "20/60" -> Limit(20, 60); "off" / "0" -> None (no limit)."""
     spec = spec.strip().lower()
     if spec in ("off", "0", "none", ""):
         return None
@@ -57,7 +58,7 @@ def parse(spec: str) -> Limit | None:
     return Limit(count, period)
 
 
-def limits_from_env(env=os.environ) -> dict[str, Limit | None]:
+def limits_from_env(env: Mapping[str, str] = os.environ) -> dict[str, Limit | None]:
     if env.get("RATE_LIMITS", "on").strip().lower() in ("off", "false", "0", "no"):
         return {name: None for name in DEFAULTS}
     return {name: parse(env.get(f"RATE_LIMIT_{name.upper()}", default)) for name, default in DEFAULTS.items()}

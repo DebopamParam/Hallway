@@ -2,6 +2,7 @@
 changing any data. For PR proof: run on two commits and compare.
 
     .venv/bin/python scripts/screens.py <out-dir> [persona-email] [--dark]"""
+
 import json
 import os
 import sys
@@ -20,8 +21,9 @@ problems: list[str] = []
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
-    ctx = browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2,
-                              color_scheme="dark" if dark else "light")
+    ctx = browser.new_context(
+        viewport={"width": 390, "height": 844}, device_scale_factor=2, color_scheme="dark" if dark else "light"
+    )
     ctx.add_cookies([{"name": "hw_session", "value": session, "url": base}])
     page = ctx.new_page()
     page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
@@ -30,13 +32,16 @@ with sync_playwright() as p:
         page.goto(f"{base}/#/{name}")
         page.wait_for_timeout(1500)
         page.screenshot(path=str(out / f"{name}.png"))
-    meet = page.evaluate("fetch('/api/rooms').then(r => r.json()).then(rs => (rs.find(r => r.kind === 'meet') || {}).name)")
+    meet = page.evaluate(
+        "fetch('/api/rooms').then(r => r.json()).then(rs => (rs.find(r => r.kind === 'meet') || {}).name)"
+    )
     if meet:
         page.goto(f"{base}/#/room/{meet}")
         page.wait_for_timeout(1500)
         page.screenshot(path=str(out / "meeting-room.png"))
-    anon = browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2,
-                               color_scheme="dark" if dark else "light").new_page()
+    anon = browser.new_context(
+        viewport={"width": 390, "height": 844}, device_scale_factor=2, color_scheme="dark" if dark else "light"
+    ).new_page()
     anon.goto(base + "/")
     anon.wait_for_timeout(800)
     anon.screenshot(path=str(out / "landing.png"))

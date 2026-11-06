@@ -3,6 +3,7 @@
     .venv/bin/python scripts/record.py <out.gif> [persona-email] [--dark] [--tour tabs|inbox]
 
 Read-only unless the tour says otherwise. Needs ffmpeg."""
+
 import argparse
 import json
 import os
@@ -53,8 +54,9 @@ session = json.loads((ROOT / "data" / "personas.state.json").read_text())[a.emai
 size = {"width": 390, "height": 844}
 with tempfile.TemporaryDirectory() as tmp, sync_playwright() as p:
     browser = p.chromium.launch()
-    ctx = browser.new_context(viewport=size, record_video_dir=tmp, record_video_size=size,
-                              color_scheme="dark" if a.dark else "light")
+    ctx = browser.new_context(
+        viewport=size, record_video_dir=tmp, record_video_size=size, color_scheme="dark" if a.dark else "light"
+    )
     ctx.add_cookies([{"name": "hw_session", "value": session, "url": BASE}])
     page = ctx.new_page()
     page.goto(BASE + "/#/now")
@@ -66,7 +68,21 @@ with tempfile.TemporaryDirectory() as tmp, sync_playwright() as p:
     palette = Path(tmp) / "palette.png"
     vf = "fps=10,scale=360:-1:flags=lanczos"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", video, "-vf", f"{vf},palettegen", palette], check=True)
-    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", video, "-i", palette,
-                    "-lavfi", f"{vf}[x];[x][1:v]paletteuse", a.out], check=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            video,
+            "-i",
+            palette,
+            "-lavfi",
+            f"{vf}[x];[x][1:v]paletteuse",
+            a.out,
+        ],
+        check=True,
+    )
     shutil.copy(video, Path(a.out).with_suffix(".webm"))
 print(a.out)

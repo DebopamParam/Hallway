@@ -29,6 +29,31 @@ jobs:
       - name: Tests
         run: python -m pytest
 
+  # ruff (lint + format) and mypy, configured in pyproject.toml; eslint for the
+  # SPA through npx (eslint.config.mjs imports nothing, so no node_modules).
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install
+        run: pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+      - name: ruff check
+        run: ruff check --output-format=github .
+      - name: ruff format
+        run: ruff format --check .
+      - name: mypy
+        run: mypy
+      - name: eslint
+        run: npx --yes eslint@10.13.0
+
   # axe-core plus Hallway's own checks (tap targets, focus, sheets, live
   # regions, reduced motion) in headless Chromium, light and dark. The app
   # runs against the in-memory Switch from tests/fakes.py: no Switch stack.

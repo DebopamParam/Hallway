@@ -3,14 +3,14 @@ FunctionModel stands in for Claude and drives the real Hallway MCP endpoint
 with a day pass token.
 
     HALLWAY_TOKEN=hw_... .venv/bin/python test_engine.py"""
+
 import asyncio
 import json
 import os
 
+import worker
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-
-import worker
 
 
 def scripted(messages, info: AgentInfo) -> ModelResponse:
@@ -28,8 +28,14 @@ def scripted(messages, info: AgentInfo) -> ModelResponse:
 
 
 async def main() -> None:
-    p = {"name": "Sana Qureshi", "handle": "sana", "runs": 1, "here_for": "payments partner",
-         "mcp_url": os.environ.get("HALLWAY_URL", "http://localhost:8787") + "/mcp", "token": os.environ["HALLWAY_TOKEN"]}
+    p = {
+        "name": "Sana Qureshi",
+        "handle": "sana",
+        "runs": 1,
+        "here_for": "payments partner",
+        "mcp_url": os.environ.get("HALLWAY_URL", "http://localhost:8787") + "/mcp",
+        "token": os.environ["HALLWAY_TOKEN"],
+    }
     run = await worker.run_pydantic_ai(p, 0.05, model=FunctionModel(scripted))
     print(run)
     assert run.ok and run.tool_calls == 2, run

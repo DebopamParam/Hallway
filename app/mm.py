@@ -3,13 +3,13 @@
 People post and read through Mattermost (so Switch sees every human message via
 its bridge); the admin session handles users, membership and reads.
 """
+
 import secrets
 from typing import Any
 
 import httpx
 
 from .config import settings
-
 
 # Extra team seats to add when Mattermost's per-team cap is hit mid-event.
 TEAM_HEADROOM = 200
@@ -36,7 +36,9 @@ class MMClient:
             raise MMError(f"login {login_id}: {r.status_code} {r.text[:200]}")
         return r.headers["Token"]
 
-    async def _req(self, method: str, path: str, token: str | None = None, body: Any = None, params=None) -> Any:
+    async def _req(
+        self, method: str, path: str, token: str | None = None, body: Any = None, params: dict[str, Any] | None = None
+    ) -> Any:
         if token is None:
             if self._admin_token is None:
                 self._admin_token = await self.login(settings.mm_admin_user, settings.mm_admin_password)
@@ -61,7 +63,8 @@ class MMClient:
         password = "Hw!" + secrets.token_urlsafe(18)
         try:
             user = await self._req(
-                "POST", "/users",
+                "POST",
+                "/users",
                 body={"username": username, "email": email, "password": password, "first_name": first_name},
             )
         except MMError as e:
@@ -110,9 +113,10 @@ class MMClient:
     async def channel_by_name(self, name: str) -> dict | None:
         tid = await self.team_id()
         try:
-            return await self._req("GET", f"/teams/{tid}/channels/name/{name}")
+            channel: dict = await self._req("GET", f"/teams/{tid}/channels/name/{name}")
         except MMError:
             return None
+        return channel
 
     async def channels_by_display_name(self, display_name: str) -> list[dict]:
         """Switch suffixes the channel name when a room name is reused, so the
@@ -123,7 +127,8 @@ class MMClient:
         return sorted(found, key=lambda c: c["create_at"], reverse=True)
 
     async def channel(self, channel_id: str) -> dict:
-        return await self._req("GET", f"/channels/{channel_id}")
+        channel: dict = await self._req("GET", f"/channels/{channel_id}")
+        return channel
 
     async def channel_member_ids(self, channel_id: str) -> set[str]:
         members = await self._req("GET", f"/channels/{channel_id}/members", params={"per_page": 200})
@@ -148,4 +153,5 @@ class MMClient:
         body = {"channel_id": channel_id, "message": message}
         if root_id:
             body["root_id"] = root_id
-        return await self._req("POST", "/posts", token=token, body=body)
+        post: dict = await self._req("POST", "/posts", token=token, body=body)
+        return post

@@ -3,6 +3,7 @@
     contact_sheet.py out.png dirA [dirB] [--only lobby,people] [--width 300]
 
 One row per directory, columns in --only order (default: every png in dirA)."""
+
 import argparse
 from pathlib import Path
 

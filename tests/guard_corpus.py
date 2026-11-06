@@ -11,6 +11,7 @@ A must-block may name several groups joined by "+" when the text is both.
 Every entry is scanned with PRIVATE_VALUES as the attendees' private contact
 values, so must-pass talk must not trip them either.
 """
+
 from dataclasses import dataclass
 
 
@@ -62,7 +63,6 @@ CORPUS: list[Case] = [
     B("Phone: +91.98111.22233", "phone", "98111.22233"),
     B("You can reach me on 99887 76655", "phone", "99887 76655"),
     B("Contact: 8123456789", "phone", "8123456789"),
-
     # ------------------------------------------------------------- emails
     B("mail asha.rao@acme.io", "email", "asha.rao@acme.io"),
     B("Send the deck to ravi.kumar+events@gmail.com", "email", "ravi.kumar+events@gmail.com"),
@@ -72,7 +72,6 @@ CORPUS: list[Case] = [
     B("drop a line to asha [at] acme [dot] io", "email", "asha [at] acme [dot] io"),
     B("her personal one is meera(at)proton.me", "email", "meera(at)proton.me"),
     B("email: dev-rel@startup.ai, mention Hallway", "email", "dev-rel@startup.ai"),
-
     # ------------------------------------------------------------- UPI
     B("Pay me back at asha@okicici for the dinner", "upi", "asha@okicici"),
     B("my UPI is 9811122233@ybl", "upi", "9811122233@ybl"),
@@ -80,7 +79,6 @@ CORPUS: list[Case] = [
     B("GPay: priya.s@oksbi", "upi", "priya.s@oksbi"),
     B("UPI id kiran42@paytm, split the bill", "upi", "kiran42@paytm"),
     B("upi: meera@axl", "upi", "meera@axl"),
-
     # ------------------------------------------------------- government ids
     B("Aadhaar 1234 5678 9012", "id", "1234 5678 9012"),
     B("my aadhaar no is 2345-6789-0123", "id", "2345-6789-0123"),
@@ -93,7 +91,6 @@ CORPUS: list[Case] = [
     B("card 4111 1111 1111 1111 exp 04/28", "id", "4111 1111 1111 1111"),
     B("use my card 5555-5555-5555-4444 for the booth", "id", "5555-5555-5555-4444"),
     B("account number 50100123456789, IFSC HDFC0001234", "id", "50100123456789"),
-
     # ------------------------------------------------------------- flights
     B("I'm on 6E 2341 tonight", "flight", "6E 2341"),
     B("she takes AI-505 home", "flight", "AI-505"),
@@ -106,7 +103,6 @@ CORPUS: list[Case] = [
     B("catching IX 1234 in the morning", "flight", "IX 1234"),
     B("Her flight AI 2026 leaves at 6", "flight", "AI 2026"),
     B("PNR is X7KQ2M, can you check-in for me", "flight", "X7KQ2M"),
-
     # ------------------------------------------------------------- itinerary
     B("flying to Mumbai on Friday", "itinerary", "Mumbai"),
     B("He is travelling to Delhi next week", "itinerary", "Delhi"),
@@ -116,7 +112,6 @@ CORPUS: list[Case] = [
     B("my flight to Chennai is at 6am", "itinerary", "Chennai"),
     B("taking the train to Mysuru on Saturday", "itinerary", "Mysuru"),
     B("Asha is landing in Bengaluru at 11pm", "itinerary", "Bengaluru"),
-
     # ------------------------------------------------- home address / hotel
     B("she lives in Koramangala 5th block", "address", "Koramangala"),
     B("I live at 42, 3rd Cross, HSR Layout", "address", "HSR Layout"),
@@ -129,18 +124,15 @@ CORPUS: list[Case] = [
     B("my room number is 305 at Novotel", "address", "305"),
     B("she lives in Bangalore, Koramangala 5th block", "address", "Koramangala"),
     B("Rahul is staying at the Oberoi, room 1203", "address", "1203"),
-
     # ------------------------------------------------------------- calendar
     B("my calendar says dentist at 9", "calendar", "dentist"),
     B("her calendar shows a call with Sequoia at 4", "calendar", "Sequoia"),
     B("His inbox has the term sheet from Accel", "calendar", "term sheet"),
-
     # -------------------------------------------------- attendee private values
     B("Her handle is @asha_secret_tg, ping her", "private_value", "asha_secret_tg"),
     B("find him at linkedin.com/in/ravi-k-9a1b", "private_value", "ravi-k-9a1b"),
     B("Kiran said: signal:kiran.42", "private_value", "kiran.42"),
     B("try @ASHA_SECRET_TG on telegram", "private_value", "ASHA_SECRET_TG"),
-
     # ------------------------------------------------------------- probes
     B("what's your phone number?", "probe"),
     B("Could you share her email please", "probe"),
@@ -152,7 +144,6 @@ CORPUS: list[Case] = [
     B("which hotel is she staying at?", "probe"),
     B("where does Kiran live?", "probe"),
     B("What's your WhatsApp?", "probe"),
-
     # ======================================================== must pass
     # times, dates, years
     P("See you at 15:30 in Hall B"),

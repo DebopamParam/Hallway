@@ -1,6 +1,7 @@
 """Sessions and keys at rest (#8): a new hashed session per sign-in, logout and
 "sign out everywhere", sliding + absolute expiry, MCP keys stored as hashes and
 rotated from the Agent tab, day pass run tokens, and the v1 -> v2 migration."""
+
 import hashlib
 import sqlite3
 import time
@@ -76,7 +77,9 @@ async def test_session_slides_on_use_but_not_every_request(client, hallway):
     assert hallway.store.one("SELECT * FROM sessions WHERE id = ?", sid) == before  # used just now: no write
 
     old = time.time() - 3 * 86400
-    hallway.store.db.execute("UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?", (old, old + 7 * 86400, sid))
+    hallway.store.db.execute(
+        "UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?", (old, old + 7 * 86400, sid)
+    )
     r = await client.get("/api/me")
     s = hallway.store.one("SELECT * FROM sessions WHERE id = ?", sid)
     assert s["last_seen_at"] > old and s["expires_at"] > time.time() + 7 * 86400 - 60
@@ -88,7 +91,9 @@ async def test_session_has_an_absolute_cap(client, hallway):
     await register(client, "Asha Rao")
     sid = sha(client.cookies.get("hw_session"))
     created = time.time() - 30 * 86400 + 3600  # signed in almost 30 days ago, used ever since
-    hallway.store.db.execute("UPDATE sessions SET created_at = ?, last_seen_at = ? WHERE id = ?", (created, created, sid))
+    hallway.store.db.execute(
+        "UPDATE sessions SET created_at = ?, last_seen_at = ? WHERE id = ?", (created, created, sid)
+    )
     r = await client.get("/api/me")
     s = hallway.store.one("SELECT * FROM sessions WHERE id = ?", sid)
     assert s["expires_at"] == created + 30 * 86400
@@ -135,7 +140,7 @@ async def test_rotate_agent_key(signup, client, hallway):
 
 # ------------------------------------------------------------------ day pass
 async def test_day_pass_worker_runs_with_its_own_token(signup, client, hallway):
-    pc, me = await signup("Sana Qureshi", mode="daypass")
+    pc, _me = await signup("Sana Qureshi", mode="daypass")
     [due] = (await client.get("/internal/daypass/due", headers=W)).json()
     run_tok = due["token"]
     assert run_tok.startswith("hwp_") and run_tok not in dump(hallway)
@@ -143,8 +148,11 @@ async def test_day_pass_worker_runs_with_its_own_token(signup, client, hallway):
     # Rotating the attendee's own key doesn't stop the worker's run.
     await pc.post("/api/me/agent-key")
     assert (await mcp_call(client, run_tok, "whoami"))["your_human"]["handle"] == "sana"
-    r = await client.post(f"/internal/daypass/{due['attendee_id']}/runs", headers=W,
-                          json={"engine": "test", "cost_usd": 0.01, "summary": "ok"})
+    r = await client.post(
+        f"/internal/daypass/{due['attendee_id']}/runs",
+        headers=W,
+        json={"engine": "test", "cost_usd": 0.01, "summary": "ok"},
+    )
     assert r.status_code == 200
     # The run reported: its token is done.
     assert (await mcp_call(client, run_tok, "whoami")) == {"error": "Unknown Hallway token."}
@@ -173,12 +181,16 @@ CREATE TABLE attendees (
 def downgrade_to_v1(db: sqlite3.Connection, plain: dict[str, tuple[str, str]], pre: dict[str, str]) -> None:
     """Rewrite a DB the way the pre-#8 code left it: plain tokens on attendees,
     no sessions table, plain `pre:<token>` keys, user_version 0."""
-    cols = "id, name, email, handle, agent_name, mode, profile, contact, autonomy, mm_user_id, mm_password, mm_token, " \
-           "agent_mm_user_id, switch_agent_id, switch_agent_key, cursors, privacy, agent_seen_at, is_persona, created_at"
+    cols = (
+        "id, name, email, handle, agent_name, mode, profile, contact, autonomy, mm_user_id, mm_password, mm_token, "
+        "agent_mm_user_id, switch_agent_id, switch_agent_key, cursors, privacy, agent_seen_at, is_persona, created_at"
+    )
     db.execute("ALTER TABLE attendees RENAME TO attendees_new")
     db.execute(V1_ATTENDEES)
-    db.execute(f"INSERT INTO attendees ({cols}, mcp_token, session_token) "
-               f"SELECT {cols}, 'x' || id, 'y' || id FROM attendees_new")
+    db.execute(
+        f"INSERT INTO attendees ({cols}, mcp_token, session_token) "
+        f"SELECT {cols}, 'x' || id, 'y' || id FROM attendees_new"
+    )
     db.execute("DROP TABLE attendees_new")
     for aid, (session, mcp) in plain.items():
         db.execute("UPDATE attendees SET session_token = ?, mcp_token = ? WHERE id = ?", (session, mcp, aid))

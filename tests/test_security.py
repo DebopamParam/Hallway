@@ -1,5 +1,6 @@
 """Security headers, the CSRF Origin check and its exemptions, the client IP
 behind Cloudflare, and that the frontend fits the CSP (#9)."""
+
 import dataclasses
 import re
 from pathlib import Path
@@ -8,7 +9,7 @@ import httpx
 import pytest
 from starlette.requests import Request
 
-from app import main, security
+from app import main
 
 from .conftest import ADMIN_KEY, GUARD_KEY, WORKER_KEY, mcp_call, register
 
@@ -41,8 +42,11 @@ async def test_security_headers_everywhere(client, path):
 
 
 async def test_headers_on_mcp_and_csrf_refusals(client, signup):
-    r = await client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-                          headers={"Accept": "application/json, text/event-stream"})
+    r = await client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        headers={"Accept": "application/json, text/event-stream"},
+    )
     assert "content-security-policy" in r.headers
     async with bare() as c:
         r = await c.post("/api/auth/start", json={"email": "a@example.com"})
@@ -78,8 +82,10 @@ async def test_same_origin_write_is_accepted(signup):
     assert (await pc.put("/api/me", json={"profile": {"role": "Designer"}})).status_code == 200
 
 
-@pytest.mark.parametrize("origin", ["https://evil.example", "http://testserver.evil.example", "null",
-                                    "https://testserver", "http://testserver:8080"])
+@pytest.mark.parametrize(
+    "origin",
+    ["https://evil.example", "http://testserver.evil.example", "null", "https://testserver", "http://testserver:8080"],
+)
 async def test_cross_origin_write_is_refused(signup, origin):
     pc, _ = await signup("Asha Rao")
     r = await pc.put("/api/me", json={"profile": {"role": "Pwned"}}, headers={"origin": origin})
@@ -101,8 +107,9 @@ async def test_referer_is_the_fallback(signup):
     assert (await pc.post("/api/me/agent-key", headers={"referer": "https://evil.example/x"})).status_code == 403
 
 
-@pytest.mark.parametrize("path", ["/api/auth/start", "/api/auth/logout", "/api/register", "/api/rooms",
-                                  "/api/contacts"])
+@pytest.mark.parametrize(
+    "path", ["/api/auth/start", "/api/auth/logout", "/api/register", "/api/rooms", "/api/contacts"]
+)
 async def test_every_api_write_is_checked(hallway, path):
     async with bare("https://evil.example") as c:
         assert (await c.post(path, json={})).status_code == 403
@@ -132,20 +139,34 @@ async def test_mcp_is_exempt(signup):
 
 async def test_guard_and_internal_are_exempt(hallway):
     async with bare() as c:
-        r = await c.post("/guardrails/check", headers={"x-flintai-api-key": GUARD_KEY},
-                         json={"messages": [{"role": "user", "content": "hi"}]})
+        r = await c.post(
+            "/guardrails/check",
+            headers={"x-flintai-api-key": GUARD_KEY},
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
         assert r.status_code == 200
-        r = await c.post("/internal/daypass/nobody/runs", headers={"x-hallway-worker": WORKER_KEY},
-                         json={"engine": "t", "cost_usd": 0})
+        r = await c.post(
+            "/internal/daypass/nobody/runs",
+            headers={"x-hallway-worker": WORKER_KEY},
+            json={"engine": "t", "cost_usd": 0},
+        )
         assert r.status_code != 403  # past the CSRF check (404/400 for an unknown attendee is fine)
 
 
 async def test_admin_key_is_exempt(hallway, monkeypatch):
     class Gw:
-        async def login(self): pass
-        async def put_trust_settings(self, *a): return {"ok": True}
-        async def set_agent_greetings(self, on): return 0
-        async def close(self): pass
+        async def login(self):
+            pass
+
+        async def put_trust_settings(self, *a):
+            return {"ok": True}
+
+        async def set_agent_greetings(self, on):
+            return 0
+
+        async def close(self):
+            pass
+
     monkeypatch.setattr(main, "GatewayClient", Gw)
     async with bare() as c:
         assert (await c.post("/api/admin/enable-guard", headers={"x-hallway-admin": ADMIN_KEY})).status_code == 200
@@ -166,8 +187,15 @@ async def test_signup_script_flow_works_with_origin(make_client):
 
 # ---------------------------------------------------------------- client IP
 def req(client=("10.0.0.7", 1234), **headers) -> Request:
-    return Request({"type": "http", "method": "GET", "path": "/", "client": client,
-                    "headers": [(k.replace("_", "-").encode(), v.encode()) for k, v in headers.items()]})
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "client": client,
+            "headers": [(k.replace("_", "-").encode(), v.encode()) for k, v in headers.items()],
+        }
+    )
 
 
 def test_client_ip_prefers_cf_connecting_ip():

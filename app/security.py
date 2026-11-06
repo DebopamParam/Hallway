@@ -4,6 +4,7 @@ Origin check against cross-site requests (CSRF), and the client's real IP.
 Hallway runs behind a Cloudflare Tunnel: TLS ends at Cloudflare and every
 request reaches uvicorn from cloudflared (see main.client_ip for the visitor's IP).
 """
+
 import json
 import secrets
 from collections.abc import Callable
@@ -16,21 +17,24 @@ from . import config
 # The attendee app is same-origin only: its script, stylesheet, fonts and images
 # all live under /static, and it only talks to its own API. No inline script or
 # style anywhere (index.html loads static/theme.js; app.js binds its handlers).
-CSP = "; ".join([
-    "default-src 'self'",
-    "script-src 'self'",
-    "style-src 'self'",
-    "img-src 'self'",
-    "font-src 'self'",
-    "connect-src 'self'",
-    "manifest-src 'self'",
-    "object-src 'none'",
-    "base-uri 'none'",
-    "form-action 'self'",
-    "frame-ancestors 'none'",
-])
-PERMISSIONS_POLICY = ("accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), "
-                      "microphone=(), payment=(), usb=()")
+CSP = "; ".join(
+    [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self'",
+        "img-src 'self'",
+        "font-src 'self'",
+        "connect-src 'self'",
+        "manifest-src 'self'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    ]
+)
+PERMISSIONS_POLICY = (
+    "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+)
 HSTS = "max-age=31536000"
 
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -75,8 +79,13 @@ def origin_allowed(sent: str, s: "config.Settings") -> bool:
     if got == want:
         return True
     loopback = set(config.LOCAL_HOSTS)
-    return (config.is_local_url(s) and got[0] == want[0] and got[2] == want[2]
-            and got[1] in loopback and want[1] in loopback)
+    return (
+        config.is_local_url(s)
+        and got[0] == want[0]
+        and got[2] == want[2]
+        and got[1] in loopback
+        and want[1] in loopback
+    )
 
 
 def csrf_exempt(scope: Scope, headers: dict[str, str], s: "config.Settings") -> bool:
@@ -120,9 +129,13 @@ class SecurityMiddleware:
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
         if not csrf_exempt(scope, headers, s) and not csrf_ok(headers, s):
             body = json.dumps({"error": CSRF_REFUSED, "code": "csrf"}).encode()
-            await send_with_headers({"type": "http.response.start", "status": 403, "headers": [
-                (b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+            await send_with_headers(
+                {
+                    "type": "http.response.start",
+                    "status": 403,
+                    "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+                }
+            )
             await send({"type": "http.response.body", "body": body})
             return
         await self.app(scope, receive, send_with_headers)
-

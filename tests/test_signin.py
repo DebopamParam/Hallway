@@ -1,5 +1,6 @@
 """Sign-in modes (dev / demo / email), single-use expiring links, the email
 sender, and keeping links and tokens out of the logs."""
+
 import dataclasses
 import logging
 import time
@@ -88,6 +89,7 @@ async def test_email_mode_send_failure_is_503(client, monkeypatch):
     class Broken:
         async def send(self, *a):
             raise mailer.SendError("smtp: ConnectionRefusedError")
+
     monkeypatch.setattr(main.mailer, "make_sender", lambda _s: Broken())
     use(monkeypatch, signin_mode="email")
     r = await client.post("/api/auth/start", json={"email": "a@example.com"})
@@ -155,8 +157,15 @@ async def test_nothing_secret_is_logged(make_client, monkeypatch, caplog, outbox
 
 
 def test_access_log_redacts_tokens():
-    rec = logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d',
-                            ("1.2.3.4:5", "GET", "/auth/magic?t=SECRET123&x=1", "1.1", 303), None)
+    rec = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("1.2.3.4:5", "GET", "/auth/magic?t=SECRET123&x=1", "1.1", 303),
+        None,
+    )
     main._RedactSecrets().filter(rec)
     assert "SECRET123" not in rec.getMessage() and "t=[redacted]&x=1" in rec.getMessage()
     rec = logging.LogRecord("uvicorn.access", logging.INFO, "", 0, "%s", ("/mcp?key=hw_abc",), None)
@@ -199,12 +208,16 @@ def test_email_mode_needs_a_real_sender_in_production():
         config.check_signin(settings(signin_mode="email", email_sender="console"))
     with pytest.raises(RuntimeError, match="SMTP_HOST"):
         config.check_signin(settings(signin_mode="email", email_sender="smtp", smtp_host="", smtp_from=""))
-    config.check_signin(settings(signin_mode="email", email_sender="smtp", smtp_host="smtp.example.com",
-                                 smtp_from="Hallway <hi@example.com>"))
+    config.check_signin(
+        settings(
+            signin_mode="email", email_sender="smtp", smtp_host="smtp.example.com", smtp_from="Hallway <hi@example.com>"
+        )
+    )
     with pytest.raises(RuntimeError, match="RESEND_API_KEY"):
         config.check_signin(settings(signin_mode="email", email_sender="resend"))
-    config.check_signin(settings(signin_mode="email", email_sender="resend", resend_api_key="re_x",
-                                 smtp_from="hi@example.com"))
+    config.check_signin(
+        settings(signin_mode="email", email_sender="resend", resend_api_key="re_x", smtp_from="hi@example.com")
+    )
 
 
 def test_unknown_mode_or_sender_refused():
@@ -214,13 +227,16 @@ def test_unknown_mode_or_sender_refused():
         config.check_signin(settings(email_sender="pigeon"))
 
 
-@pytest.mark.parametrize("env, mode", [
-    ({}, "dev"),
-    ({"DEV_MAGIC_LINKS": "true"}, "dev"),
-    ({"DEV_MAGIC_LINKS": "false"}, "email"),
-    ({"DEV_MAGIC_LINKS": "true", "SIGNIN_MODE": "demo"}, "demo"),
-    ({"SIGNIN_MODE": " Email "}, "email"),
-])
+@pytest.mark.parametrize(
+    "env, mode",
+    [
+        ({}, "dev"),
+        ({"DEV_MAGIC_LINKS": "true"}, "dev"),
+        ({"DEV_MAGIC_LINKS": "false"}, "email"),
+        ({"DEV_MAGIC_LINKS": "true", "SIGNIN_MODE": "demo"}, "demo"),
+        ({"SIGNIN_MODE": " Email "}, "email"),
+    ],
+)
 def test_signin_mode_and_deprecated_alias(monkeypatch, env, mode):
     monkeypatch.delenv("DEV_MAGIC_LINKS", raising=False)
     monkeypatch.delenv("SIGNIN_MODE", raising=False)
@@ -258,18 +274,30 @@ async def test_smtp_sender_uses_starttls_and_login(monkeypatch):
             seen.append(("send", msg["To"], msg["From"], msg["Subject"]))
 
     monkeypatch.setattr(mailer.smtplib, "SMTP", FakeSMTP)
-    s = settings(email_sender="smtp", smtp_host="smtp.example.com", smtp_port=587, smtp_user="u",
-                 smtp_password="p", smtp_from="hi@example.com", smtp_starttls=True)
+    s = settings(
+        email_sender="smtp",
+        smtp_host="smtp.example.com",
+        smtp_port=587,
+        smtp_user="u",
+        smtp_password="p",
+        smtp_from="hi@example.com",
+        smtp_starttls=True,
+    )
     sender = mailer.make_sender(s)
     assert isinstance(sender, mailer.SMTPSender)
     await sender.send("a@example.com", "Subj", "Body")
-    assert seen == [("connect", "smtp.example.com", 587), ("starttls",), ("login", "u"),
-                    ("send", "a@example.com", "hi@example.com", "Subj")]
+    assert seen == [
+        ("connect", "smtp.example.com", 587),
+        ("starttls",),
+        ("login", "u"),
+        ("send", "a@example.com", "hi@example.com", "Subj"),
+    ]
 
 
 async def test_smtp_failure_is_send_error(monkeypatch):
     def refuse(*a, **kw):
         raise ConnectionRefusedError()
+
     monkeypatch.setattr(mailer.smtplib, "SMTP", refuse)
     sender = mailer.make_sender(settings(email_sender="smtp", smtp_host="h", smtp_from="f@example.com"))
     with pytest.raises(mailer.SendError):

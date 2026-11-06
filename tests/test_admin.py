@@ -1,7 +1,9 @@
 """Separate secrets (#11): HALLWAY_ADMIN_KEY for the organiser, GUARD_API_KEY for
 Switch's guard calls, DAYPASS_WORKER_KEY for the worker; no localhost bypass
 on a deployed instance; refuse to start a public instance with weak keys."""
+
 import dataclasses
+from typing import ClassVar
 
 import pytest
 
@@ -15,7 +17,7 @@ def use(monkeypatch, **changes):
 
 
 class FakeGateway:
-    calls: list = []
+    calls: ClassVar[list] = []
 
     async def login(self):
         pass
@@ -93,12 +95,15 @@ async def test_worker_endpoints_refuse_guard_and_admin_keys(client):
 
 async def test_guard_refuses_admin_key(client):
     body = {"messages": [{"role": "user", "content": "hi"}]}
-    assert (await client.post("/guardrails/check", json=body, headers={"x-flintai-api-key": ADMIN_KEY})).status_code == 401
+    assert (
+        await client.post("/guardrails/check", json=body, headers={"x-flintai-api-key": ADMIN_KEY})
+    ).status_code == 401
 
 
 # ------------------------------------------------------------ startup checks
-PUBLIC = dict(public_url="https://hallway.example.com", guard_api_key="g" * 24, admin_key="a" * 24,
-              daypass_worker_key="w" * 24)
+PUBLIC = dict(
+    public_url="https://hallway.example.com", guard_api_key="g" * 24, admin_key="a" * 24, daypass_worker_key="w" * 24
+)
 
 
 def keys(**kw) -> config.Settings:
@@ -116,8 +121,10 @@ def test_missing_or_placeholder_key_refused_on_public_url(name, value):
         config.check_keys(keys(**{name: value}))
 
 
-@pytest.mark.parametrize("a, b", [("guard_api_key", "admin_key"), ("guard_api_key", "daypass_worker_key"),
-                                  ("admin_key", "daypass_worker_key")])
+@pytest.mark.parametrize(
+    "a, b",
+    [("guard_api_key", "admin_key"), ("guard_api_key", "daypass_worker_key"), ("admin_key", "daypass_worker_key")],
+)
 def test_shared_keys_refused_on_public_url(a, b):
     with pytest.raises(RuntimeError, match="different secrets"):
         config.check_keys(keys(**{a: "same" * 6, b: "same" * 6}))
@@ -146,4 +153,3 @@ async def test_app_refuses_to_start_with_shared_keys(monkeypatch):
     with pytest.raises(RuntimeError, match="different secrets"):
         async with main.lifespan(main.app):
             pass
-
