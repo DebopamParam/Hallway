@@ -5,6 +5,7 @@
 For UI checks without the Switch stack (CI runs scripts/a11y.py against it):
 a fresh temp DB, dev sign-in links, and the same fakes the test suite uses.
 Agents never get a live Switch connection, and nothing leaves the process."""
+
 import os
 import sys
 import tempfile
@@ -15,20 +16,22 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8799
 _tmp = tempfile.mkdtemp(prefix="hallway-fake-")
 # Pinned before `app` is imported: settings are read once, at import time, and
 # these win over ./.env (which is only applied with setdefault).
-os.environ.update({
-    "HALLWAY_DB": os.path.join(_tmp, "hallway.db"),
-    "HALLWAY_PUBLIC_URL": f"http://localhost:{PORT}",
-    "SWITCH_URL": "http://switch.invalid",
-    "SWITCH_REGISTRATION_KEY": "",
-    "MM_URL": "http://mm.invalid",
-    "HALLWAY_ENV": "dev",
-    "SIGNIN_MODE": "dev",
-    "EMAIL_SENDER": "console",
-    "INVITE_CODE": "",
-    "INVITE_LIMIT": "0",
-    "HOST_AGENT_NAME": "hallway-fake",
-    "LOBBY_ROOM_NAME": "hallway-lobby",
-})
+os.environ.update(
+    {
+        "HALLWAY_DB": os.path.join(_tmp, "hallway.db"),
+        "HALLWAY_PUBLIC_URL": f"http://localhost:{PORT}",
+        "SWITCH_URL": "http://switch.invalid",
+        "SWITCH_REGISTRATION_KEY": "",
+        "MM_URL": "http://mm.invalid",
+        "HALLWAY_ENV": "dev",
+        "SIGNIN_MODE": "dev",
+        "EMAIL_SENDER": "console",
+        "INVITE_CODE": "",
+        "INVITE_LIMIT": "0",
+        "HOST_AGENT_NAME": "hallway-fake",
+        "LOBBY_ROOM_NAME": "hallway-lobby",
+    }
+)
 sys.path.insert(0, str(ROOT))
 
 import uvicorn

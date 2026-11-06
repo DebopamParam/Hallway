@@ -1,4 +1,5 @@
 """Sign-in (magic links + session cookie) and onboarding (/api/register)."""
+
 import dataclasses
 import time
 from urllib.parse import urlparse
@@ -28,8 +29,10 @@ async def test_magic_link_flow_to_registered(client, world):
     me = (await client.get("/api/me")).json()
     assert me == {"onboarding": True, "email": "asha@example.com"}
 
-    r = await client.post("/api/register", json={"name": "Asha Rao", "profile": {"role": "Designer"},
-                                                 "contact": {"phone": "+91 98111 22233"}})
+    r = await client.post(
+        "/api/register",
+        json={"name": "Asha Rao", "profile": {"role": "Designer"}, "contact": {"phone": "+91 98111 22233"}},
+    )
     assert r.status_code == 200
     me = r.json()
     assert me["handle"] == "asha" and me["agent"] == "asha.agent" and me["email"] == "asha@example.com"
@@ -149,8 +152,11 @@ async def test_register_live_needs_valid_agent_name(client, world):
 async def test_live_mode_rejects_taken_agent_name(make_client, hallway, world):
     """Claiming another attendee's agent name should be a clean 400, not a crash."""
     await register(make_client(), "Steve Jobs")  # steve.agent
-    c = httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
-                          base_url="http://testserver", headers={"origin": "http://testserver"})
+    c = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://testserver",
+        headers={"origin": "http://testserver"},
+    )
     try:
         await sign_in(c, "mallory@example.com")
         r = await c.post("/api/register", json={"name": "Mallory", "mode": "live", "live_agent_name": "steve.agent"})
@@ -219,17 +225,29 @@ async def test_handles_and_agent_names_are_unique(signup):
 
 
 async def test_autonomy_defaults_and_share_contact_locked(client):
-    me = await register(client, "Asha Rao", autonomy={"rooms": "auto", "share_contact": "auto", "chat": "bogus",
-                                                     "unknown": "auto"})
-    assert me["autonomy"] == {"chat": "auto", "rooms": "auto", "propose_meeting": "ask", "accept_meeting": "ask",
-                              "share_contact": "ask"}
+    me = await register(
+        client, "Asha Rao", autonomy={"rooms": "auto", "share_contact": "auto", "chat": "bogus", "unknown": "auto"}
+    )
+    assert me["autonomy"] == {
+        "chat": "auto",
+        "rooms": "auto",
+        "propose_meeting": "ask",
+        "accept_meeting": "ask",
+        "share_contact": "ask",
+    }
     assert me["locked"] == ["share_contact"]
 
 
 async def test_update_me(client):
     await register(client, "Asha Rao", contact={"phone": "+91 98111 22233"})
-    r = await client.put("/api/me", json={"profile": {"company": "Juspay"}, "contact": {"email": "a@juspay.in"},
-                                          "autonomy": {"share_contact": "auto", "propose_meeting": "auto"}})
+    r = await client.put(
+        "/api/me",
+        json={
+            "profile": {"company": "Juspay"},
+            "contact": {"email": "a@juspay.in"},
+            "autonomy": {"share_contact": "auto", "propose_meeting": "auto"},
+        },
+    )
     me = r.json()
     assert me["profile"]["company"] == "Juspay" and me["profile"]["role"] == "Engineer"  # merged
     assert me["contact"] == {"email": "a@juspay.in"}  # replaced

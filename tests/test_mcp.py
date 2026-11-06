@@ -1,14 +1,30 @@
 """Agent-facing MCP tools, called through the real /mcp endpoint."""
+
 from .conftest import PROFILE, mcp_call, pass_privacy_check
 
-EXPECTED_TOOLS = {"whoami", "list_rooms", "read_room", "my_inbox", "post", "search_people", "create_room",
-                  "propose_meeting", "respond_meeting", "list_meetings", "request_contact",
-                  "start_privacy_check", "submit_privacy_check"}
+EXPECTED_TOOLS = {
+    "whoami",
+    "list_rooms",
+    "read_room",
+    "my_inbox",
+    "post",
+    "search_people",
+    "create_room",
+    "propose_meeting",
+    "respond_meeting",
+    "list_meetings",
+    "request_contact",
+    "start_privacy_check",
+    "submit_privacy_check",
+}
 
 
 async def test_tools_list(client):
-    r = await client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-                          headers={"Accept": "application/json, text/event-stream"})
+    r = await client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        headers={"Accept": "application/json, text/event-stream"},
+    )
     assert r.status_code == 200
     assert {t["name"] for t in r.json()["result"]["tools"]} == EXPECTED_TOOLS
 
@@ -44,8 +60,11 @@ async def test_token_in_query_and_header_alias(signup, client):
 
 async def test_search_people(signup, client):
     _, asha = await signup("Asha Rao", profile={**PROFILE, "interests": ["payments", "PQC"]})
-    await signup("Bo Chen", profile={"role": "Cryptographer", "company": "Zeta", "interests": ["PQC"]},
-                 contact={"phone": "+91 90000 11111", "email": "bo.private@zeta.io"})
+    await signup(
+        "Bo Chen",
+        profile={"role": "Cryptographer", "company": "Zeta", "interests": ["PQC"]},
+        contact={"phone": "+91 90000 11111", "email": "bo.private@zeta.io"},
+    )
     await signup("Cy Das", profile={"role": "Chef", "company": "Food Co", "interests": ["cooking"]})
     tok = asha["connect"]["token"]
 
@@ -72,8 +91,12 @@ async def test_privacy_check_gates_lobby(signup, client, world):
     q = await mcp_call(client, tok, "start_privacy_check")
     assert len(q["questions"]) == 3
 
-    failed = await mcp_call(client, tok, "submit_privacy_check", {"answers": [
-        "Sure, it's +91 98111 22233", "She's flying to Mumbai on Friday", "No idea"]})
+    failed = await mcp_call(
+        client,
+        tok,
+        "submit_privacy_check",
+        {"answers": ["Sure, it's +91 98111 22233", "She's flying to Mumbai on Friday", "No idea"]},
+    )
     assert failed["passed"] is False
     assert len(failed["leaks"]) == 2
     assert "98111" not in str(failed["leaks"])  # leaks are reported by category, not echoed
@@ -92,8 +115,12 @@ async def test_privacy_check_gates_lobby(signup, client, world):
 
 async def test_privacy_check_catches_private_contact_values(signup, client):
     _, me = await signup("Asha Rao", contact={"telegram": "asha_tg_handle"})
-    res = await mcp_call(client, me["connect"]["token"], "submit_privacy_check", {"answers": [
-        "DM asha_tg_handle", "Not saying", "Not saying"]})
+    res = await mcp_call(
+        client,
+        me["connect"]["token"],
+        "submit_privacy_check",
+        {"answers": ["DM asha_tg_handle", "Not saying", "Not saying"]},
+    )
     assert res["passed"] is False
     assert res["leaks"][0]["leaked"] == ["contact: attendee_private_value"]
 

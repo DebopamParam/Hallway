@@ -1,5 +1,6 @@
 """Invite-only sign-up (INVITE_CODE), the demo cap (INVITE_LIMIT) and the
 organiser's persona bypass (x-hallway-admin)."""
+
 import dataclasses
 from urllib.parse import urlparse
 
@@ -18,6 +19,7 @@ def invite(monkeypatch):
     def use(**changes):
         base = dict(invite_code=CODE, invite_limit=0, demo_video_url="", admin_key="admin-key")
         monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, **{**base, **changes}))
+
     return use
 
 
@@ -81,6 +83,7 @@ async def test_email_mode_refusal_goes_to_the_inbox(make_client, invite, monkeyp
     class Outbox:
         async def send(self, to, subject, text):
             sent.append((to, text))
+
     monkeypatch.setattr(main.mailer, "make_sender", lambda _s: Outbox())
     invite(signin_mode="email", demo_video_url="https://example.com/demo")
     refused = await start(make_client(), "new@example.com", None)
@@ -107,8 +110,11 @@ async def test_limit_reached(make_client, invite, hallway):
     assert (await make_client().get("/api/event")).json()["spots_left"] == 0
     r = await start(make_client(), "late@example.com", CODE)
     assert r.status_code == 409
-    assert r.json() == {"error": "This demo is full: all 2 spots are taken.", "code": "demo_full",
-                        "demo_video_url": "https://example.com/demo"}
+    assert r.json() == {
+        "error": "This demo is full: all 2 spots are taken.",
+        "code": "demo_full",
+        "demo_video_url": "https://example.com/demo",
+    }
     # People who already joined can still sign in.
     r = await start(make_client(), "p0@example.com", None)
     assert r.status_code == 200 and r.json()["dev_link"]
@@ -125,8 +131,10 @@ async def test_limit_enforced_again_at_register(make_client, invite, hallway):
     """Two links issued while one spot was left: only the first to register gets in."""
     invite(invite_limit=1)
     first, second = make_client(), make_client()
-    links = [urlparse((await start(c, e, CODE)).json()["dev_link"])
-             for c, e in ((first, "a@example.com"), (second, "b@example.com"))]
+    links = [
+        urlparse((await start(c, e, CODE)).json()["dev_link"])
+        for c, e in ((first, "a@example.com"), (second, "b@example.com"))
+    ]
     for c, link in zip((first, second), links, strict=True):
         await c.get(f"{link.path}?{link.query}")
     assert (await first.post("/api/register", json={"name": "Asha Rao"})).status_code == 200

@@ -1,4 +1,5 @@
 """Day pass ledger: the worker API (/internal/daypass/*), spend cap, pause."""
+
 import time
 
 import pytest
@@ -15,8 +16,11 @@ async def daypass(signup):
 
 
 async def report(client, attendee_id, cost, **kw):
-    return await client.post(f"/internal/daypass/{attendee_id}/runs", headers=W,
-                             json={"engine": "test", "cost_usd": cost, "summary": "did things", **kw})
+    return await client.post(
+        f"/internal/daypass/{attendee_id}/runs",
+        headers=W,
+        json={"engine": "test", "cost_usd": cost, "summary": "did things", **kw},
+    )
 
 
 async def attendee_id(hallway, handle):
@@ -117,7 +121,8 @@ async def test_due_orders_never_run_first(client, hallway, signup, daypass):
     await signup("Tara Iyer", mode="daypass")
     await report(client, await attendee_id(hallway, "sana"), 0.01)
     hallway.store.db.execute("UPDATE passes SET last_run_at = ?", (time.time() - 3600,))
-    hallway.store.db.execute("UPDATE passes SET last_run_at = NULL WHERE attendee_id = ?",
-                             (await attendee_id(hallway, "tara"),))
+    hallway.store.db.execute(
+        "UPDATE passes SET last_run_at = NULL WHERE attendee_id = ?", (await attendee_id(hallway, "tara"),)
+    )
     due = (await client.get("/internal/daypass/due", headers=W)).json()
     assert [d["handle"] for d in due] == ["tara", "sana"]

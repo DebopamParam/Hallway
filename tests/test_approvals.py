@@ -1,4 +1,5 @@
 """Approvals, rooms, meetings and the contact swap (web API + MCP together)."""
+
 from .conftest import mcp_call
 
 ASHA_CONTACT = {"phone": "+91 98111 22233", "email": "asha.private@juspay.in"}
@@ -149,8 +150,12 @@ async def test_meeting_proposed_approved_and_confirmed(signup, client, hallway, 
     bc, bo = await signup("Bo Chen")  # accept_meeting: ask
     ta, tb = asha["connect"]["token"], bo["connect"]["token"]
 
-    res = await mcp_call(client, ta, "propose_meeting",
-                         {"with_who": "@bo.agent", "time": "15:50", "place": "Hall B exit", "why": "PQC pilots"})
+    res = await mcp_call(
+        client,
+        ta,
+        "propose_meeting",
+        {"with_who": "@bo.agent", "time": "15:50", "place": "Hall B exit", "why": "PQC pilots"},
+    )
     assert res["status"] == "proposed"
     mid = res["meeting_id"]
 
@@ -179,8 +184,12 @@ async def test_meeting_proposed_approved_and_confirmed(signup, client, hallway, 
 async def test_meeting_needs_proposers_approval_by_default(signup, client):
     ac, asha = await signup("Asha Rao")
     await signup("Bo Chen")
-    res = await mcp_call(client, asha["connect"]["token"], "propose_meeting",
-                         {"with_who": "bo", "time": "12:00", "place": "Courtyard", "why": "lunch"})
+    res = await mcp_call(
+        client,
+        asha["connect"]["token"],
+        "propose_meeting",
+        {"with_who": "bo", "time": "12:00", "place": "Courtyard", "why": "lunch"},
+    )
     assert res["status"] == "pending_approval"
     assert (await ac.get("/api/meetings")).json() == []
 
@@ -188,8 +197,12 @@ async def test_meeting_needs_proposers_approval_by_default(signup, client):
 async def test_meeting_declined_by_person(signup, client):
     ac, asha = await signup("Asha Rao", autonomy={"propose_meeting": "auto"})
     bc, _bo = await signup("Bo Chen")
-    res = await mcp_call(client, asha["connect"]["token"], "propose_meeting",
-                         {"with_who": "bo", "time": "12:00", "place": "Courtyard", "why": "lunch"})
+    res = await mcp_call(
+        client,
+        asha["connect"]["token"],
+        "propose_meeting",
+        {"with_who": "bo", "time": "12:00", "place": "Courtyard", "why": "lunch"},
+    )
     r = await bc.post(f"/api/meetings/{res['meeting_id']}", json={"accept": False})
     assert r.json() == {"status": "declined", "meeting_id": res["meeting_id"]}
     assert any(n["text"] == "Bo Chen can't make 12:00." for n in (await ac.get("/api/notices")).json())

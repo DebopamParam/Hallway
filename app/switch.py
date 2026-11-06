@@ -5,6 +5,7 @@ stand-in (see presence.py), so Switch treats them as present: no "I read
 asynchronously" auto-replies. The attendee's own agent reads and answers on its
 next check-in through MCP.
 """
+
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,9 +42,7 @@ class SwitchClient:
         await self._http.aclose()
 
     async def _send(self, method: str, path: str, token: str, body: Any = None) -> Any:
-        r = await self._http.request(
-            method, path, json=body, headers={"Authorization": f"Bearer {token}"}
-        )
+        r = await self._http.request(method, path, json=body, headers={"Authorization": f"Bearer {token}"})
         if r.status_code >= 400:
             raise SwitchError(r.status_code, r.text)
         return r.json() if r.content else None
@@ -98,8 +97,12 @@ class SwitchClient:
         # The creating agent is not added implicitly; the host must be in every
         # room it manages, so it always lists itself.
         room: dict = await self.op(
-            agent, "create_room", name=name, description=description,
-            agent_names=[settings.host_agent_name, *agent_names], user_names=user_names,
+            agent,
+            "create_room",
+            name=name,
+            description=description,
+            agent_names=[settings.host_agent_name, *agent_names],
+            user_names=user_names,
         )
         return room
 

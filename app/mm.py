@@ -3,6 +3,7 @@
 People post and read through Mattermost (so Switch sees every human message via
 its bridge); the admin session handles users, membership and reads.
 """
+
 import secrets
 from typing import Any
 
@@ -35,8 +36,9 @@ class MMClient:
             raise MMError(f"login {login_id}: {r.status_code} {r.text[:200]}")
         return r.headers["Token"]
 
-    async def _req(self, method: str, path: str, token: str | None = None, body: Any = None,
-                   params: dict[str, Any] | None = None) -> Any:
+    async def _req(
+        self, method: str, path: str, token: str | None = None, body: Any = None, params: dict[str, Any] | None = None
+    ) -> Any:
         if token is None:
             if self._admin_token is None:
                 self._admin_token = await self.login(settings.mm_admin_user, settings.mm_admin_password)
@@ -61,7 +63,8 @@ class MMClient:
         password = "Hw!" + secrets.token_urlsafe(18)
         try:
             user = await self._req(
-                "POST", "/users",
+                "POST",
+                "/users",
                 body={"username": username, "email": email, "password": password, "first_name": first_name},
             )
         except MMError as e:

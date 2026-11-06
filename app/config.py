@@ -1,4 +1,5 @@
 """Settings, read once from the environment (and ./.env when present)."""
+
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,6 +102,7 @@ AGENDA = [
     {"time": "18:00", "title": "Hallway hour (drinks + demos)", "room": "Courtyard"},
 ]
 
+
 def is_dev_env(s: "Settings") -> bool:
     """Local development: a localhost public URL, or HALLWAY_ENV=dev said out loud."""
     host = urlparse(s.public_url).hostname or ""
@@ -143,13 +145,18 @@ def worker_key(s: "Settings") -> str:
 def check_keys(s: "Settings") -> list[str]:
     """Refuse to start a public instance with missing, placeholder or shared
     secrets. On a localhost URL, returns deprecation warnings instead."""
-    keys = {"GUARD_API_KEY": s.guard_api_key, "HALLWAY_ADMIN_KEY": s.admin_key, "DAYPASS_WORKER_KEY": s.daypass_worker_key}
+    keys = {
+        "GUARD_API_KEY": s.guard_api_key,
+        "HALLWAY_ADMIN_KEY": s.admin_key,
+        "DAYPASS_WORKER_KEY": s.daypass_worker_key,
+    }
     if not is_local_url(s):
         bad = [k for k, v in keys.items() if not usable_key(v)]
         if bad:
             raise RuntimeError(
                 f"{', '.join(bad)} must be set to a random secret (not empty or change-me) when HALLWAY_PUBLIC_URL "
-                f"is not localhost (it is {s.public_url}). Generate one each with: openssl rand -hex 24")
+                f"is not localhost (it is {s.public_url}). Generate one each with: openssl rand -hex 24"
+            )
         seen: dict[str, str] = {}
         for k, v in keys.items():
             if v in seen:
@@ -159,8 +166,10 @@ def check_keys(s: "Settings") -> list[str]:
     warnings = []
     for name, own in (("HALLWAY_ADMIN_KEY", s.admin_key), ("DAYPASS_WORKER_KEY", s.daypass_worker_key)):
         if not usable_key(own) and usable_key(s.guard_api_key):
-            warnings.append(f"{name} is not set: falling back to GUARD_API_KEY. This is deprecated and refused on a "
-                            f"public URL; set {name} to its own secret.")
+            warnings.append(
+                f"{name} is not set: falling back to GUARD_API_KEY. This is deprecated and refused on a "
+                f"public URL; set {name} to its own secret."
+            )
     return warnings
 
 
@@ -174,7 +183,8 @@ def check_signin(s: "Settings") -> None:
         raise RuntimeError(
             f"SIGNIN_MODE=dev (or DEV_MAGIC_LINKS=true) hands out a sign-in link for any email, so it only runs on "
             f"http://localhost or with HALLWAY_ENV=dev. HALLWAY_PUBLIC_URL is {s.public_url}. "
-            "For a public demo use SIGNIN_MODE=demo; with an email provider use SIGNIN_MODE=email.")
+            "For a public demo use SIGNIN_MODE=demo; with an email provider use SIGNIN_MODE=email."
+        )
     if s.signin_mode == "email":
         if s.email_sender == "console" and not is_dev_env(s):
             raise RuntimeError("SIGNIN_MODE=email needs a real sender: set EMAIL_SENDER=smtp or EMAIL_SENDER=resend.")

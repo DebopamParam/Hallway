@@ -8,6 +8,7 @@ or ./.env; GUARD_API_KEY still works on localhost but is deprecated) so seeding
 works in every SIGNIN_MODE, needs no INVITE_CODE, and the attendee is marked as
 a persona: personas don't take one of the INVITE_LIMIT spots. Without a key it
 signs up like a visitor (dev mode links only)."""
+
 import json
 import os
 import sys
@@ -52,6 +53,7 @@ def signup(p: dict, base: str = BASE) -> dict:
     def keep_session(r: httpx.Response) -> None:
         if token := r.cookies.get("hw_session"):
             c.headers["cookie"] = f"hw_session={token}"
+
     c.event_hooks["response"] = [keep_session]
     r = c.post("/api/auth/start", json={"email": p["email"]})
     r.raise_for_status()
@@ -62,12 +64,20 @@ def signup(p: dict, base: str = BASE) -> dict:
     c.get(f"{u.path}?{u.query}")
     me = c.get("/api/me").json()
     if me.get("onboarding"):
-        r = c.post("/api/register", json={k: p[k] for k in ("name", "profile", "contact", "autonomy", "mode", "live_agent_name") if k in p})
+        r = c.post(
+            "/api/register",
+            json={k: p[k] for k in ("name", "profile", "contact", "autonomy", "mode", "live_agent_name") if k in p},
+        )
         r.raise_for_status()
         me = r.json()
     if not me["connect"]["token"]:  # already joined: the key was shown once, so issue a new one
         me = c.post("/api/me/agent-key").json()
-    return {"handle": me["handle"], "session": c.headers.get("cookie", "").partition("=")[2] or None, "token": me["connect"]["token"], "agent": me["agent"]}
+    return {
+        "handle": me["handle"],
+        "session": c.headers.get("cookie", "").partition("=")[2] or None,
+        "token": me["connect"]["token"],
+        "agent": me["agent"],
+    }
 
 
 if __name__ == "__main__":

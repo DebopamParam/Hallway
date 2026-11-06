@@ -1,5 +1,6 @@
 """MMClient against a mocked Mattermost: team membership is what lets Switch
 resolve a person, so a failed team join must never pass silently."""
+
 import json
 
 import httpx
@@ -7,8 +8,11 @@ import pytest
 
 from app.mm import TEAM_HEADROOM, MMClient, MMError
 
-FULL = {"id": "app.team.join_user_to_team.save_member.max_accounts.app_error",
-        "message": "the team has reached the limit of members", "status_code": 400}
+FULL = {
+    "id": "app.team.join_user_to_team.save_member.max_accounts.app_error",
+    "message": "the team has reached the limit of members",
+    "status_code": 400,
+}
 
 
 def mattermost(cap: int, members: set[str], *, join_error: dict | None = None):

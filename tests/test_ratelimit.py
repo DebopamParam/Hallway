@@ -1,5 +1,6 @@
 """Rate limits (#10): the token bucket (with a fake clock), 429 + Retry-After on
 the HTTP endpoints, and actionable tool errors on MCP."""
+
 import pytest
 
 from app import ratelimit
@@ -29,8 +30,10 @@ def clock(monkeypatch) -> Clock:
 @pytest.fixture
 def limits(monkeypatch, clock):
     """limits(name="count/period", ...): only these limits apply (others off)."""
+
     def use(**specs):
         monkeypatch.setattr(limiter, "limits", {name: parse(spec) for name, spec in specs.items()})
+
     return use
 
 
@@ -39,8 +42,16 @@ def ip(addr: str) -> dict:
 
 
 # ------------------------------------------------------------ token bucket
-@pytest.mark.parametrize("spec, want", [("20/60", Limit(20, 60)), ("6/m", Limit(6, 60)), ("100/h", Limit(100, 3600)),
-                                        ("5 / 900s", Limit(5, 900)), ("3/min", Limit(3, 60))])
+@pytest.mark.parametrize(
+    "spec, want",
+    [
+        ("20/60", Limit(20, 60)),
+        ("6/m", Limit(6, 60)),
+        ("100/h", Limit(100, 3600)),
+        ("5 / 900s", Limit(5, 900)),
+        ("3/min", Limit(3, 60)),
+    ],
+)
 def test_parse(spec, want):
     assert parse(spec) == want
 
@@ -96,7 +107,11 @@ async def test_auth_start_per_ip_429_with_retry_after(client, limits, clock):
     r = await client.post("/api/auth/start", json={"email": "a9@example.com"}, headers=ip("203.0.113.1"))
     assert r.status_code == 429
     assert r.headers["retry-after"] == "30"
-    assert r.json() == {"error": "Too many requests. Wait 30 s and try again.", "code": "rate_limited", "retry_after": 30}
+    assert r.json() == {
+        "error": "Too many requests. Wait 30 s and try again.",
+        "code": "rate_limited",
+        "retry_after": 30,
+    }
     assert r.headers["content-security-policy"]  # still gets the security headers
     # Another visitor (by CF-Connecting-IP) is unaffected; the first one recovers.
     r = await client.post("/api/auth/start", json={"email": "b@example.com"}, headers=ip("203.0.113.2"))
@@ -168,7 +183,9 @@ async def test_guard_has_a_cap_and_blocks_over_it(client, limits):
     h = {"x-flintai-api-key": GUARD_KEY}
     rs = [await client.post("/guardrails/check", json=body, headers=h) for _ in range(3)]
     assert [r.status_code for r in rs] == [200, 200, 200]
-    assert [r.json()["outcome"] for r in rs] == ["GUARDRAIL_RESULT_OUTCOME_OK"] * 2 + ["GUARDRAIL_RESULT_OUTCOME_BLOCKED"]
+    assert [r.json()["outcome"] for r in rs] == ["GUARDRAIL_RESULT_OUTCOME_OK"] * 2 + [
+        "GUARDRAIL_RESULT_OUTCOME_BLOCKED"
+    ]
     assert rs[2].json()["findings"][0]["detector_name"] == "rate_limited"
     assert (await client.get("/health")).json()["guard"]["rate_limited"] >= 1
 

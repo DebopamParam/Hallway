@@ -7,6 +7,7 @@
 
 Senders never log what they send: a sign-in link in a log is a sign-in for
 whoever can read the log."""
+
 import asyncio
 import logging
 import smtplib
@@ -78,8 +79,11 @@ class ResendSender:
     async def send(self, to: str, subject: str, text: str) -> None:
         try:
             async with httpx.AsyncClient(timeout=20) as c:
-                r = await c.post(self.URL, headers={"Authorization": f"Bearer {self.s.resend_api_key}"},
-                                 json={"from": self.s.smtp_from, "to": [to], "subject": subject, "text": text})
+                r = await c.post(
+                    self.URL,
+                    headers={"Authorization": f"Bearer {self.s.resend_api_key}"},
+                    json={"from": self.s.smtp_from, "to": [to], "subject": subject, "text": text},
+                )
         except httpx.HTTPError as e:
             raise SendError(f"resend: {type(e).__name__}") from None
         if r.status_code >= 300:

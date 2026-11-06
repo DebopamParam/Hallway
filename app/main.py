@@ -1,5 +1,6 @@
 """Hallway web server: the attendee app (SPA + JSON API), the MCP endpoint at
 /mcp, and the privacy guard Switch calls at /guardrails/check."""
+
 import contextlib
 import ipaddress
 import logging
@@ -29,6 +30,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 class _RedactSecrets(logging.Filter):
     """Access logs print the full path: hide sign-in tokens (?t=) and MCP keys (?key=)."""
+
     PATTERN = re.compile(r"([?&](?:t|key)=)[^&\s\"]+")
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -52,8 +54,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         log.warning(warning)
     if "DEV_MAGIC_LINKS" in os.environ and "SIGNIN_MODE" not in os.environ:
         log.warning("DEV_MAGIC_LINKS is deprecated: set SIGNIN_MODE=%s instead.", settings.signin_mode)
-    log.info("sign-in mode: %s%s", settings.signin_mode,
-             f" (email via {settings.email_sender})" if settings.signin_mode == "email" else "")
+    log.info(
+        "sign-in mode: %s%s",
+        settings.signin_mode,
+        f" (email via {settings.email_sender})" if settings.signin_mode == "email" else "",
+    )
     await hallway.start()
     async with mcp_server.mcp.session_manager.run():
         yield
@@ -64,15 +69,24 @@ async def _session_write_limit(request: Request) -> None:
     """Cookie-authenticated writes, per session (every route; the organiser's
     admin key is exempt)."""
     cookie = request.cookies.get(SESSION_COOKIE)
-    if (cookie and request.method in security.UNSAFE_METHODS and request.url.path.startswith("/api/")
-            and not _is_admin(request)):
+    if (
+        cookie
+        and request.method in security.UNSAFE_METHODS
+        and request.url.path.startswith("/api/")
+        and not _is_admin(request)
+    ):
         limiter.check("session_write", token_hash(cookie))
 
 
 _docs = config.api_docs_enabled(settings)  # off in production, see config.api_docs_enabled
-app = FastAPI(title="Hallway", lifespan=lifespan, dependencies=[Depends(_session_write_limit)],
-              docs_url="/docs" if _docs else None, redoc_url="/redoc" if _docs else None,
-              openapi_url="/openapi.json" if _docs else None)
+app = FastAPI(
+    title="Hallway",
+    lifespan=lifespan,
+    dependencies=[Depends(_session_write_limit)],
+    docs_url="/docs" if _docs else None,
+    redoc_url="/redoc" if _docs else None,
+    openapi_url="/openapi.json" if _docs else None,
+)
 # Security headers on every response (the SPA, the API, /mcp) and the Origin
 # check on cookie-authenticated writes. Reads `settings` per request.
 app.add_middleware(security.SecurityMiddleware, get_settings=lambda: settings)
@@ -81,9 +95,15 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 @app.exception_handler(RateLimited)
 async def _rate_limited(_req: Request, exc: RateLimited) -> JSONResponse:
-    return JSONResponse({"error": f"Too many requests. Wait {exc.retry_after} s and try again.",
-                         "code": "rate_limited", "retry_after": exc.retry_after},
-                        status_code=429, headers={"Retry-After": str(exc.retry_after)})
+    return JSONResponse(
+        {
+            "error": f"Too many requests. Wait {exc.retry_after} s and try again.",
+            "code": "rate_limited",
+            "retry_after": exc.retry_after,
+        },
+        status_code=429,
+        headers={"Retry-After": str(exc.retry_after)},
+    )
 
 
 @app.exception_handler(HallwayError)
@@ -115,8 +135,14 @@ def _session(hw_session: str | None) -> tuple[dict | None, str | None]:
 
 
 def _set_session_cookie(resp: Response, token: str, max_age: float) -> None:
-    resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=max(0, int(max_age)),
-                    secure=settings.public_url.startswith("https://"))
+    resp.set_cookie(
+        SESSION_COOKIE,
+        token,
+        httponly=True,
+        samesite="lax",
+        max_age=max(0, int(max_age)),
+        secure=settings.public_url.startswith("https://"),
+    )
 
 
 def client_ip(request: Request) -> str:
@@ -165,10 +191,19 @@ def _pass_view(a: dict) -> dict | None:
     if not p:
         return None
     runs = hallway.store.all(
-        "SELECT cost_usd, tool_calls, summary, ok, created_at FROM pass_runs WHERE attendee_id = ? ORDER BY id DESC LIMIT 8", a["id"])
-    return {"cap_usd": p["cap_usd"], "spent_usd": p["spent_usd"], "remaining_usd": _remaining_usd(p),
-            "runs": p["runs"], "status": p["status"],
-            "last_run_at": p["last_run_at"], "every_s": settings.daypass_every_s, "recent": runs}
+        "SELECT cost_usd, tool_calls, summary, ok, created_at FROM pass_runs WHERE attendee_id = ? ORDER BY id DESC LIMIT 8",
+        a["id"],
+    )
+    return {
+        "cap_usd": p["cap_usd"],
+        "spent_usd": p["spent_usd"],
+        "remaining_usd": _remaining_usd(p),
+        "runs": p["runs"],
+        "status": p["status"],
+        "last_run_at": p["last_run_at"],
+        "every_s": settings.daypass_every_s,
+        "recent": runs,
+    }
 
 
 KEY_PLACEHOLDER = "<your-hallway-key>"
@@ -194,11 +229,14 @@ def _me_view(a: dict, token: str | None = None) -> dict:
             "token": token,
             "token_hint": a["mcp_token_hint"],
             "claude_code": f'claude mcp add --transport http hallway {_mcp_url()} --header "Authorization: Bearer {key}"',
-            "codex": (f'[mcp_servers.hallway]\nurl = "{_mcp_url()}"\n'
-                      f'http_headers = {{ "Authorization" = "Bearer {key}" }}'),
+            "codex": (
+                f'[mcp_servers.hallway]\nurl = "{_mcp_url()}"\nhttp_headers = {{ "Authorization" = "Bearer {key}" }}'
+            ),
             "url_with_key": f"{_mcp_url()}?key={key}",
-            "kickoff": (f"You are my agent at {settings.event_name}. Use the hallway MCP tools: call whoami, do the privacy "
-                        "check, then work the lobby for me. Check my_inbox every few minutes."),
+            "kickoff": (
+                f"You are my agent at {settings.event_name}. Use the hallway MCP tools: call whoami, do the privacy "
+                "check, then work the lobby for me. Check my_inbox every few minutes."
+            ),
         },
     }
 
@@ -225,8 +263,12 @@ def _is_admin(request: Request) -> bool:
 def _local_dev_caller(request: Request) -> bool:
     """A loopback caller on a dev box: HALLWAY_ENV=dev AND a localhost public URL.
     Never on a deployed instance, where a tunnel makes every visitor look local."""
-    return (settings.hallway_env == "dev" and config.is_local_url(settings)
-            and request.client is not None and request.client.host in ("127.0.0.1", "::1", "localhost"))
+    return (
+        settings.hallway_env == "dev"
+        and config.is_local_url(settings)
+        and request.client is not None
+        and request.client.host in ("127.0.0.1", "::1", "localhost")
+    )
 
 
 def _joined() -> int:
@@ -252,7 +294,9 @@ def _demo_full_message() -> str:
 
 
 def _check_invite(invite: str | None) -> None:
-    if settings.invite_code and not secrets.compare_digest((invite or "").strip().encode(), settings.invite_code.encode()):
+    if settings.invite_code and not secrets.compare_digest(
+        (invite or "").strip().encode(), settings.invite_code.encode()
+    ):
         raise JoinRefused("invite_only")
 
 
@@ -265,19 +309,32 @@ def _check_spots() -> None:
 async def _join_refused(_req: Request, exc: JoinRefused) -> JSONResponse:
     if exc.code == "invite_only":
         return JSONResponse({"error": INVITE_ONLY, "code": "invite_only"}, status_code=403)
-    return JSONResponse({"error": _demo_full_message(), "code": "demo_full",
-                         "demo_video_url": settings.demo_video_url or None}, status_code=409)
+    return JSONResponse(
+        {"error": _demo_full_message(), "code": "demo_full", "demo_video_url": settings.demo_video_url or None},
+        status_code=409,
+    )
 
 
 @app.get("/api/event")
 async def event() -> dict:
     people = hallway.store.attendees()
-    return {"name": settings.event_name, "signin_mode": settings.signin_mode, "daypass_enabled": settings.daypass_enabled,
-            "daypass": {"price": settings.daypass_price, "cap_usd": settings.daypass_cap_usd} if settings.daypass_enabled else None,
-            "max_attendees": settings.max_attendees, "lobby": settings.lobby_room_name, "attendees": len(people),
-            "agents_active": sum(_agent_active(a) for a in people), "agenda": AGENDA,
-            "invite_only": bool(settings.invite_code), "invite_limit": settings.invite_limit or None,
-            "spots_left": _spots_left(), "demo_video_url": settings.demo_video_url or None}
+    return {
+        "name": settings.event_name,
+        "signin_mode": settings.signin_mode,
+        "daypass_enabled": settings.daypass_enabled,
+        "daypass": {"price": settings.daypass_price, "cap_usd": settings.daypass_cap_usd}
+        if settings.daypass_enabled
+        else None,
+        "max_attendees": settings.max_attendees,
+        "lobby": settings.lobby_room_name,
+        "attendees": len(people),
+        "agents_active": sum(_agent_active(a) for a in people),
+        "agenda": AGENDA,
+        "invite_only": bool(settings.invite_code),
+        "invite_limit": settings.invite_limit or None,
+        "spots_left": _spots_left(),
+        "demo_video_url": settings.demo_video_url or None,
+    }
 
 
 ALREADY_JOINED = "This email already joined. Open Hallway on the device you signed up with."
@@ -295,17 +352,21 @@ def _issue_link(email: str) -> str:
 
 def _signin_email(link: str) -> tuple[str, str]:
     minutes = max(1, settings.magic_link_ttl_s // 60)
-    return (f"Your sign-in link for {settings.event_name}",
-            f"Open this link to sign in to Hallway at {settings.event_name}:\n\n{link}\n\n"
-            f"It works once, for the next {minutes} minutes. If you didn't ask for it, ignore this email.")
+    return (
+        f"Your sign-in link for {settings.event_name}",
+        f"Open this link to sign in to Hallway at {settings.event_name}:\n\n{link}\n\n"
+        f"It works once, for the next {minutes} minutes. If you didn't ask for it, ignore this email.",
+    )
 
 
 def _refusal_email(code: str) -> tuple[str, str]:
     why = INVITE_ONLY if code == "invite_only" else _demo_full_message()
     video = f"\n\nWatch the demo instead: {settings.demo_video_url}" if settings.demo_video_url else ""
-    return (f"About signing in to {settings.event_name}",
-            f"Someone asked to join Hallway at {settings.event_name} with this email.\n\n{why}{video}\n\n"
-            "If it wasn't you, ignore this email.")
+    return (
+        f"About signing in to {settings.event_name}",
+        f"Someone asked to join Hallway at {settings.event_name} with this email.\n\n{why}{video}\n\n"
+        "If it wasn't you, ignore this email.",
+    )
 
 
 @app.post("/api/auth/start")
@@ -433,8 +494,14 @@ async def register(body: Register, request: Request, response: Response, hw_sess
         if not persona and not hallway.store.attendee(email=email):
             _check_spots()
         a = await hallway.register(
-            name=body.name, email=email, profile=body.profile, contact=body.contact, autonomy=body.autonomy,
-            mode=body.mode, live_agent_name=body.live_agent_name, is_persona=persona,
+            name=body.name,
+            email=email,
+            profile=body.profile,
+            contact=body.contact,
+            autonomy=body.autonomy,
+            mode=body.mode,
+            live_agent_name=body.live_agent_name,
+            is_persona=persona,
         )
     # The onboarding token is retired; the new account gets a fresh session.
     if hw_session:  # always: the pending email came from it
@@ -475,9 +542,20 @@ async def rooms(hw_session: str | None = Cookie(None)) -> list[dict]:
         members = await hallway.room_members(room)
         if a["mm_user_id"] in members:
             people = [x for x in hallway.store.attendees() if x["mm_user_id"] in members]
-            meet = hallway.store.one("SELECT time, place FROM meetings WHERE room_id = ?", room["id"]) if room["kind"] == "meet" else None
-            out.append({"name": room["name"], "title": room["title"], "kind": room["kind"], "meeting": meet,
-                        "people": [{"name": x["name"], "handle": x["handle"]} for x in people]})
+            meet = (
+                hallway.store.one("SELECT time, place FROM meetings WHERE room_id = ?", room["id"])
+                if room["kind"] == "meet"
+                else None
+            )
+            out.append(
+                {
+                    "name": room["name"],
+                    "title": room["title"],
+                    "kind": room["kind"],
+                    "meeting": meet,
+                    "people": [{"name": x["name"], "handle": x["handle"]} for x in people],
+                }
+            )
     return out
 
 
@@ -485,8 +563,10 @@ async def rooms(hw_session: str | None = Cookie(None)) -> list[dict]:
 async def room_messages(name: str, since: int | None = None, hw_session: str | None = Cookie(None)) -> dict:
     a = _me(hw_session)
     room = hallway.room_by_ref(name)
-    return {"room": {"name": room["name"], "title": room["title"], "kind": room["kind"]},
-            "messages": await hallway.messages_for_person(a, room, since)}
+    return {
+        "room": {"name": room["name"], "title": room["title"], "kind": room["kind"]},
+        "messages": await hallway.messages_for_person(a, room, since),
+    }
 
 
 class PostBody(BaseModel):
@@ -500,8 +580,11 @@ async def room_post(name: str, body: PostBody, hw_session: str | None = Cookie(N
     room = hallway.room_by_ref(name)
     outcome, findings = guard.scan(body.text)
     if outcome == "redacted" and not body.confirm:
-        return {"warning": "This looks like private info (" + ", ".join(sorted({f.category for f in findings}))
-                + "). Everyone in the room, people and agents, will see it. Send anyway?"}
+        return {
+            "warning": "This looks like private info ("
+            + ", ".join(sorted({f.category for f in findings}))
+            + "). Everyone in the room, people and agents, will see it. Send anyway?"
+        }
     await hallway.person_post(a, room, body.text)
     return {"ok": True}
 
@@ -523,7 +606,8 @@ async def approvals(hw_session: str | None = Cookie(None)) -> list[dict]:
     a = _me(hw_session)
     return hallway.store.all(
         "SELECT id, kind, summary, status, created_at, decided_at FROM approvals WHERE attendee_id = ? "
-        "ORDER BY status = 'pending' DESC, created_at DESC LIMIT 50", a["id"],
+        "ORDER BY status = 'pending' DESC, created_at DESC LIMIT 50",
+        a["id"],
     )
 
 
@@ -590,7 +674,8 @@ async def notices(hw_session: str | None = Cookie(None)) -> list[dict]:
     a = _me(hw_session)
     return hallway.store.all(
         "SELECT id, kind, text, created_at FROM notices WHERE attendee_id = ? AND audience IN ('person','both') "
-        "ORDER BY id DESC LIMIT 30", a["id"],
+        "ORDER BY id DESC LIMIT 30",
+        a["id"],
     )
 
 
@@ -616,11 +701,11 @@ class GuardStats:
 
     def reset(self) -> None:
         self.checks = 0
-        self.errors = 0         # internal error: answered BLOCKED instead of a 500
-        self.rate_limited = 0   # over RATE_LIMIT_GUARD: answered BLOCKED instead of a 429
-        self.slow = 0           # took over GUARD_SLOW_S: Switch may have let it through unchecked
-        self.bad_key = 0        # 401: if this is Switch, its Trust key is wrong and it fails open
-        self.log_errors = 0     # the privacy log write failed (the verdict still went out)
+        self.errors = 0  # internal error: answered BLOCKED instead of a 500
+        self.rate_limited = 0  # over RATE_LIMIT_GUARD: answered BLOCKED instead of a 429
+        self.slow = 0  # took over GUARD_SLOW_S: Switch may have let it through unchecked
+        self.bad_key = 0  # 401: if this is Switch, its Trust key is wrong and it fails open
+        self.log_errors = 0  # the privacy log write failed (the verdict still went out)
         self.max_ms = 0.0
         self.recent_ms: list[float] = []
 
@@ -633,10 +718,19 @@ class GuardStats:
     def as_dict(self) -> dict:
         recent = sorted(self.recent_ms)
         pct = (lambda q: round(recent[min(len(recent) - 1, int(q * len(recent)))], 2)) if recent else (lambda q: None)
-        return {"checks": self.checks, "errors": self.errors, "rate_limited": self.rate_limited, "slow": self.slow,
-                "bad_key": self.bad_key, "log_errors": self.log_errors, "p50_ms": pct(0.5), "p99_ms": pct(0.99),
-                "max_ms": round(self.max_ms, 2), "slow_threshold_ms": GUARD_SLOW_S * 1000,
-                "switch_timeout_ms": GUARD_TIMEOUT_S * 1000}
+        return {
+            "checks": self.checks,
+            "errors": self.errors,
+            "rate_limited": self.rate_limited,
+            "slow": self.slow,
+            "bad_key": self.bad_key,
+            "log_errors": self.log_errors,
+            "p50_ms": pct(0.5),
+            "p99_ms": pct(0.99),
+            "max_ms": round(self.max_ms, 2),
+            "slow_threshold_ms": GUARD_SLOW_S * 1000,
+            "switch_timeout_ms": GUARD_TIMEOUT_S * 1000,
+        }
 
 
 guard_stats = GuardStats()
@@ -665,8 +759,11 @@ async def guardrails_check(request: Request) -> dict:
     # Unset only on a localhost dev box (check_keys refuses a public start without it).
     if settings.guard_api_key and not _key_matches(request.headers.get("x-flintai-api-key"), settings.guard_api_key):
         guard_stats.bad_key += 1
-        log.warning("guard: rejected a check with a bad key from %s (if that is Switch, every message "
-                    "goes through unchecked: fix its Trust key)", client_ip(request))
+        log.warning(
+            "guard: rejected a check with a bad key from %s (if that is Switch, every message "
+            "goes through unchecked: fix its Trust key)",
+            client_ip(request),
+        )
         raise HTTPException(401, "bad guard key")
     try:
         # Generous (only Switch calls this), and never a 429: Switch would treat
@@ -692,8 +789,12 @@ async def guardrails_check(request: Request) -> dict:
         try:
             excerpt = guard.redact(content, findings) if outcome == "redacted" else content
             hallway.store.insert(
-                "guard_log", room_id=request.headers.get("x-agent-session-id"), role=role,
-                outcome=outcome, categories=", ".join(sorted({f.category for f in findings})), excerpt=excerpt[:240],
+                "guard_log",
+                room_id=request.headers.get("x-agent-session-id"),
+                role=role,
+                outcome=outcome,
+                categories=", ".join(sorted({f.category for f in findings})),
+                excerpt=excerpt[:240],
                 created_at=time.time(),
             )
         except Exception:
@@ -734,9 +835,18 @@ async def daypass_due(request: Request, every_s: int | None = None) -> list[dict
     _worker(request)
     out = []
     for p in hallway.due_passes(settings.daypass_every_s if every_s is None else every_s):
-        out.append({"attendee_id": p["attendee_id"], "name": p["name"], "handle": p["handle"],
-                    "mcp_url": _mcp_url(), "token": hallway.store.worker_token(p["attendee_id"]), "runs": p["runs"],
-                    "remaining_usd": _remaining_usd(p), "here_for": p["profile"].get("here_for", "")})
+        out.append(
+            {
+                "attendee_id": p["attendee_id"],
+                "name": p["name"],
+                "handle": p["handle"],
+                "mcp_url": _mcp_url(),
+                "token": hallway.store.worker_token(p["attendee_id"]),
+                "runs": p["runs"],
+                "remaining_usd": _remaining_usd(p),
+                "here_for": p["profile"].get("here_for", ""),
+            }
+        )
     return out
 
 

@@ -22,6 +22,7 @@ Engines
 - claude-code: headless `claude -p` on the machine's Claude Code login, capped
   with --max-budget-usd. Handy for demos; not how you'd run 1,000 attendees.
 """
+
 import argparse
 import asyncio
 import json
@@ -134,7 +135,10 @@ async def run_pydantic_ai(p: dict, budget: float, model=None) -> Run:
     limits = UsageLimits(request_limit=25, tool_calls_limit=30, **cap)
     try:
         result = await agent.run(task, usage=usage, usage_limits=limits)
-        summary, ok = str(result.output).strip().splitlines()[-1] if str(result.output).strip() else "(no summary)", True
+        summary, ok = (
+            str(result.output).strip().splitlines()[-1] if str(result.output).strip() else "(no summary)",
+            True,
+        )
     except UsageLimitExceeded as e:
         summary, ok = f"Stopped at its limit: {e}", True
     cost = model.spent if PRICE_PER_MTOK else float(usage.cost or 0)
@@ -143,26 +147,50 @@ async def run_pydantic_ai(p: dict, budget: float, model=None) -> Run:
 
 async def run_claude_code(p: dict, budget: float) -> Run:
     system, task = prompts(p)
-    cfg = {"mcpServers": {"hallway": {"type": "http", "url": p["mcp_url"],
-                                      "headers": {"Authorization": f"Bearer {p['token']}"}}}}
+    cfg = {
+        "mcpServers": {
+            "hallway": {"type": "http", "url": p["mcp_url"], "headers": {"Authorization": f"Bearer {p['token']}"}}
+        }
+    }
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "mcp.json")
         with open(path, "w") as f:  # noqa: ASYNC230 - a few hundred bytes, before a run of minutes
             json.dump(cfg, f)
-        cmd = ["claude", "-p", task, "--model", os.environ.get("DAYPASS_CLAUDE_MODEL", "haiku"),
-               "--output-format", "json", "--max-budget-usd", f"{budget:.4f}",
-               "--mcp-config", path, "--strict-mcp-config", "--allowedTools", "mcp__hallway",
-               "--disallowedTools", "Bash,Edit,Write,Read,WebFetch,WebSearch,Task",
-               "--append-system-prompt", system]
+        cmd = [
+            "claude",
+            "-p",
+            task,
+            "--model",
+            os.environ.get("DAYPASS_CLAUDE_MODEL", "haiku"),
+            "--output-format",
+            "json",
+            "--max-budget-usd",
+            f"{budget:.4f}",
+            "--mcp-config",
+            path,
+            "--strict-mcp-config",
+            "--allowedTools",
+            "mcp__hallway",
+            "--disallowedTools",
+            "Bash,Edit,Write,Read,WebFetch,WebSearch,Task",
+            "--append-system-prompt",
+            system,
+        ]
         env = {**os.environ, "ENABLE_CLAUDEAI_MCP_SERVERS": "false"}
-        out = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=600, env=env, cwd=tmp)
+        out = await asyncio.to_thread(
+            subprocess.run, cmd, capture_output=True, text=True, timeout=600, env=env, cwd=tmp
+        )
     try:
         res = json.loads(out.stdout)
     except json.JSONDecodeError:
         return Run(0.0, 0, (out.stderr or out.stdout or "no output").strip()[-300:], ok=False)
     text = (res.get("result") or "").strip()
-    return Run(float(res.get("total_cost_usd") or 0), int(res.get("num_turns") or 0),
-               text.splitlines()[-1] if text else res.get("subtype", "done"), ok=not res.get("is_error"))
+    return Run(
+        float(res.get("total_cost_usd") or 0),
+        int(res.get("num_turns") or 0),
+        text.splitlines()[-1] if text else res.get("subtype", "done"),
+        ok=not res.get("is_error"),
+    )
 
 
 ENGINES = {"pydantic-ai": run_pydantic_ai, "claude-code": run_claude_code}
@@ -179,12 +207,25 @@ async def run_one(http: httpx.AsyncClient, p: dict, engine: str) -> None:
     except Exception as e:  # report it so the pass waits a full interval instead of hot-looping
         log.exception("run failed for %s", p["handle"])
         run = Run(0.0, 0, f"{type(e).__name__}: {e}"[:300], ok=False)
-    r = await http.post(f"/internal/daypass/{p['attendee_id']}/runs",
-                        json={"engine": engine, "cost_usd": run.cost_usd, "tool_calls": run.tool_calls,
-                              "summary": run.summary, "ok": run.ok})
+    r = await http.post(
+        f"/internal/daypass/{p['attendee_id']}/runs",
+        json={
+            "engine": engine,
+            "cost_usd": run.cost_usd,
+            "tool_calls": run.tool_calls,
+            "summary": run.summary,
+            "ok": run.ok,
+        },
+    )
     r.raise_for_status()
-    log.info("%s: $%.4f, %s tool calls, %s left: %s", p["handle"], run.cost_usd, run.tool_calls,
-             r.json()["remaining_usd"], run.summary)
+    log.info(
+        "%s: $%.4f, %s tool calls, %s left: %s",
+        p["handle"],
+        run.cost_usd,
+        run.tool_calls,
+        r.json()["remaining_usd"],
+        run.summary,
+    )
 
 
 async def tick(http: httpx.AsyncClient, engine: str) -> int:

@@ -1,6 +1,7 @@
 """Hallway MCP server: how an attendee's own agent (Claude Code, Codex, any MCP
 client) works the event. One bearer token per attendee, from the Connect page.
 """
+
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -76,16 +77,22 @@ def _rate_limited(me: dict, outreach: bool) -> dict | None:
     if not wait and outreach:
         wait = limiter.hit("mcp_outreach", me["id"])
         if wait:
-            return {"error": f"Rate limited: too many posts and outreach messages. Wait {wait} s before the next one; "
-                             "reading (my_inbox, read_room) still works.", "retry_after_s": wait}
+            return {
+                "error": f"Rate limited: too many posts and outreach messages. Wait {wait} s before the next one; "
+                "reading (my_inbox, read_room) still works.",
+                "retry_after_s": wait,
+            }
     if wait:
-        return {"error": f"Rate limited: too many Hallway tool calls. Wait {wait} s, then continue.",
-                "retry_after_s": wait}
+        return {
+            "error": f"Rate limited: too many Hallway tool calls. Wait {wait} s, then continue.",
+            "retry_after_s": wait,
+        }
     return None
 
 
-async def _run[T](ctx: Context, fn: Callable[..., Awaitable[T]], *args: Any, outreach: bool = False,
-                  **kwargs: Any) -> T | dict:
+async def _run[T](
+    ctx: Context, fn: Callable[..., Awaitable[T]], *args: Any, outreach: bool = False, **kwargs: Any
+) -> T | dict:
     try:
         me = _me(ctx)
         return _rate_limited(me, outreach) or await fn(me, *args, **kwargs)
@@ -96,22 +103,25 @@ async def _run[T](ctx: Context, fn: Callable[..., Awaitable[T]], *args: Any, out
 @mcp.tool()
 async def whoami(ctx: Context) -> dict:
     """Your human's public profile, your autonomy settings (what needs their approval), privacy-check status and the event."""
+
     async def f(me: dict) -> dict:
         return {
             "event": settings.event_name,
-            "you_are": f"{me['agent_name']} (displayed as \"{me['name']} (agent)\")",
+            "you_are": f'{me["agent_name"]} (displayed as "{me["name"]} (agent)")',
             "your_human": public_profile(me),
             "mode": me["mode"],
             "autonomy": {k: {"setting": me["autonomy"].get(k), "means": v} for k, v in AUTONOMY_KEYS.items()},
             "privacy": {"passed": me["privacy"].get("passed", False)},
             "rooms_hint": "Call list_rooms. The lobby is called 'lobby'.",
         }
+
     return await _run(ctx, f)
 
 
 @mcp.tool()
 async def list_rooms(ctx: Context) -> list[dict] | dict:
     """Rooms you and your human are in."""
+
     async def f(me: dict) -> list[dict]:
         out = []
         for room in _hw().store.all("SELECT * FROM rooms ORDER BY created_at"):
@@ -119,6 +129,7 @@ async def list_rooms(ctx: Context) -> list[dict] | dict:
             if me["mm_user_id"] in members:
                 out.append({"room": room["name"], "title": room["title"], "kind": room["kind"]})
         return out
+
     return await _run(ctx, f)
 
 
@@ -145,20 +156,26 @@ async def post(ctx: Context, room: str, text: str) -> dict:
 async def search_people(ctx: Context, query: str = "", limit: int = 10) -> list[dict] | dict:
     """Search attendees' public profiles (role, company, interests, talks, what they're here for).
     Empty query lists everyone."""
+
     async def f(me: dict) -> list[dict]:
         return _hw().search_people(me, query, limit)
+
     return await _run(ctx, f)
 
 
 @mcp.tool()
 async def create_room(ctx: Context, title: str, invite: list[str]) -> dict:
     """Start a room and invite attendees by handle. Each invitee's person AND agent join."""
+
     async def f(me: dict) -> dict:
         if _hw().needs_approval(me, "rooms"):
             names = ", ".join(invite)
-            return _hw().ask(me, "create_room", f"Start a room \"{title}\" with {names}?", {"title": title, "invite": invite})
+            return _hw().ask(
+                me, "create_room", f'Start a room "{title}" with {names}?', {"title": title, "invite": invite}
+            )
         room = await _hw().create_room(me, title, invite)
         return {"status": "created", "room": room["name"]}
+
     return await _run(ctx, f, outreach=True)
 
 
@@ -177,8 +194,10 @@ async def respond_meeting(ctx: Context, meeting_id: str, accept: bool) -> dict:
 @mcp.tool()
 async def list_meetings(ctx: Context) -> list[dict] | dict:
     """Your human's meetings: proposed, confirmed, declined."""
+
     async def f(me: dict) -> list[dict]:
         return _hw().meetings(me)
+
     return await _run(ctx, f)
 
 
@@ -192,14 +211,18 @@ async def request_contact(ctx: Context, with_who: str) -> dict:
 @mcp.tool()
 async def start_privacy_check(ctx: Context) -> dict:
     """Get the privacy-check questions. Required once before you can talk in the lobby."""
+
     async def f(me: dict) -> dict:
         return _hw().start_privacy_check(me)
+
     return await _run(ctx, f)
 
 
 @mcp.tool()
 async def submit_privacy_check(ctx: Context, answers: list[str]) -> dict:
     """Submit your answers to the privacy-check questions, in order."""
+
     async def f(me: dict) -> dict:
         return _hw().submit_privacy_check(me, answers)
+
     return await _run(ctx, f)

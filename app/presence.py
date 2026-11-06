@@ -5,6 +5,7 @@ present is what stops Switch auto-replying on the agent's behalf. Addressed
 messages that arrive are turned into a person-facing notice ("someone asked your
 agent something"), so the human sees activity even before their agent checks in.
 """
+
 import asyncio
 import json
 import logging
@@ -48,14 +49,18 @@ class Presence:
             a = self.store.attendee(id=attendee_id)
             if not a or not a.get("switch_agent_id"):
                 return
-            url = (f"{self._ws_base}/agents/{a['switch_agent_id']}/connection/ws?connection_id={state['id']}"
-                   f"&scope=all&filter=addressed&client=hallway&start_from={cursor if cursor else 'head'}")
+            url = (
+                f"{self._ws_base}/agents/{a['switch_agent_id']}/connection/ws?connection_id={state['id']}"
+                f"&scope=all&filter=addressed&client=hallway&start_from={cursor if cursor else 'head'}"
+            )
             if state.get("generation") is not None:
                 url += f"&expected_generation={state['generation']}"
             try:
                 async with websockets.connect(
-                    url, additional_headers={"Authorization": f"Bearer {a['switch_agent_key']}"},
-                    ping_interval=None, open_timeout=15,
+                    url,
+                    additional_headers={"Authorization": f"Bearer {a['switch_agent_key']}"},
+                    ping_interval=None,
+                    open_timeout=15,
                 ) as ws:
                     backoff = 1
                     async for raw in ws:

@@ -12,6 +12,7 @@ when no spots are left (start the server with INVITE_LIMIT=1 to see it).
 
 The attendee's first name starts with "Uidev": agent and Mattermost names come
 from it, so a test run can never take over a real attendee's agent."""
+
 import argparse
 import sys
 import time
@@ -44,6 +45,7 @@ def watch(page) -> None:
     def on_response(r):
         if "/api/" in r.url and r.status >= 400 and not ("/api/auth/start" in r.url and r.status in expect):
             problems.append(f"{r.status} {r.url}")
+
     page.on("console", on_console)
     page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
     page.on("response", on_response)
@@ -53,8 +55,9 @@ with sync_playwright() as p:
     browser = p.chromium.launch()
 
     def new_page():
-        pg = browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2,
-                                 color_scheme="dark" if dark else "light").new_page()
+        pg = browser.new_context(
+            viewport={"width": 390, "height": 844}, device_scale_factor=2, color_scheme="dark" if dark else "light"
+        ).new_page()
         watch(pg)
         return pg
 

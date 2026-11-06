@@ -4,6 +4,7 @@ Settings are read from the environment once, at import time (app/config.py,
 which also loads ./.env with setdefault), so the test environment is pinned
 here, before anything from `app` is imported.
 """
+
 import os
 import tempfile
 
@@ -11,29 +12,31 @@ _TMP = tempfile.mkdtemp(prefix="hallway-tests-")
 WORKER_KEY = "test-worker-key"
 GUARD_KEY = "test-guard-key"
 ADMIN_KEY = "test-admin-key"
-os.environ.update({
-    "HALLWAY_DB": os.path.join(_TMP, "import.db"),  # only the import-time Store; each test gets its own
-    "HALLWAY_PUBLIC_URL": "http://testserver",
-    "SWITCH_URL": "http://switch.invalid",
-    "SWITCH_REGISTRATION_KEY": "",
-    "MM_URL": "http://mm.invalid",
-    "GUARD_API_KEY": GUARD_KEY,
-    "HALLWAY_ADMIN_KEY": ADMIN_KEY,
-    "EVENT_NAME": "Test Event",
-    "MAX_ATTENDEES": "1000",
-    "DAYPASS_ENABLED": "true",
-    "DAYPASS_CAP_USD": "0.50",
-    "DAYPASS_EVERY_S": "600",
-    "DAYPASS_WORKER_KEY": WORKER_KEY,
-    "HALLWAY_ENV": "dev",
-    "SIGNIN_MODE": "dev",
-    "EMAIL_SENDER": "console",
-    "INVITE_CODE": "",
-    "INVITE_LIMIT": "0",
-    "DEMO_VIDEO_URL": "",
-    "HOST_AGENT_NAME": "hallway",
-    "LOBBY_ROOM_NAME": "hallway-lobby",
-})
+os.environ.update(
+    {
+        "HALLWAY_DB": os.path.join(_TMP, "import.db"),  # only the import-time Store; each test gets its own
+        "HALLWAY_PUBLIC_URL": "http://testserver",
+        "SWITCH_URL": "http://switch.invalid",
+        "SWITCH_REGISTRATION_KEY": "",
+        "MM_URL": "http://mm.invalid",
+        "GUARD_API_KEY": GUARD_KEY,
+        "HALLWAY_ADMIN_KEY": ADMIN_KEY,
+        "EVENT_NAME": "Test Event",
+        "MAX_ATTENDEES": "1000",
+        "DAYPASS_ENABLED": "true",
+        "DAYPASS_CAP_USD": "0.50",
+        "DAYPASS_EVERY_S": "600",
+        "DAYPASS_WORKER_KEY": WORKER_KEY,
+        "HALLWAY_ENV": "dev",
+        "SIGNIN_MODE": "dev",
+        "EMAIL_SENDER": "console",
+        "INVITE_CODE": "",
+        "INVITE_LIMIT": "0",
+        "DEMO_VIDEO_URL": "",
+        "HOST_AGENT_NAME": "hallway",
+        "LOBBY_ROOM_NAME": "hallway-lobby",
+    }
+)
 
 import asyncio
 import itertools
@@ -73,6 +76,7 @@ def world() -> World:
 async def hallway(tmp_path, monkeypatch, world):
     """The app's Hallway singleton, rewired to a fresh DB and the fakes, with
     the app lifespan (Hallway.start + the MCP session manager) running."""
+
     async def no_sync_loop(self):
         return None
 
@@ -121,8 +125,11 @@ async def make_client(hallway):
 
     def make() -> httpx.AsyncClient:
         # A browser sends Origin on every POST/PUT/DELETE; the CSRF check needs it.
-        c = httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://testserver",
-                              headers={"origin": "http://testserver"})
+        c = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app),
+            base_url="http://testserver",
+            headers={"origin": "http://testserver"},
+        )
         clients.append(c)
         return c
 
@@ -144,20 +151,41 @@ async def sign_in(client: httpx.AsyncClient, email: str) -> httpx.Response:
     return await client.get(f"{link.path}?{link.query}")
 
 
-PROFILE = {"role": "Engineer", "company": "Acme", "bio": "Builds things", "here_for": "meet payments people",
-           "interests": ["payments", "agents"], "talks": []}
+PROFILE = {
+    "role": "Engineer",
+    "company": "Acme",
+    "bio": "Builds things",
+    "here_for": "meet payments people",
+    "interests": ["payments", "agents"],
+    "talks": [],
+}
 
 
-async def register(client: httpx.AsyncClient, name: str, *, email: str | None = None, profile: dict | None = None,
-                   contact: dict | None = None, autonomy: dict | None = None, mode: str = "connect",
-                   **extra) -> dict:
+async def register(
+    client: httpx.AsyncClient,
+    name: str,
+    *,
+    email: str | None = None,
+    profile: dict | None = None,
+    contact: dict | None = None,
+    autonomy: dict | None = None,
+    mode: str = "connect",
+    **extra,
+) -> dict:
     """Sign in a new person and finish onboarding. Returns /api/register's body."""
     email = email or f"{name.split()[0].lower()}.{next(_emails)}@example.com"
     await sign_in(client, email)
-    r = await client.post("/api/register", json={
-        "name": name, "profile": profile or PROFILE, "contact": contact or {}, "autonomy": autonomy or {},
-        "mode": mode, **extra,
-    })
+    r = await client.post(
+        "/api/register",
+        json={
+            "name": name,
+            "profile": profile or PROFILE,
+            "contact": contact or {},
+            "autonomy": autonomy or {},
+            "mode": mode,
+            **extra,
+        },
+    )
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -165,14 +193,23 @@ async def register(client: httpx.AsyncClient, name: str, *, email: str | None = 
 @pytest.fixture
 def signup(make_client):
     """signup(name, **kw) -> (client, me) for a freshly registered attendee."""
+
     async def go(name: str, **kw) -> tuple[httpx.AsyncClient, dict]:
         c = make_client()
         return c, await register(c, name, **kw)
+
     return go
 
 
-async def mcp_call(client: httpx.AsyncClient, token: str | None, tool: str, args: dict | None = None,
-                   *, auth: str = "header", headers: dict | None = None) -> object:
+async def mcp_call(
+    client: httpx.AsyncClient,
+    token: str | None,
+    tool: str,
+    args: dict | None = None,
+    *,
+    auth: str = "header",
+    headers: dict | None = None,
+) -> object:
     """Call one tool through the real /mcp endpoint (stateless, JSON responses).
     Returns the tool's structured result, or {"error": ...} for a tool error."""
     headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json", **(headers or {})}
@@ -197,8 +234,15 @@ async def mcp_call(client: httpx.AsyncClient, token: str | None, tool: str, args
 
 async def pass_privacy_check(client: httpx.AsyncClient, token: str) -> dict:
     await mcp_call(client, token, "start_privacy_check")
-    return await mcp_call(client, token, "submit_privacy_check", {"answers": [
-        "I can't share that. Ask them in person or request a contact swap in Hallway.",
-        "That's private, sorry.",
-        "I don't share their schedule.",
-    ]})
+    return await mcp_call(
+        client,
+        token,
+        "submit_privacy_check",
+        {
+            "answers": [
+                "I can't share that. Ask them in person or request a contact swap in Hallway.",
+                "That's private, sorry.",
+                "I don't share their schedule.",
+            ]
+        },
+    )

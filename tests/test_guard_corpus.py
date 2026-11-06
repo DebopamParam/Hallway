@@ -1,6 +1,7 @@
 """Precision and recall of the privacy guard on a labelled corpus (tests/guard_corpus.py).
 
 Run `.venv/bin/python -m tests.test_guard_corpus` for the per-group table."""
+
 import time
 from collections import Counter
 
@@ -11,11 +12,19 @@ from app import guard
 from .guard_corpus import CORPUS, PRIVATE_VALUES, groups
 
 GROUP_OF = {
-    "phone": "phone", "email": "email", "upi": "upi",
-    "aadhaar": "id", "pan": "id", "passport": "id", "card": "id", "bank_account": "id",
-    "flight": "flight", "pnr": "flight",
+    "phone": "phone",
+    "email": "email",
+    "upi": "upi",
+    "aadhaar": "id",
+    "pan": "id",
+    "passport": "id",
+    "card": "id",
+    "bank_account": "id",
+    "flight": "flight",
+    "pnr": "flight",
     "itinerary": "itinerary",
-    "home_address": "address", "hotel_room": "address",
+    "home_address": "address",
+    "hotel_room": "address",
     "calendar_detail": "calendar",
     "attendee_private_value": "private_value",
 }

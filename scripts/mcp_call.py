@@ -1,4 +1,5 @@
 """Call Hallway MCP tools from the command line: mcp_call.py <token> <tool> [json-args]"""
+
 import asyncio
 import json
 import os
@@ -8,6 +9,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 URL = os.environ.get("HALLWAY_MCP", "http://localhost:8787/mcp")
+
 
 async def main(token, tool=None, args="{}"):
     async with (
@@ -22,5 +24,6 @@ async def main(token, tool=None, args="{}"):
         res = await s.call_tool(tool, json.loads(args))
         for c in res.content:
             print(getattr(c, "text", c))
+
 
 asyncio.run(main(*sys.argv[1:]))
