@@ -79,6 +79,11 @@ class SwitchClient:
         )
         return res
 
+    async def delete_agent(self, agent: AgentCreds) -> None:
+        """Delete an agent Hallway registered, with its own key (an agent may
+        delete itself). Switch drops its room memberships and bridge identity."""
+        await self._send("DELETE", f"/agents/{agent.id}", agent.key)
+
     async def read_context(
         self, agent: AgentCreds, room_id: str, since: str | None = None, limit: int = 50
     ) -> list[dict]:

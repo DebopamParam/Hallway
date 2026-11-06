@@ -3,6 +3,8 @@
 
 import asyncio
 import contextlib
+import csv
+import io
 import ipaddress
 import logging
 import os
@@ -10,6 +12,7 @@ import secrets
 import sqlite3
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
@@ -286,10 +289,17 @@ def _demo_full_message() -> str:
     return f"This demo is full: all {settings.invite_limit} spots are taken."
 
 
+INVITE_CODE_KEY = "admin:invite_code"  # set by the organiser (rotate); overrides INVITE_CODE
+
+
+def _invite_code() -> str:
+    code: str = hallway.store.kv_get(INVITE_CODE_KEY) or settings.invite_code
+    return code
+
+
 def _check_invite(invite: str | None) -> None:
-    if settings.invite_code and not secrets.compare_digest(
-        (invite or "").strip().encode(), settings.invite_code.encode()
-    ):
+    code = _invite_code()
+    if code and not secrets.compare_digest((invite or "").strip().encode(), code.encode()):
         raise JoinRefused("invite_only")
 
 
@@ -323,7 +333,7 @@ async def event() -> dict:
         "attendees": len(people),
         "agents_active": sum(_agent_active(a) for a in people),
         "agenda": AGENDA,
-        "invite_only": bool(settings.invite_code),
+        "invite_only": bool(_invite_code()),
         "invite_limit": settings.invite_limit or None,
         "spots_left": _spots_left(),
         "demo_video_url": settings.demo_video_url or None,
@@ -822,6 +832,239 @@ async def enable_guard(request: Request) -> dict:
     finally:
         await gw.close()
     return res
+
+
+# ---------------------------------------------------------------- organiser
+# What scripts/hallway_admin.py calls. Like enable-guard and /metrics: the admin
+# key in x-hallway-admin (which also exempts the request from the CSRF origin
+# check and the per-session write limit), or a loopback caller on a dev box.
+def _require_admin(request: Request) -> None:
+    if not (_is_admin(request) or _local_dev_caller(request)):
+        raise HTTPException(403, "send the admin key in x-hallway-admin")
+
+
+def _admin_attendee(handle: str) -> dict:
+    a = hallway.store.attendee(handle=handle.strip().lstrip("@").lower())
+    if not a:
+        raise HTTPException(404, f"No attendee with the handle '{handle}'.")
+    return a
+
+
+def _agent_status(a: dict) -> str:
+    """active: seen in the last 15 minutes; idle: seen before that; never: hasn't checked in."""
+    return "active" if _agent_active(a) else "idle" if a.get("agent_seen_at") else "never"
+
+
+def _iso(ts: float | None) -> str:
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%SZ") if ts else ""
+
+
+def _admin_attendee_view(a: dict) -> dict:
+    p = hallway.day_pass(a)
+    return {
+        "handle": a["handle"],
+        "name": a["name"],
+        "email": a["email"],
+        "mode": a["mode"],
+        "agent_name": a["agent_name"],
+        "agent_status": _agent_status(a),
+        "agent_seen_at": a["agent_seen_at"],
+        "stand_in_connected": a["id"] in hallway.presence.connected,
+        "privacy_check_passed": bool(a["privacy"].get("passed")),
+        "persona": bool(a["is_persona"]),
+        "pass": {"status": p["status"], "spent_usd": p["spent_usd"], "cap_usd": p["cap_usd"], "runs": p["runs"]}
+        if p
+        else None,
+        "joined_at": a["created_at"],
+    }
+
+
+@app.get("/api/admin/attendees")
+async def admin_attendees(request: Request) -> list[dict]:
+    """Everyone who joined, oldest first, with their mode and their agent's status."""
+    _require_admin(request)
+    return [_admin_attendee_view(a) for a in hallway.store.attendees()]
+
+
+@app.delete("/api/admin/attendees/{handle}")
+async def admin_remove_attendee(handle: str, request: Request) -> dict:
+    """Remove an attendee: their Switch stand-in and Mattermost user are cleaned
+    up where possible, their rows deleted, and their invite spot freed."""
+    _require_admin(request)
+    a = _admin_attendee(handle)
+    async with hallway._lock:  # not while a registration is counting spots
+        cleanup = await hallway.remove_attendee(a)
+    return {"removed": a["handle"], **cleanup, "spots_left": _spots_left()}
+
+
+class AdminPass(BaseModel):
+    paused: bool | None = None
+    cap_usd: float | None = None
+
+
+@app.post("/api/admin/attendees/{handle}/pass")
+async def admin_pass(handle: str, body: AdminPass, request: Request) -> dict:
+    """Pause or resume an attendee's day pass, and/or set its budget."""
+    _require_admin(request)
+    if body.paused is None and body.cap_usd is None:
+        raise HallwayError("Send paused and/or cap_usd.")
+    a = _admin_attendee(handle)
+    p = hallway.admin_set_pass(a, paused=body.paused, cap_usd=body.cap_usd)
+    return {"handle": a["handle"], "status": p["status"], "cap_usd": p["cap_usd"], "spent_usd": p["spent_usd"]}
+
+
+def _invite_view() -> dict:
+    code = _invite_code()
+    return {
+        "invite_only": bool(code),
+        "invite_code": code or None,
+        "invite_url": f"{settings.public_url}/?invite={code}" if code else None,
+        "invite_limit": settings.invite_limit or None,
+        "joined": _joined(),
+        "spots_left": _spots_left(),
+    }
+
+
+@app.get("/api/admin/invite")
+async def admin_invite(request: Request) -> dict:
+    """The invite code and link, and how many spots are left."""
+    _require_admin(request)
+    return _invite_view()
+
+
+class RotateInvite(BaseModel):
+    code: str | None = None
+
+
+@app.post("/api/admin/invite/rotate")
+async def admin_rotate_invite(body: RotateInvite, request: Request) -> dict:
+    """A new invite code (random, or the one sent). The old link stops working
+    for new sign-ups; people who already joined are unaffected. Kept in the
+    database, so it outlives a restart and overrides INVITE_CODE."""
+    _require_admin(request)
+    code = (body.code or "").strip() or secrets.token_urlsafe(9)
+    if not (4 <= len(code) <= 64) or not all(c.isalnum() or c in "-_" for c in code):
+        raise HallwayError("An invite code is 4-64 letters, digits, - or _.")
+    hallway.store.kv_set(INVITE_CODE_KEY, code)
+    log.info("invite code rotated by the organiser")
+    return _invite_view()
+
+
+def _csv(rows: list[list]) -> str:
+    """CSV that a spreadsheet won't run: a cell starting with = + - @ is prefixed with '."""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    for row in rows:
+        w.writerow([f"'{v}" if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v for v in row])
+    return buf.getvalue()
+
+
+def _csv_response(body: str, name: str) -> Response:
+    return Response(
+        body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+@app.get("/api/admin/export/attendees.csv")
+async def admin_export_attendees(request: Request) -> Response:
+    """Attendees as CSV: public profile, email, mode, agent and day pass. No private contact details."""
+    _require_admin(request)
+    rows: list[list] = [
+        [
+            "handle",
+            "name",
+            "email",
+            "role",
+            "company",
+            "mode",
+            "agent_name",
+            "agent_status",
+            "agent_seen_at",
+            "pass_status",
+            "pass_spent_usd",
+            "pass_cap_usd",
+            "persona",
+            "joined_at",
+        ]
+    ]
+    for a in hallway.store.attendees():
+        v = _admin_attendee_view(a)
+        p = v["pass"] or {}
+        rows.append(
+            [
+                a["handle"],
+                a["name"],
+                a["email"],
+                a["profile"].get("role", ""),
+                a["profile"].get("company", ""),
+                a["mode"],
+                a["agent_name"],
+                v["agent_status"],
+                _iso(a["agent_seen_at"]),
+                p.get("status", ""),
+                p.get("spent_usd", ""),
+                p.get("cap_usd", ""),
+                int(v["persona"]),
+                _iso(a["created_at"]),
+            ]
+        )
+    return _csv_response(_csv(rows), "hallway-attendees.csv")
+
+
+@app.get("/api/admin/export/meetings.csv")
+async def admin_export_meetings(request: Request) -> Response:
+    """Every meeting proposed, with both sides, status and room."""
+    _require_admin(request)
+    sql = (
+        "SELECT m.*, p.handle AS p_handle, p.name AS p_name, i.handle AS i_handle, i.name AS i_name, r.name AS room "
+        "FROM meetings m JOIN attendees p ON p.id = m.proposer_id JOIN attendees i ON i.id = m.invitee_id "
+        "LEFT JOIN rooms r ON r.id = m.room_id ORDER BY m.created_at"
+    )
+    rows: list[list] = [
+        [
+            "id",
+            "proposer_handle",
+            "proposer_name",
+            "invitee_handle",
+            "invitee_name",
+            "time",
+            "place",
+            "why",
+            "status",
+            "room",
+            "created_at",
+        ]
+    ]
+    for m in hallway.store.all(sql):
+        rows.append(
+            [
+                m["id"],
+                m["p_handle"],
+                m["p_name"],
+                m["i_handle"],
+                m["i_name"],
+                m["time"],
+                m["place"],
+                m["why"],
+                m["status"],
+                m["room"] or "",
+                _iso(m["created_at"]),
+            ]
+        )
+    return _csv_response(_csv(rows), "hallway-meetings.csv")
+
+
+class Announcement(BaseModel):
+    text: str
+
+
+@app.post("/api/admin/announce")
+async def admin_announce(body: Announcement, request: Request) -> dict:
+    """Post in the lobby as the host agent (Hallway's own voice in every room)."""
+    _require_admin(request)
+    return await hallway.announce(body.text)
 
 
 # ----------------------------------------------------------- day pass worker

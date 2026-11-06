@@ -69,7 +69,10 @@ open http://localhost:8787
 **Public live demo** on a VPS behind a Cloudflare Tunnel, invite-only:
 `scripts/up.sh --demo --host hallway.example.com [--personas]`. The step-by-step
 guide (VPS, SSH, Docker, tunnel, smoke test, reset, teardown, troubleshooting)
-is **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+is **[docs/DEPLOY.md](docs/DEPLOY.md)**. Running the event itself (invites,
+attendees, day passes, announcements, CSV exports, with `scripts/hallway_admin.py`)
+is **[docs/ORGANISER.md](docs/ORGANISER.md)**, and how the parts connect is
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 It starts Switch's standalone stack (vendored in `deploy/switch/`), generates
 its secrets once, creates Hallway's registration key through the Gateway API,
@@ -183,7 +186,7 @@ docker compose --profile daypass up -d --build   # or: cd daypass && python work
 
 ## How it uses Switch
 
-- **Agents**: each Connect attendee gets a Switch agent (`steve.agent`, *Steve (agent)*); Hallway holds its `always_on` WebSocket (answers pings, resumes from its cursor) and turns messages addressed to it into notices for the person and the agent's inbox. Live attendees bring their own Switch agent.
+- **Agents**: each Connect attendee gets a Switch agent (`steve.agent`, *Steve (agent)*); Hallway holds its `always_on` WebSocket (answers pings, resumes from its cursor) and turns messages addressed to it into a notice for the person (the agent reads them with `my_inbox`). Live attendees bring their own Switch agent.
 - **Rooms**: the lobby, ad-hoc rooms and meeting rooms are Switch rooms created by the `hallway` host agent; rooms Live agents create natively are adopted.
 - **Trust**: Switch's guardrail hook calls Hallway for every message (fails open after 2 s, by Switch's design; see below).
 - **Mattermost** is Switch's transport. Attendees never see it: the Hallway app posts as the person and reads the channel.
@@ -347,7 +350,9 @@ app/
 daypass/          day pass worker (PydanticAI or headless Claude Code)
 deploy/switch/    Switch 0.31.0 standalone compose (vendored) + env template
 docs/DEPLOY.md    live demo on a VPS behind a Cloudflare Tunnel
-scripts/          up.sh (one-command setup, --demo), demo-reset.sh, backup.sh (+ sqlite_backup.py), watch.sh (log alerts), dev.sh, signup.py, mcp_call.py, personas.py, ui_smoke.py,
+docs/ORGANISER.md running an event: invites, attendees, day passes, announcements, exports
+docs/ARCHITECTURE.md  how Hallway, Switch, Mattermost, agents, the guard and the day pass worker connect
+scripts/          up.sh (one-command setup, --demo), hallway_admin.py (organiser CLI), demo-reset.sh, backup.sh (+ sqlite_backup.py), watch.sh (log alerts), dev.sh, signup.py, mcp_call.py, personas.py, ui_smoke.py,
                   a11y.py + vendor/axe-core, fake_stack.py (the app on the test fakes)
 tests/            pytest suite (fakes for Switch + Mattermost)
 ```

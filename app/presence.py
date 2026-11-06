@@ -38,6 +38,14 @@ class Presence:
         for a in self.store.attendees():
             self.ensure(a)
 
+    def forget(self, attendee_id: str) -> None:
+        """Drop a stand-in's socket and its resume state (its attendee is being removed)."""
+        t = self.tasks.pop(attendee_id, None)
+        if t:
+            t.cancel()
+        self.connected.discard(attendee_id)
+        self.store.db.execute("DELETE FROM kv WHERE key = ?", (f"conn:{attendee_id}",))
+
     def stop(self) -> None:
         for t in self.tasks.values():
             t.cancel()
