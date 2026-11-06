@@ -226,7 +226,9 @@ input[type="checkbox"], input[type="radio"] { width: auto; }
 .stack-av .av + .av { margin-left: -2px; }
 
 .view { flex: 1; display: flex; flex-direction: column; }
-.view.enter { animation: enter .38s var(--ease) both; }
+/* backwards, not both: a transform left on .view after the animation would make
+   it the containing block of its position:fixed children (composer, pill, ob-actions). */
+.view.enter { animation: enter .38s var(--ease) backwards; }
 @keyframes enter { from { opacity: 0; transform: translateY(10px); } }
 .page { padding: 6px 16px calc(120px + env(safe-area-inset-bottom)); }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 8px 0 14px; }
@@ -476,7 +478,7 @@ a.board-row:active { background: rgba(255, 255, 255, .04); }
 .feed-ic.k-mention { background: var(--signal); color: var(--on-signal); box-shadow: none; }
 .feed-ic.k-meeting_confirmed, .feed-ic.k-contact_exchanged { background: var(--go-soft); color: var(--go); box-shadow: none; }
 .feed-ic.k-bad, .feed-ic.k-meeting_declined { background: var(--stop-soft); color: var(--stop); box-shadow: none; }
-.feed-text { font-size: 14px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; padding-top: 5px; }
+.feed-text { font-size: 14px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; padding-top: 5px; }
 .feed-text .q { color: var(--ink-2); }
 .feed-item time { display: block; font-size: 11.5px; color: var(--muted); margin-top: 3px; font-family: var(--mono); }
 
@@ -547,7 +549,7 @@ a.board-row:active { background: rgba(255, 255, 255, .04); }
 .sign:hover .sign-arrow { transform: translateX(3px); }
 :root[data-theme="dark"] .sign { background: var(--raised); box-shadow: inset 0 0 0 1px var(--line-2); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .sign { background: var(--raised); box-shadow: inset 0 0 0 1px var(--line-2); } }
-.list { display: grid; gap: 8px; }
+.list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; } /* a long title truncates, not widens the page */
 .room-row { display: flex; align-items: center; gap: 13px; padding: 13px 14px; border-radius: 16px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); transition: box-shadow .15s; }
 .room-row:hover { box-shadow: inset 0 0 0 1.5px var(--ink); }
 .room-row strong { display: block; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

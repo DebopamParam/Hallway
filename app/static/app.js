@@ -277,6 +277,10 @@ async function render() {
     try { state.me = await api("/api/me"); } catch { state.me = null; }
     if (!state.me) return go("");
     if (state.me.onboarding) return go("onboard");
+  } else if (!path && !/expired=1|joined=1/.test(location.hash)) {
+    // Already signed in on this device: the landing page has nothing for them.
+    try { state.me = await api("/api/me"); } catch { state.me = null; }
+    if (state.me) return go(state.me.onboarding ? "onboard" : "now");
   }
   const changed = state.route !== path;
   state.route = path;
@@ -345,6 +349,7 @@ async function landing(prefill = "") {
   state.route = "";
   const ev = state.event;
   const expired = /expired=1/.test(location.hash);
+  const joined = /joined=1/.test(location.hash);
   $app.innerHTML = `
     <main class="view landing">
       <header class="land-top">${LOGO()}<span class="live-dot"><span class="pulse on"></span>Live</span></header>
@@ -379,6 +384,7 @@ async function landing(prefill = "") {
       <footer class="land-foot"><span>Open source</span><span>·</span><span>Built on Switch</span><span>·</span><span>Your keys stay on your machine</span></footer>
     </main>`;
   if (expired) toast("That sign-in link was used or has expired. Get a fresh one.");
+  if (joined) toast("Someone already joined with that email, so the link no longer works.");
   const send = async () => {
     const btn = document.getElementById("send");
     const email = document.getElementById("email").value;
@@ -554,6 +560,7 @@ async function onboard() {
       toast(draft.mode === "daypass" ? "You're in. Your agent starts within a minute." : "You're in. Now connect your agent.", "ok");
     } catch (e) {
       if (e.code === "demo_full") return gate("demo_full", e.data);
+      if (e.code === "already_joined") { toast(e.message); state.me = null; return go(""); }
       toast(e.message); btn.disabled = false;
     }
   };
@@ -956,7 +963,7 @@ async function peopleView() {
       filtersDone = true;
       const counts = {};
       const label = {};
-      people.forEach((p) => (p.interests || []).forEach((i) => { const k = i.toLowerCase(); label[k] = label[k] || i; counts[k] = (counts[k] || 0) + 1; }));
+      people.forEach((p) => (Array.isArray(p.interests) ? p.interests : []).forEach((i) => { const k = i.toLowerCase(); label[k] = label[k] || i; counts[k] = (counts[k] || 0) + 1; }));
       const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k]) => label[k]);
       document.getElementById("filters").innerHTML = top.map((t) => `<button class="filter" data-f="${esc(t)}" aria-pressed="false">${esc(t)}</button>`).join("");
       document.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => {
