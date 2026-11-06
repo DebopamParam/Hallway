@@ -529,15 +529,18 @@ class Hallway:
 
     # --------------------------------------------------------------- messaging
     def private_values(self) -> list[str]:
-        vals: list[str] = []
-        for a in self.store.attendees():
-            for v in (a["contact"] or {}).values():
-                if isinstance(v, str) and len(v) >= 5:
-                    vals.append(v)
-                    digits = re.sub(r"\D", "", v)
-                    if len(digits) >= 8:
-                        vals.append(digits[-10:])
-        return vals
+        return self.store.private_values()
+
+    def private_matcher(self) -> guard.PrivateMatcher:
+        """Every attendee's private values as one compiled pattern, rebuilt only
+        when a contact changes (or the store is swapped, as tests do)."""
+        values = self.store.private_values()
+        key = (id(self.store), self.store.private_version)
+        cached = getattr(self, "_private_matcher", None)
+        if cached is None or cached[0] != key:
+            cached = (key, guard.PrivateMatcher(values))
+            self._private_matcher = cached
+        return cached[1]
 
     async def post(self, attendee: dict, room_ref: str, text: str, approved: bool = False) -> dict:
         room = self.room_by_ref(room_ref)

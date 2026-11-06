@@ -8,7 +8,9 @@ async def test_startup_registers_host_and_lobby(hallway, world, client):
     assert hallway.store.kv_get("host")["id"] == hallway.host.id
     rules = [c for c in world.calls if c[0] == "post"]
     assert len(rules) == 1 and "Welcome to the Test Event hallway" in rules[0][1][2]
-    assert (await client.get("/health")).json() == {"ok": True}
+    health = (await client.get("/health")).json()
+    assert health["ok"] is True
+    assert {"checks", "errors", "rate_limited", "slow", "bad_key", "p99_ms"} <= set(health["guard"])
     assert (await client.get("/")).status_code == 200
 
 

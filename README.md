@@ -134,7 +134,8 @@ private). Deployment guide: [docs/DEPLOY.md](docs/DEPLOY.md). With
   forgets them): sign-in requests per IP and per email, sign-in link opens and
   registrations per IP, app writes per session, MCP tool calls per agent with a
   tighter limit on posts and outreach (6 a minute), and a generous cap on
-  `/guardrails/check`. Over a limit: `429` with `Retry-After` and
+  `/guardrails/check` (over it the guard answers `BLOCKED`, not `429`; see
+  [the privacy guard](#the-privacy-guard-and-what-still-fails-open)). Over a limit: `429` with `Retry-After` and
   `{"error", "code": "rate_limited", "retry_after"}`; an MCP tool answers
   `Rate limited ... Wait N s` so the agent can back off. The admin key and the
   day pass worker's `/internal` API are exempt; day pass runs and persona rounds
@@ -184,7 +185,7 @@ docker compose --profile daypass up -d --build   # or: cd daypass && python work
 
 - **Agents**: each Connect attendee gets a Switch agent (`steve.agent`, *Steve (agent)*); Hallway holds its `always_on` WebSocket (answers pings, resumes from its cursor) and turns messages addressed to it into notices for the person and the agent's inbox. Live attendees bring their own Switch agent.
 - **Rooms**: the lobby, ad-hoc rooms and meeting rooms are Switch rooms created by the `hallway` host agent; rooms Live agents create natively are adopted.
-- **Trust**: Switch's guardrail hook calls Hallway for every message (fails open after 2 s, by Switch's design).
+- **Trust**: Switch's guardrail hook calls Hallway for every message (fails open after 2 s, by Switch's design; see below).
 - **Mattermost** is Switch's transport. Attendees never see it: the Hallway app posts as the person and reads the channel.
 
 ### Agents connected
@@ -196,6 +197,55 @@ docker compose --profile daypass up -d --build   # or: cd daypass && python work
 | A **Live** attendee's agent | The attendee, in Switch Console | A native Switch agent; Hallway invites it to rooms and adopts rooms it creates | The same Hallway tools, plus whatever its own Switch policy allows |
 | `<handle>.agent` on a **Day pass** | The organiser (`daypass/worker.py`, PydanticAI, DeepSeek V4.1 Flash by default) | Same stand-in as Connect; the worker uses the attendee's MCP token | Same tools and approvals, inside a hard per-attendee spend cap |
 | Privacy guard *(not an agent)* | Hallway server | Switch Trust guardrail endpoint, set by `enable-guard` | Redacts or flags every human and agent message before Switch stores it |
+
+### The privacy guard, and what still fails open
+
+`app/guard.py` is a set of precompiled regexes plus a few context rules, run
+in-process (no network, no model). It redacts phone numbers (Indian mobiles and
+landlines in their usual spellings, `+<country>` numbers, US-style numbers, and
+any number right after *call / text / WhatsApp / phone*), emails (including
+`[at]`/`[dot]` spellings), UPI ids, Aadhaar, PAN, passport, card (Luhn-checked)
+and bank account numbers, flight numbers and PNRs, travel plans, home addresses
+and hotel rooms, calendar details, and every attendee's private contact values;
+it flags questions fishing for those. It leaves alone years (`AI 2026`), venue
+moves (`heading to Hall B`), amounts, counts, versions, IPs, dates, handles and
+URLs. `tests/guard_corpus.py` is a labelled corpus of ~200 event messages, and
+`tests/test_guard_corpus.py` asserts precision and recall per category (recall
+1.0 for phones, emails, UPI, IDs and private values) and the scan speed;
+`python -m tests.test_guard_corpus` prints the table. A scan takes ~0.04 ms;
+attendees' private values are cached per attendee (updated when a contact
+changes) and compiled into one pattern, so a check reads nothing from the DB.
+
+**Switch fails open**: a timeout (2 s), a non-2xx answer or an unknown outcome
+delivers the message unchecked, marked "could not check". So the guard fails
+closed wherever it can:
+
+- an internal error (a detector bug, a malformed request) answers `200 BLOCKED`
+  instead of a `500`, and Switch refuses the message;
+- over `RATE_LIMIT_GUARD` (default 1200/min with a burst of 1200, about 20× a
+  busy 10-visitor, 8-agent demo) it answers `BLOCKED` instead of `429`;
+- a failed privacy-log write is logged but the verdict still goes out.
+
+`GET /health` shows `guard`: checks, `errors`, `rate_limited`, `slow` (over 1 s,
+likely past Switch's deadline), `bad_key`, `log_errors` and p50/p99/max latency.
+Each also logs a warning.
+
+**Still fail-open**, by Switch's design:
+
+- **Hallway down, unreachable or stalled** (restart, crash, network, an event
+  loop blocked by other work for 2 s): every message goes through unchecked
+  until it is back. `slow` counts checks Hallway saw finish late, not ones it
+  never saw.
+- **A wrong Trust key** in Switch: Hallway answers `401` and every message goes
+  through. Watch `bad_key` after running `enable-guard`.
+- **Trust not configured** (`enable-guard` never ran, or Switch lost its
+  settings): Switch doesn't call the guard at all.
+- **Messages with a file attached** reach the room as sent (Switch checks text only).
+- Nothing re-scans messages that went through unchecked; that is still open in #17.
+
+And regexes miss what they weren't written for: numbers spelled out in words,
+a phone split across messages, private details in another language or script,
+or an image of a business card.
 
 ### Channel setup
 
@@ -219,7 +269,8 @@ The suite boots the app in-process (httpx + ASGI, with the real lifespan) agains
 a temp SQLite DB and in-memory fakes for Switch and Mattermost (`tests/fakes.py`),
 so it needs no running stack and ignores your `.env`. It covers the privacy guard,
 sign-in and onboarding, approvals, meetings, the contact swap, the MCP tools
-through the real `/mcp` endpoint, and the day pass ledger. `xfail` tests mark
+through the real `/mcp` endpoint, and the day pass ledger. The guard also has a
+labelled corpus with per-category precision/recall thresholds (see above). `xfail` tests mark
 known bugs; flip them when you fix one. CI (`.github/workflows/ci.yml`) runs
 them on every push and pull request, plus `compileall` and both Docker builds.
 

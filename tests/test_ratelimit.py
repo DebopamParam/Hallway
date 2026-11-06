@@ -160,11 +160,31 @@ async def test_cookie_writes_per_session(signup, limits, clock):
 
 
 # ------------------------------------------------------------------ guard
-async def test_guard_has_a_cap(client, limits):
+async def test_guard_has_a_cap_and_blocks_over_it(client, limits):
+    """Over the cap the guard answers BLOCKED, never a 429: Switch fails open on
+    any non-2xx answer, so a 429 would deliver the message unchecked."""
     limits(guard="2/60")
     body = {"messages": [{"role": "user", "content": "hi"}]}
     h = {"x-flintai-api-key": GUARD_KEY}
-    assert [(await client.post("/guardrails/check", json=body, headers=h)).status_code for _ in range(3)] == [200, 200, 429]
+    rs = [await client.post("/guardrails/check", json=body, headers=h) for _ in range(3)]
+    assert [r.status_code for r in rs] == [200, 200, 200]
+    assert [r.json()["outcome"] for r in rs] == ["GUARDRAIL_RESULT_OUTCOME_OK"] * 2 + ["GUARDRAIL_RESULT_OUTCOME_BLOCKED"]
+    assert rs[2].json()["findings"][0]["detector_name"] == "rate_limited"
+    assert (await client.get("/health")).json()["guard"]["rate_limited"] >= 1
+
+
+def test_default_guard_limit_covers_demo_load(clock):
+    """10 visitors + 8 persona agents, everyone talking at once: every message
+    Switch checks (from one IP) must get a real verdict, not BLOCKED."""
+    rl = RateLimiter(ratelimit.limits_from_env({}), clock=clock)
+    senders, limited = 18, 0
+    for second in range(600):  # ten minutes
+        # Each sender posts every 3 s (far chattier than people type), and every
+        # minute a burst lands when all agents answer a lobby post at once.
+        n = senders // 3 + (3 * senders if second % 60 == 0 else 0)
+        limited += sum(1 for _ in range(n) if rl.hit("guard", "switch"))
+        clock.advance(1)
+    assert limited == 0
 
 
 async def test_daypass_worker_endpoints_are_not_limited(client, limits):
