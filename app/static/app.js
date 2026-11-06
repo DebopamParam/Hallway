@@ -228,7 +228,8 @@ function gate(kind, data = {}) {
           <p class="small muted">Already joined? Open Hallway on the device you signed up with.</p>
           <button class="btn ghost block" id="back">Back to Hallway</button>` : `
           <label class="field" for="invite-code">Have an invite code?</label>
-          <div class="input-row"><input id="invite-code" type="text" placeholder="Paste it here" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go"></div>
+          <div class="input-row"><input id="invite-code" type="text" placeholder="Paste it here" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go"${data.badCode ? ` value="${esc(data.badCode)}" aria-invalid="true" aria-describedby="invite-err"` : ""}></div>
+          ${data.badCode ? `<p class="field-error" id="invite-err" role="alert">That invite code isn't valid. Check the invite link you were sent.</p>` : ""}
           <button class="btn signal block" id="use-code">Continue ${icon("arrow", "sm")}</button>
           <p class="small muted">Already joined? Open Hallway on the device you signed up with.</p>
           <button class="btn ghost block" id="back">Back</button>`}
@@ -245,6 +246,9 @@ function gate(kind, data = {}) {
       if (!code) return document.getElementById("invite-code").focus();
       setInvite(code);
       back();
+      // With an email already typed, check the code now: a wrong one comes
+      // straight back here, saying so.
+      if (data.email) document.getElementById("send")?.click();
     };
     use.onclick = go;
     document.getElementById("invite-code").onkeydown = (e) => e.key === "Enter" && go();
@@ -446,7 +450,9 @@ async function landing(prefill = "") {
     } catch (e) {
       if (e.code === "invite_only" || e.code === "demo_full") {
         if (e.code === "demo_full") state.event = { ...ev, spots_left: 0 };
-        return gate(e.code, { ...e.data, email: email.trim() });
+        const badCode = e.code === "invite_only" ? getInvite() : "";
+        if (badCode) setInvite("");  // refused: don't keep sending it
+        return gate(e.code, { ...e.data, email: email.trim(), badCode });
       }
       toast(e.message); btn.disabled = false;
     }

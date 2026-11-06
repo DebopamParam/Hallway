@@ -324,6 +324,8 @@ input[type="checkbox"], input[type="radio"] { width: auto; }
 .gate-card .field { margin-bottom: -4px; }
 .gate-card .btn.block { margin-top: 0; }
 .gate-card .btn.block + .small { margin-top: 2px; }
+.field-error { color: var(--stop); font-size: 13.5px; font-weight: 600; margin-top: -4px; }
+.input-row input[aria-invalid="true"] { border-color: var(--stop); }
 .seats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
 .seat { width: 22px; height: 22px; border-radius: 7px; background: var(--ink); position: relative; }
 .seat::after { content: ""; position: absolute; left: 6px; right: 6px; top: 5px; height: 5px; border-radius: 3px; background: var(--paper); }
