@@ -11,6 +11,10 @@ import httpx
 from .config import settings
 
 
+# Extra team seats to add when Mattermost's per-team cap is hit mid-event.
+TEAM_HEADROOM = 200
+
+
 class MMError(RuntimeError):
     pass
 
@@ -65,12 +69,38 @@ class MMClient:
                 raise
             user = await self._req("GET", f"/users/username/{username}")
             await self._req("PUT", f"/users/{user['id']}/password", body={"new_password": password})
-        tid = await self.team_id()
-        try:
-            await self._req("POST", f"/teams/{tid}/members", body={"team_id": tid, "user_id": user["id"]})
-        except MMError:
-            pass
+        await self.join_team(user["id"])
         return user, password
+
+    async def join_team(self, user_id: str) -> None:
+        """Put a user in the event team (idempotent).
+
+        Switch resolves `add_users_to_room` names through a directory search
+        scoped to this team, and Mattermost only lets team members into its
+        channels, so a user left outside the team can never join a room. The
+        usual cause is Mattermost's per-team cap (TeamSettings.MaxUsersPerTeam,
+        50 by default), which every attendee spends two seats of: the person
+        and their agent's bot account. Hitting it raises the cap and tries once
+        more; any other failure is raised, never swallowed."""
+        tid = await self.team_id()
+        body = {"team_id": tid, "user_id": user_id}
+        try:
+            await self._req("POST", f"/teams/{tid}/members", body=body)
+        except MMError as e:
+            if "max_accounts" not in str(e):
+                raise
+            stats = await self._req("GET", f"/teams/{tid}/stats")
+            await self.ensure_team_capacity(int(stats.get("total_member_count") or 0) + TEAM_HEADROOM)
+            await self._req("POST", f"/teams/{tid}/members", body=body)
+
+    async def ensure_team_capacity(self, seats: int) -> int:
+        """Raise Mattermost's per-team user cap to at least `seats`; returns the cap."""
+        cfg = await self._req("GET", "/config")
+        cap = int((cfg.get("TeamSettings") or {}).get("MaxUsersPerTeam") or 0)
+        if cap < seats:
+            await self._req("PUT", "/config/patch", body={"TeamSettings": {"MaxUsersPerTeam": seats}})
+            cap = seats
+        return cap
 
     async def user_by_id(self, user_id: str) -> dict:
         if user_id not in self._user_cache:

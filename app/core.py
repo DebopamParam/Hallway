@@ -21,7 +21,7 @@ from typing import Any
 
 from . import guard
 from .config import settings
-from .mm import MMClient, MMError
+from .mm import TEAM_HEADROOM, MMClient, MMError
 from .presence import Presence
 from .store import Store, new_id
 from .switch import AgentCreds, SwitchClient, SwitchError
@@ -106,6 +106,11 @@ class Hallway:
             creds = {"id": c.id, "key": c.key}
             self.store.kv_set("host", creds)
         self.host = AgentCreds(creds["id"], creds["key"])
+        try:
+            # Every attendee is two Mattermost team members: the person and their agent's bot.
+            await self.mm.ensure_team_capacity(2 * settings.max_attendees + TEAM_HEADROOM)
+        except MMError as e:
+            log.warning("could not check Mattermost's team size cap; attendees past it can't join rooms: %s", e)
         self.lobby = self.store.one("SELECT * FROM rooms WHERE kind = 'lobby'")
         if self.lobby is None:
             asked_ms = int(time.time() * 1000) - 2000
@@ -151,9 +156,16 @@ class Hallway:
         return None
 
     # -------------------------------------------------------------- attendees
-    def _unique(self, column: str, base: str) -> str:
+    def _taken(self, name: str) -> bool:
+        """Whether `name` is already a Mattermost/Switch username here: the host
+        agent's, or any attendee's (personas included) handle or agent name.
+        People and agents share one namespace on Mattermost."""
+        return name == settings.host_agent_name or bool(
+            self.store.one("SELECT 1 FROM attendees WHERE handle = ? OR agent_name = ?", name, name))
+
+    def _unique(self, base: str) -> str:
         candidate, n = base, 1
-        while self.store.one(f"SELECT 1 FROM attendees WHERE {column} = ?", candidate):
+        while self._taken(candidate):
             n += 1
             candidate = f"{base}{n}"
         return candidate
@@ -174,14 +186,22 @@ class Hallway:
             raise HallwayError("Pick Connect, Live or Day pass.")
         if mode == "daypass" and not settings.daypass_enabled:
             raise HallwayError("This event has no day pass agents. Pick Connect or Live.")
-        handle = self._unique("handle", slug(name.split()[0]) if name.split() else "guest")
+        handle = self._unique(slug(name.split()[0]) if name.split() else "guest")
         if mode == "live":
             if not live_agent_name or not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", live_agent_name):
                 raise HallwayError("Live mode needs your Switch agent's name (lowercase, e.g. steve.claude).")
+            # Checked before anything is created on Mattermost or Switch.
+            if self._taken(live_agent_name) or live_agent_name == handle:
+                raise HallwayError(f"The agent name '{live_agent_name}' is already taken here. "
+                                   "Use your own Switch agent's name.")
             agent_name = live_agent_name
         else:
-            agent_name = self._unique("agent_name", f"{handle}.agent")
-        mm_user, mm_password = await self.mm.create_user(handle, email, name)
+            agent_name = self._unique(f"{handle}.agent")
+        try:
+            mm_user, mm_password = await self.mm.create_user(handle, email, name)
+        except MMError as e:
+            log.error("register %s: %s", handle, e)
+            raise HallwayError("We couldn't set up your Hallway account just now. Please try again in a minute.")
         aid = new_id()
         row: dict[str, Any] = dict(
             id=aid, name=name, email=email, handle=handle, agent_name=agent_name, mode=mode,
@@ -294,15 +314,58 @@ class Hallway:
 
     # ------------------------------------------------------------------ rooms
     async def _join(self, attendee: dict, room: dict) -> None:
-        """Person and agent join together."""
+        """Person and agent join together. Anything that doesn't stick here is
+        repaired by sync_once."""
+        await self._add_person(attendee, room)
+        await self._invite_agent(attendee, room)
+
+    async def _switch_add_user(self, attendee: dict, room: dict) -> bool:
+        """add_users_to_room answers 200 {"ok": false, "unresolved": [...]} when
+        Switch can't find the person on Mattermost, so check the body."""
         try:
-            await self.switch.add_users(self.host, room["id"], [attendee["handle"]])
+            res = await self.switch.add_users(self.host, room["id"], [attendee["handle"]])
         except SwitchError as e:
             log.warning("add user %s to %s: %s", attendee["handle"], room["name"], e)
+            return False
+        if isinstance(res, dict) and (res.get("ok") is False or res.get("unresolved")):
+            log.warning("add user %s to %s: Switch could not resolve %s",
+                        attendee["handle"], room["name"], res.get("unresolved"))
+            return False
+        return True
+
+    async def _add_person(self, attendee: dict, room: dict) -> None:
+        if await self._switch_add_user(attendee, room):
+            return
+        # Switch resolves names only among the Mattermost team's members, so make
+        # sure the person is one and ask again; failing that, add them to the
+        # channel directly (Switch follows the channel's membership).
+        try:
+            await self.mm.join_team(attendee["mm_user_id"])
+        except MMError as e:
+            log.warning("team join for %s: %s", attendee["handle"], e)
+            return
+        if await self._switch_add_user(attendee, room):
+            return
+        channel_id = room.get("mm_channel_id")
+        if channel_id:
+            try:
+                await self.mm.add_to_channel(channel_id, attendee["mm_user_id"])
+            except MMError as e:
+                log.warning("add %s to channel of %s: %s", attendee["handle"], room["name"], e)
+
+    async def _invite_agent(self, attendee: dict, room: dict, quiet: bool = False) -> None:
+        # Switch answers {"ok": true} even when the agent's bot can't join (it
+        # isn't in the team), so make sure it is when we know its account.
+        if attendee.get("agent_mm_user_id"):
+            try:
+                await self.mm.join_team(attendee["agent_mm_user_id"])
+            except MMError as e:
+                log.warning("team join for %s: %s", attendee["agent_name"], e)
         try:
             await self.switch.invite_agent(self.host, room["id"], attendee["agent_name"])
         except SwitchError as e:
-            log.warning("invite agent %s to %s: %s", attendee["agent_name"], room["name"], e)
+            if not quiet:
+                log.warning("invite agent %s to %s: %s", attendee["agent_name"], room["name"], e)
 
     async def create_room(self, creator: dict, title: str, invite: list[str], kind: str = "group",
                           description: str | None = None) -> dict:
@@ -369,8 +432,9 @@ class Hallway:
             await asyncio.sleep(5)
 
     async def sync_once(self) -> None:
-        """Keep person and agent together in every room, both directions,
-        and adopt rooms that Live agents create natively in Switch."""
+        """Keep person and agent together in every room, both directions, put
+        every attendee in the lobby, and adopt rooms that Live agents create
+        natively in Switch."""
         attendees = self.store.attendees()
         if not attendees:
             return
@@ -409,16 +473,13 @@ class Hallway:
                 person_in = a["mm_user_id"] in members
                 agent_in = bool(a.get("agent_mm_user_id")) and a["agent_mm_user_id"] in members
                 if person_in and not agent_in:
-                    try:
-                        await self.switch.invite_agent(self.host, room["id"], a["agent_name"])
-                    except SwitchError:
-                        pass
-                elif agent_in and not person_in:
-                    try:
-                        await self.switch.add_users(self.host, room["id"], [a["handle"]])
-                    except SwitchError:
-                        if room.get("mm_channel_id"):
-                            await self.mm.add_to_channel(room["mm_channel_id"], a["mm_user_id"])
+                    await self._invite_agent(a, room, quiet=True)
+                elif not person_in and (agent_in or room["kind"] == "lobby"):
+                    # Everyone belongs in the lobby: a pair that missed it at
+                    # registration (Switch couldn't resolve them) joins here.
+                    await self._add_person(a, room)
+                    if not agent_in:
+                        await self._invite_agent(a, room, quiet=True)
 
     # ---------------------------------------------------------------- autonomy
     def needs_approval(self, attendee: dict, action: str) -> bool:

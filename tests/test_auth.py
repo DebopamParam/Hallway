@@ -145,7 +145,7 @@ async def test_register_live_needs_valid_agent_name(client, world):
     assert not [c for c in world.calls if c[0] == "register_agent" and c[1] == "asha.claude"]
 
 
-async def test_live_mode_rejects_taken_agent_name(make_client, hallway):
+async def test_live_mode_rejects_taken_agent_name(make_client, hallway, world):
     """Claiming another attendee's agent name should be a clean 400, not a crash."""
     await register(make_client(), "Steve Jobs")  # steve.agent
     c = httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
@@ -155,18 +155,29 @@ async def test_live_mode_rejects_taken_agent_name(make_client, hallway):
         r = await c.post("/api/register", json={"name": "Mallory", "mode": "live", "live_agent_name": "steve.agent"})
     finally:
         await c.aclose()
-    if r.status_code == 500:
-        pytest.xfail("bug: live_agent_name colliding with an existing agent hits the UNIQUE constraint (500), "
-                     "after the Mattermost user was already created")
-    assert r.status_code == 400
+    assert r.status_code == 400 and "taken" in r.json()["error"]
+    # Refused before anything was created on Mattermost.
+    assert ("mm_create_user", "mallory") not in world.calls
 
 
 async def test_live_mode_cannot_claim_host_agent_name(client):
     await sign_in(client, "mallory@example.com")
     r = await client.post("/api/register", json={"name": "Mallory", "mode": "live", "live_agent_name": "hallway"})
-    if r.status_code == 200:
-        pytest.xfail("bug: a Live attendee can register the host agent's name ('hallway') as their agent")
     assert r.status_code == 400
+
+
+async def test_live_mode_cannot_claim_a_handle(make_client):
+    await register(make_client(), "Priya Shah")  # handle priya
+    c = make_client()
+    await sign_in(c, "mallory@example.com")
+    for taken in ("priya", "mallory"):  # someone else's handle, or the one Mallory is about to get
+        r = await c.post("/api/register", json={"name": "Mallory", "mode": "live", "live_agent_name": taken})
+        assert r.status_code == 400, taken
+
+
+async def test_handle_never_takes_the_host_agent_name(signup):
+    _, me = await signup("Hallway Fan")
+    assert me["handle"] == "hallway2" and me["agent"] == "hallway2.agent"
 
 
 async def test_register_daypass(client):

@@ -196,6 +196,12 @@ class FakeMM:
         self.passwords[u["id"]] = password
         return u, password
 
+    async def join_team(self, user_id: str) -> None:
+        self.w.calls.append(("mm_join_team", user_id))
+
+    async def ensure_team_capacity(self, seats: int) -> int:
+        return seats
+
     async def user_by_id(self, user_id: str) -> dict:
         if user_id not in self.w.users:
             raise MMError(f"GET /users/{user_id}: 404")
