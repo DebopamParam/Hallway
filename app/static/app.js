@@ -183,7 +183,7 @@ function agentPill() {
   const me = state.me;
   const paused = me.pass && me.pass.status !== "active";
   const on = agentActive() && !paused;
-  const label = me.pass && me.pass.status === "spent" ? "Budget used" : paused ? "Paused" : on ? "Agent on" : me.agent_seen_at ? "Agent idle" : "Not connected";
+  const label = me.pass && me.pass.status === "spent" ? "Budget used" : paused ? "Paused" : on ? "Agent on" : me.agent_seen_at ? "Agent idle" : me.pass ? "Starting" : "Not connected";
   return `<span class="pulse ${on ? "on" : ""}"></span><span>${label}</span>`;
 }
 
