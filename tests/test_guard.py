@@ -133,11 +133,11 @@ G = {"x-flintai-api-key": GUARD_KEY}
 
 
 async def test_guardrails_check_redacts_and_logs(client, signup):
-    pc, _ = await signup("Asha Rao", contact={"telegram": "@asha_secret_tg"})
+    pc, _ = await signup("Asha Rao", contact={"linkedin": "linkedin.com/in/asha_secret_tg"})
     r = await client.post(
         "/guardrails/check",
         headers=G,
-        json={"messages": [{"role": "assistant", "content": "Her telegram is @asha_secret_tg"}]},
+        json={"messages": [{"role": "assistant", "content": "Her profile is linkedin.com/in/asha_secret_tg"}]},
     )
     assert r.status_code == 200
     body = r.json()
@@ -297,20 +297,20 @@ async def test_slow_check_is_counted(client, monkeypatch):
 
 async def test_private_values_follow_contact_updates(client, signup, hallway):
     """Private values are cached per attendee; a contact change takes effect on the next check."""
-    pc, _ = await signup("Asha Rao", contact={"telegram": "@asha_old_tg"})
+    pc, _ = await signup("Asha Rao", contact={"linkedin": "linkedin.com/in/asha_old_tg"})
 
     async def check(text: str) -> str:
         r = await client.post("/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": text}]})
         return r.json()["outcome"]
 
-    assert await check("ping @asha_old_tg") == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
+    assert await check("ping linkedin.com/in/asha_old_tg") == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
     matcher = hallway.private_matcher()
     assert hallway.private_matcher() is matcher  # no rebuild without a change
-    assert (await pc.put("/api/me", json={"contact": {"telegram": "@asha_new_tg"}})).status_code == 200
-    assert await check("ping @asha_new_tg") == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
-    assert await check("ping @asha_old_tg") == "GUARDRAIL_RESULT_OUTCOME_OK"
-    _, _ = await signup("Bela Shah", contact={"signal": "bela.signal.77"})
-    assert await check("try bela.signal.77") == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
+    assert (await pc.put("/api/me", json={"contact": {"linkedin": "linkedin.com/in/asha_new_tg"}})).status_code == 200
+    assert await check("ping linkedin.com/in/asha_new_tg") == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
+    assert await check("ping linkedin.com/in/asha_old_tg") == "GUARDRAIL_RESULT_OUTCOME_OK"
+    _, _ = await signup("Bela Shah", contact={"linkedin": "https://linkedin.com/in/bela77"})
+    assert await check("try https://linkedin.com/in/bela77") == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
 
 
 def test_private_value_every_occurrence_is_redacted():

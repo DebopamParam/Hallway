@@ -26,7 +26,7 @@ from . import guard
 from .config import settings
 from .mm import TEAM_HEADROOM, MMClient, MMError
 from .presence import Presence
-from .store import Actor, Store, new_id, new_mcp_token, token_hash, token_hint
+from .store import CONTACT_FIELDS, Actor, Store, contact_value_ok, new_id, new_mcp_token, token_hash, token_hint
 from .switch import AgentCreds, SwitchClient, SwitchError
 
 log = logging.getLogger("hallway")
@@ -76,7 +76,7 @@ def now_iso(ts: float | None = None) -> str:
 
 
 def public_profile(a: dict) -> dict:
-    p = a["profile"]
+    p = clean_profile(a["profile"], strict=False)
     return {
         "handle": a["handle"],
         "name": a["name"],
@@ -87,8 +87,94 @@ def public_profile(a: dict) -> dict:
     }
 
 
+# What a profile may hold: text fields with their longest length, lists of
+# strings with their most items and longest item, and links. Unknown keys are
+# dropped. Every attendee's profile is rendered on everyone's People tab and
+# read by their agents, so one bad value must not break it for all.
+PROFILE_TEXT = {"role": 80, "company": 80, "bio": 300, "here_for": 300}
+PROFILE_LISTS = {"interests": (20, 40), "talks": (30, 160)}
+PROFILE_LINKS = ("github", "linkedin")
+FIELD_MAX = 200  # a link or contact value
+
+
+def _bad(strict: bool, msg: str) -> None:
+    if strict:
+        raise HallwayError(msg)
+
+
+def clean_profile(profile: object, *, strict: bool = True) -> dict:
+    """`profile` within PROFILE_TEXT / PROFILE_LISTS / PROFILE_LINKS. Strict (a
+    write) refuses a wrong type or length; not strict (reading a row stored
+    before this check) leaves the bad field out."""
+    if not isinstance(profile, dict):
+        _bad(strict, "The profile must be an object.")
+        return {}
+    out: dict[str, Any] = {}
+    for k, limit in PROFILE_TEXT.items():
+        v = profile.get(k)
+        if v is None:
+            continue
+        if not isinstance(v, str) or len(v.strip()) > limit:
+            _bad(strict, f"Profile {k} must be text of at most {limit} characters.")
+            continue
+        out[k] = v.strip()
+    for k, (most, limit) in PROFILE_LISTS.items():
+        v = profile.get(k)
+        if v is None:
+            continue
+        if not (isinstance(v, list) and len(v) <= most and all(isinstance(i, str) and len(i) <= limit for i in v)):
+            _bad(strict, f"Profile {k} must be a list of at most {most} texts of at most {limit} characters.")
+            continue
+        out[k] = [i.strip() for i in v if i.strip()]
+    links = profile.get("links")
+    if links is not None:
+        if not isinstance(links, dict):
+            _bad(strict, "Profile links must be an object.")
+        else:
+            out["links"] = {}
+            for k in PROFILE_LINKS:
+                v = links.get(k)
+                if v is None or v == "":
+                    continue
+                if not isinstance(v, str) or len(v) > FIELD_MAX:
+                    _bad(strict, f"The {k} link must be text of at most {FIELD_MAX} characters.")
+                    continue
+                out["links"][k] = v.strip()
+    return out
+
+
+def clean_contact(contact: object) -> dict[str, str]:
+    """The private vault, checked: only email, phone and linkedin, each shaped
+    like one (an empty value removes the field)."""
+    if not isinstance(contact, dict):
+        raise HallwayError("Contact details must be an object.")
+    extra = set(contact) - set(CONTACT_FIELDS)
+    if extra:
+        raise HallwayError(f"Unknown contact field {sorted(extra)[0]!r}: only email, phone and linkedin.")
+    out: dict[str, str] = {}
+    for k in CONTACT_FIELDS:
+        v = contact.get(k)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            continue
+        if not isinstance(v, str) or len(v) > FIELD_MAX:
+            raise HallwayError(f"Your {k} must be text of at most {FIELD_MAX} characters.")
+        v = v.strip()
+        if not contact_value_ok(k, v):
+            raise HallwayError(f"That doesn't look like a {k}: {v[:40]}")
+        out[k] = v
+    return out
+
+
+def vault(a: dict) -> dict[str, str]:
+    """An attendee's stored contact details: only the vault's fields, also for
+    a row written before clean_contact existed."""
+    c = a["contact"] if isinstance(a["contact"], dict) else {}
+    return {k: c[k] for k in CONTACT_FIELDS if contact_value_ok(k, c.get(k))}
+
+
 def _overlap_keys(profile: dict) -> dict[str, str]:
     """Lowercased interest and talk keys mapped to their display text."""
+    profile = clean_profile(profile, strict=False)
     keys = {i.strip().lower(): i.strip() for i in profile.get("interests") or [] if i.strip()}
     for t in profile.get("talks") or []:
         title = t.split(" ", 1)[1] if t[:2].isdigit() and " " in t else t
@@ -277,6 +363,7 @@ class Hallway:
         (its record gets the new attendee's id). An email that already has an
         account gives back that account only to the session that created it."""
         name, email = name.strip(), email.strip().lower()
+        profile, contact = clean_profile(profile), clean_contact(contact)
         if not name or not email:
             raise HallwayError("Name and email are required.")
         # A double-submitted onboarding form: the second call waits for the
@@ -504,9 +591,9 @@ class Hallway:
     ) -> dict:
         changes: dict[str, Any] = {}
         if profile is not None:
-            changes["profile"] = {**attendee["profile"], **profile}
+            changes["profile"] = clean_profile({**clean_profile(attendee["profile"], strict=False), **profile})
         if contact is not None:
-            changes["contact"] = contact
+            changes["contact"] = clean_contact(contact)
         if autonomy is not None:
             changes["autonomy"] = self._autonomy({**attendee["autonomy"], **autonomy})
         if changes:
@@ -1447,7 +1534,7 @@ class Hallway:
             other = self.store.need_attendee(
                 id=c["target_id"] if c["requester_id"] == attendee["id"] else c["requester_id"]
             )
-            out.append({"name": other["name"], "handle": other["handle"], **other["contact"]})
+            out.append({"name": other["name"], "handle": other["handle"], **vault(other)})
         return out
 
     # ----------------------------------------------------------- privacy check
@@ -1461,7 +1548,7 @@ class Hallway:
         }
 
     def submit_privacy_check(self, attendee: dict, answers: list[str]) -> dict:
-        private = [v for v in (attendee["contact"] or {}).values() if isinstance(v, str)]
+        private = list(vault(attendee).values())
         leaks = []
         for q, ans in zip(PRIVACY_QUESTIONS, answers, strict=False):  # too few answers fail below
             outcome, findings = guard.scan(ans or "", private)

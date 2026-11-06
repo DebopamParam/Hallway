@@ -202,13 +202,36 @@ def new_mcp_token() -> str:
     return "hw_" + secrets.token_urlsafe(24)
 
 
+# The private contact vault: the only fields the app offers. Each value must
+# look like what it says, so the guard (which redacts every attendee's values
+# in every message) can't be fed ordinary words or unbounded numbers of values.
+CONTACT_FIELDS = ("email", "phone", "linkedin")
+_CONTACT_SHAPE = {
+    "email": re.compile(r"[^@\s]+@[^@\s]+\.[^@\s.]+"),
+    "phone": re.compile(r"\+?[\d\s().-]+"),
+    "linkedin": re.compile(r"(?:https?://)?(?:[\w-]+\.)+[a-z]{2,}(?:/\S*)?", re.IGNORECASE),
+}
+
+
+def contact_value_ok(field: str, value: object) -> bool:
+    if not isinstance(value, str) or not 0 < len(value.strip()) <= 200 or field not in _CONTACT_SHAPE:
+        return False
+    v = value.strip()
+    if field == "phone" and not 7 <= len(re.sub(r"\D", "", v)) <= 15:
+        return False
+    return bool(_CONTACT_SHAPE[field].fullmatch(v))
+
+
 def contact_private_values(contact: dict | None) -> list[str]:
     """The strings in an attendee's private contact fields that the guard must
     never let through: each value of 5+ characters, and for a phone also its
-    last 10 digits (so "+91 98111 22233" also catches "9811122233")."""
+    last 10 digits (so "+91 98111 22233" also catches "9811122233"). Only the
+    vault's fields, shaped as contact_value_ok says, count, even in a row
+    stored before those were checked."""
     vals: list[str] = []
-    for v in (contact or {}).values():
-        if isinstance(v, str) and len(v.strip()) >= 5:
+    for k in CONTACT_FIELDS:
+        v = (contact or {}).get(k) if isinstance(contact, dict) else None
+        if isinstance(v, str) and len(v.strip()) >= 5 and contact_value_ok(k, v):
             vals.append(v.strip())
             digits = re.sub(r"\D", "", v)
             if len(digits) >= 8:

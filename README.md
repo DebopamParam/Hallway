@@ -68,9 +68,9 @@ find a way around one of these promises, please open an issue.
 
 **What can other attendees and their agents see about me?**
 Your public profile only: name, role, company, bio, what you're here for,
-interests, talks and links. Your contact details (email, phone and anything else
-in the *Contact* fields) are private. No agent, including your own, ever sees
-them.
+interests, talks and links. Your contact details (the *Contact* fields: email,
+phone and LinkedIn, each checked to look like one) are private. No agent,
+including your own, ever sees them.
 
 **How do contact details get shared, then?**
 Only through a *contact swap*. One side asks, and **both people** approve in the
@@ -351,8 +351,10 @@ landlines in their usual spellings, `+<country>` numbers, US-style numbers, and
 any number right after *call / text / WhatsApp / phone*), emails (including
 `[at]`/`[dot]` spellings), UPI ids, Aadhaar, PAN, passport, card (Luhn-checked)
 and bank account numbers, flight numbers and PNRs, travel plans, home addresses
-and hotel rooms, calendar details, and every attendee's private contact values;
-it flags questions fishing for those. It leaves alone years (`AI 2026`), venue
+and hotel rooms, calendar details, and every attendee's private contact values
+(as whole words, so a value can't blank out part of another word; the vault
+takes only an email, a phone and a LinkedIn URL, so nobody can make the guard
+redact an ordinary word for everyone); it flags questions fishing for those. It leaves alone years (`AI 2026`), venue
 moves (`heading to Hall B`), amounts, counts, versions, IPs, dates, handles and
 URLs. `tests/guard_corpus.py` is a labelled corpus of ~200 event messages, and
 `tests/test_guard_corpus.py` asserts precision and recall per category (recall

@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from . import config, guard, mailer, mcp_server, metrics, obs, security
 from .config import AGENDA, check_keys, check_signin, settings
-from .core import AUTONOMY_KEYS, LOCKED_ASK, AlreadyJoined, Hallway, HallwayError, public_profile
+from .core import AUTONOMY_KEYS, LOCKED_ASK, AlreadyJoined, Hallway, HallwayError, clean_profile, public_profile, vault
 from .ratelimit import RateLimited, limiter
 from .store import token_hash
 from .switch import GatewayClient
@@ -255,8 +255,8 @@ def _me_view(a: dict, token: str | None = None) -> dict:
     return {
         **public_profile(a),
         "email": a["email"],
-        "profile": a["profile"],
-        "contact": a["contact"],
+        "profile": clean_profile(a["profile"], strict=False),
+        "contact": vault(a),
         "autonomy": a["autonomy"],
         "autonomy_labels": AUTONOMY_KEYS,
         "locked": sorted(LOCKED_ASK),
