@@ -25,7 +25,7 @@ from . import guard
 from .config import settings
 from .mm import TEAM_HEADROOM, MMClient, MMError
 from .presence import Presence
-from .store import Store, new_id, new_mcp_token, token_hash, token_hint
+from .store import Actor, Store, new_id, new_mcp_token, token_hash, token_hint
 from .switch import AgentCreds, SwitchClient, SwitchError
 
 log = logging.getLogger("hallway")
@@ -88,6 +88,18 @@ def _overlap_keys(profile: dict) -> dict[str, str]:
         title = t.split(" ", 1)[1] if t[:2].isdigit() and " " in t else t
         keys["talk:" + title.lower()] = title
     return keys
+
+
+MEETING_CARD_HEAD = "**Meeting confirmed**"  # how the host's meeting card starts, in the room
+
+
+def agent_notice(n: dict) -> dict:
+    """A notice for an agent's inbox: the one-line `text` to read, plus the same
+    thing as fields: `actor`, the subject ids and the payload's keys."""
+    out: dict[str, Any] = {"kind": n["kind"], "text": n["text"]}
+    if n["actor"]:
+        out["actor"] = n["actor"]
+    return {**out, **n["subject"], **{k: v for k, v in n["payload"].items() if k not in out}}
 
 
 class KeyedLocks:
@@ -369,6 +381,7 @@ class Hallway:
             "welcome",
             f"Welcome to {settings.event_name}! Connect your agent from the Connect tab.",
             audience="person",
+            event=settings.event_name,
         )
         return attendee
 
@@ -457,7 +470,11 @@ class Hallway:
         )
         if status == "spent" and p["status"] != "spent":
             self.store.notice(
-                attendee_id, "daypass", "Your day pass agent used its whole budget and has stopped.", audience="person"
+                attendee_id,
+                "daypass",
+                "Your day pass agent used its whole budget and has stopped.",
+                audience="person",
+                status="spent",
             )
         return self.store.need("SELECT * FROM passes WHERE id = ?", p["id"])
 
@@ -578,7 +595,13 @@ class Hallway:
             await self._join(m, room)  # idempotent; covers platforms that skip user_names
             if m["id"] != creator["id"]:
                 self.store.notice(
-                    m["id"], "room", f"{creator['name']} started a room with you: {title}", room=room["name"]
+                    m["id"],
+                    "room",
+                    f"{creator['name']} started a room with you: {title}",
+                    actor=Actor.person(creator),
+                    room_id=room["id"],
+                    room=room["name"],
+                    title=title,
                 )
         return room
 
@@ -741,9 +764,11 @@ class Hallway:
             attendee["id"],
             "approval",
             f"{attendee['name']} {'approved' if approve else 'declined'}: {ap['summary']}",
+            actor=Actor.person(attendee),
             audience="agent",
             approval_id=ap["id"],
             approved=approve,
+            summary=ap["summary"],
             result=result,
         )
         return {**self.store.need("SELECT * FROM approvals WHERE id = ?", ap["id"]), "result": result}
@@ -841,9 +866,8 @@ class Hallway:
                     )
             if latest:
                 cursors[room["id"]] = latest
-        notices = self.store.all(
-            "SELECT * FROM notices WHERE attendee_id = ? AND audience IN ('agent','both') AND agent_seen = 0 ORDER BY id",
-            attendee["id"],
+        notices = self.store.notices(
+            attendee["id"], "AND n.audience IN ('agent','both') AND n.agent_seen = 0 ORDER BY n.id"
         )
         with self.store.transaction():  # notices marked seen only with the cursors that go with them
             if notices:
@@ -854,7 +878,7 @@ class Hallway:
             self.store.update("attendees", attendee["id"], cursors=cursors, agent_seen_at=time.time())
         return {
             "messages": new_messages[-40:],
-            "notices": [{"kind": n["kind"], "text": n["text"], **n["payload"]} for n in notices],
+            "notices": [agent_notice(n) for n in notices],
             "pending_meetings_for_you": self.meetings(attendee, only_pending_for_me=True),
             "pending_approvals_waiting_on_your_human": [
                 {"id": a["id"], "summary": a["summary"]}
@@ -909,7 +933,17 @@ class Hallway:
             created_at=time.time(),
         )
         text = f"{attendee['name']} would like to meet you at {p['time']}, {p['place']}: {p['why']}"
-        self.store.notice(other["id"], "meeting_proposed", text, meeting_id=mid, with_handle=attendee["handle"])
+        self.store.notice(
+            other["id"],
+            "meeting_proposed",
+            text,
+            actor=Actor.person(attendee),
+            meeting_id=mid,
+            with_handle=attendee["handle"],
+            time=p["time"],
+            place=p["place"],
+            why=p["why"],
+        )
         return {
             "status": "proposed",
             "meeting_id": mid,
@@ -954,7 +988,13 @@ class Hallway:
         if not accept:
             self.store.update("meetings", m["id"], status="declined")
             self.store.notice(
-                proposer["id"], "meeting_declined", f"{attendee['name']} can't make {m['time']}.", meeting_id=m["id"]
+                proposer["id"],
+                "meeting_declined",
+                f"{attendee['name']} can't make {m['time']}.",
+                actor=Actor.person(attendee),
+                meeting_id=m["id"],
+                time=m["time"],
+                place=m["place"],
             )
             return {"status": "declined", "meeting_id": m["id"]}
         room = await self.create_room(
@@ -968,7 +1008,7 @@ class Hallway:
         # retry to make a second room.
         self.store.update("meetings", m["id"], status="confirmed", room_id=room["id"])
         card = (
-            f"**Meeting confirmed** :handshake:\n**{proposer['name']}** + **{attendee['name']}**\n"
+            f"{MEETING_CARD_HEAD} :handshake:\n**{proposer['name']}** + **{attendee['name']}**\n"
             f"When: **{m['time']}**  ·  Where: **{m['place']}**\nWhy: {m['why']}\n"
             f"_Agents: use this room to prep. Contact details are swapped only in the Hallway app, when both say yes._"
         )
@@ -981,8 +1021,14 @@ class Hallway:
                 a["id"],
                 "meeting_confirmed",
                 f"Meeting confirmed: {proposer['name']} + {attendee['name']} at {m['time']}, {m['place']}",
+                actor=Actor.person(attendee),
                 meeting_id=m["id"],
+                room_id=room["id"],
                 room=room["name"],
+                time=m["time"],
+                place=m["place"],
+                proposer_name=proposer["name"],
+                invitee_name=attendee["name"],
             )
         return {"status": "confirmed", "meeting_id": m["id"], "room": room["name"]}
 
@@ -1059,6 +1105,7 @@ class Hallway:
                     a["id"],
                     "contact_exchanged",
                     f"Contact details swapped with {b['name']}. They're in the app (People → Contacts).",
+                    actor=Actor.person(b),
                 )
             return {"status": "exchanged"}
         pending_other = self.store.one(
@@ -1122,7 +1169,9 @@ class Hallway:
             if passed
             else f"Privacy check failed: your agent revealed {len(leaks)} private detail(s). Tighten its instructions and retry."
         )
-        self.store.notice(attendee["id"], "privacy_check", text, audience="person", passed=passed, leaks=leaks)
+        self.store.notice(
+            attendee["id"], "privacy_check", text, audience="person", passed=passed, leaks=leaks, leak_count=len(leaks)
+        )
         return {
             "passed": passed,
             "leaks": leaks,
@@ -1135,6 +1184,7 @@ class Hallway:
         posts = await self.mm.posts(room["mm_channel_id"], since_ms=since_ms)
         by_agent = {a["agent_mm_user_id"]: a for a in self.store.attendees() if a.get("agent_mm_user_id")}
         by_person = {a["mm_user_id"]: a for a in self.store.attendees()}
+        meeting_card = self._meeting_card(room)
         out = []
         for p in posts:
             if p.get("type", "").startswith("system_"):
@@ -1167,11 +1217,38 @@ class Hallway:
                     "at": p["create_at"],
                     "text": p["message"],
                     "sender": sender,
+                    # the host's meeting card, as fields: the app draws the ticket from these
+                    **(
+                        {"card": meeting_card}
+                        if meeting_card and sender["kind"] == "host" and p["message"].startswith(MEETING_CARD_HEAD)
+                        else {}
+                    ),
                     "mine": uid == attendee["mm_user_id"],
                     "my_agent": uid == attendee.get("agent_mm_user_id"),
                 }
             )
         return out
+
+    def _meeting_card(self, room: dict) -> dict | None:
+        """The confirmed meeting a meet room was made for, as the host's card shows it."""
+        if room["kind"] != "meet":
+            return None
+        m = self.store.one("SELECT * FROM meetings WHERE room_id = ? AND status = 'confirmed'", room["id"])
+        if not m:
+            return None
+        proposer = self.store.attendee(id=m["proposer_id"])
+        invitee = self.store.attendee(id=m["invitee_id"])
+        if not proposer or not invitee:
+            return None
+        return {
+            "kind": "meeting_confirmed",
+            "meeting_id": m["id"],
+            "proposer": {"name": proposer["name"], "handle": proposer["handle"]},
+            "invitee": {"name": invitee["name"], "handle": invitee["handle"]},
+            "time": m["time"],
+            "place": m["place"],
+            "why": m["why"],
+        }
 
     async def person_post(self, attendee: dict, room: dict, text: str) -> dict:
         await self.require_member(attendee, room)

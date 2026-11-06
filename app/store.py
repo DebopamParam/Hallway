@@ -14,6 +14,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -153,6 +154,30 @@ CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 )
 
+ACTOR_KINDS = ("person", "agent", "host", "system")
+
+
+@dataclass(frozen=True)
+class Actor:
+    """Who a notice is about. For an agent, `handle` is the agent's name and
+    `name` its person's display name ("Ana Ruiz", shown as "Ana Ruiz's agent")."""
+
+    kind: str  # one of ACTOR_KINDS
+    id: str | None = None
+    handle: str | None = None
+    name: str | None = None
+
+    @classmethod
+    def person(cls, a: dict) -> "Actor":
+        return cls("person", a["id"], a["handle"], a["name"])
+
+    @classmethod
+    def agent(cls, a: dict) -> "Actor":
+        return cls("agent", a["id"], a["agent_name"], a["name"])
+
+
+SYSTEM = Actor("system")
+
 JSON_COLS = {"profile", "contact", "autonomy", "cursors", "privacy", "payload"}
 
 
@@ -199,6 +224,34 @@ def configure(db: sqlite3.Connection) -> None:
     db.execute("PRAGMA synchronous = NORMAL")
     db.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     db.execute("PRAGMA foreign_keys = ON")  # per connection; enforced for any table that declares REFERENCES
+
+
+def notice_view(n: dict) -> dict:
+    """A notices row as the API shows it. `actor` is null for system notices;
+    `subject` holds only the ids that are set."""
+    actor = None
+    if n.get("actor_kind", "system") != "system":
+        actor = {"kind": n["actor_kind"], "handle": n.get("actor_handle"), "name": n.get("actor_name")}
+    subject = {
+        k: v
+        for k, v in (
+            ("room_id", n.get("room_id")),
+            ("room", n.get("room_name")),
+            ("meeting_id", n.get("meeting_id")),
+            ("approval_id", n.get("approval_id")),
+        )
+        if v
+    }
+    return {
+        "id": n["id"],
+        "kind": n["kind"],
+        "text": n["text"],
+        "structured": bool(n.get("structured")),
+        "actor": actor,
+        "subject": subject,
+        "payload": n.get("payload") or {},
+        "created_at": n["created_at"],
+    }
 
 
 # ------------------------------------------------------------------ migrations
@@ -261,7 +314,137 @@ def _m3_indexes(db: sqlite3.Connection) -> None:
         db.execute(stmt)
 
 
-MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [_m1_base_schema, _m2_hash_tokens, _m3_indexes]
+NOTICE_COLUMNS = (
+    # who the notice is about: a person, their agent, the host (Hallway) or the system
+    ("actor_kind", "TEXT NOT NULL DEFAULT 'system'"),
+    ("actor_id", "TEXT"),  # attendee id, when the actor is an attendee or their agent
+    ("actor_handle", "TEXT"),  # their handle (person) or agent name (agent), as it was then
+    ("actor_name", "TEXT"),  # the person's display name, as it was then
+    # what it is about
+    ("room_id", "TEXT"),
+    ("meeting_id", "TEXT"),
+    ("approval_id", "TEXT"),
+    # 1: kind/actor/subject/payload carry everything the app shows; 0: an old
+    # row only its `text` can describe
+    ("structured", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+# Old notice text, for _m4: the wording Hallway used before notices were structured.
+_OLD_TEXT = {
+    "mention": re.compile(r"^(?P<who>.+?) → your agent: (?P<body>.*)$", re.S),
+    "welcome": re.compile(r"^Welcome to (?P<event>.+)! Connect your agent from the Connect tab\.$", re.S),
+    "room": re.compile(r"^(?P<who>.+?) started a room with you: (?P<title>.*)$", re.S),
+    "approval": re.compile(r"^(?P<who>.+?) (?P<verb>approved|declined): (?P<summary>.*)$", re.S),
+    "contact_exchanged": re.compile(r"^Contact details swapped with (?P<who>.+?)\. They're in the app", re.S),
+}
+
+
+def _m4_structured_notices(db: sqlite3.Connection) -> None:
+    """3 -> 4: notices get typed fields (actor, subject ids) next to `text`,
+    so nothing has to parse the text back. Old rows are converted where their
+    wording and the rows they point at allow it; the rest stay `structured = 0`
+    and are shown as their plain text."""
+    have = {r[1] for r in db.execute("PRAGMA table_info(notices)")}
+    for col, decl in NOTICE_COLUMNS:
+        if col not in have:
+            db.execute(f"ALTER TABLE notices ADD COLUMN {col} {decl}")
+    db.execute("CREATE INDEX IF NOT EXISTS notices_meeting ON notices (meeting_id)")
+    old_factory, db.row_factory = db.row_factory, sqlite3.Row
+    try:
+        rows = db.execute("SELECT * FROM notices WHERE structured = 0").fetchall()
+        for row in rows:
+            fields = _legacy_notice_fields(db, dict(row))
+            if fields is None:
+                continue
+            payload = {**json.loads(row["payload"] or "{}"), **fields.pop("payload", {})}
+            fields.update(payload=json.dumps(payload), structured=1)
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            db.execute(f"UPDATE notices SET {sets} WHERE id = ?", (*fields.values(), row["id"]))
+    finally:
+        db.row_factory = old_factory
+
+
+def _legacy_notice_fields(db: sqlite3.Connection, n: dict) -> dict | None:
+    """The structured fields for one pre-v4 notice, or None to leave it as text."""
+    kind, text = n["kind"], n["text"]
+    payload = json.loads(n["payload"] or "{}")
+
+    def by_name(name: str) -> sqlite3.Row | None:
+        found = db.execute("SELECT id, handle, agent_name, name FROM attendees WHERE name = ?", (name,)).fetchall()
+        return found[0] if len(found) == 1 else None
+
+    def by_id(aid: str) -> sqlite3.Row | None:
+        r: sqlite3.Row | None = db.execute(
+            "SELECT id, handle, agent_name, name FROM attendees WHERE id = ?", (aid,)
+        ).fetchone()
+        return r
+
+    def person(a: sqlite3.Row | None, name: str) -> dict:
+        if a is None:
+            return {"actor_kind": "person", "actor_name": name}
+        return {"actor_kind": "person", "actor_id": a["id"], "actor_handle": a["handle"], "actor_name": a["name"]}
+
+    def meeting(mid: str | None) -> sqlite3.Row | None:
+        r: sqlite3.Row | None = db.execute("SELECT * FROM meetings WHERE id = ?", (mid,)).fetchone() if mid else None
+        return r
+
+    m = _OLD_TEXT[kind].match(text) if kind in _OLD_TEXT else None
+    if kind == "mention" and m:
+        who = m["who"]
+        if who.endswith(" (agent)"):
+            name = who.removesuffix(" (agent)")
+            a = by_name(name)
+            actor = {"actor_kind": "agent", "actor_name": name}
+            if a is not None:
+                actor.update(actor_id=a["id"], actor_handle=a["agent_name"])
+        else:
+            actor = person(by_name(who), who)
+        return {**actor, "payload": {"body": m["body"]}}
+    if kind == "welcome" and m:
+        return {"payload": {"event": m["event"]}}
+    if kind == "daypass":
+        return {"payload": {"status": "spent"}}
+    if kind == "privacy_check" and "passed" in payload:
+        return {"payload": {"leak_count": len(payload.get("leaks") or [])}}
+    if kind == "room" and m:
+        room = db.execute("SELECT id FROM rooms WHERE name = ?", (payload.get("room"),)).fetchone()
+        return {
+            **person(by_name(m["who"]), m["who"]),
+            "room_id": room["id"] if room else None,
+            "payload": {"title": m["title"]},
+        }
+    if kind == "approval" and m:
+        return {
+            **person(by_name(m["who"]), m["who"]),
+            "approval_id": payload.get("approval_id"),
+            "payload": {"summary": m["summary"]},
+        }
+    if kind == "contact_exchanged" and m:
+        return person(by_name(m["who"]), m["who"])
+    if kind in ("meeting_proposed", "meeting_declined", "meeting_confirmed"):
+        mt = meeting(payload.get("meeting_id"))
+        if mt is None:
+            return None
+        proposer, invitee = by_id(mt["proposer_id"]), by_id(mt["invitee_id"])
+        if proposer is None or invitee is None:
+            return None
+        base = {"meeting_id": mt["id"], "payload": {"time": mt["time"], "place": mt["place"]}}
+        if kind == "meeting_proposed":
+            base["payload"]["why"] = mt["why"]
+            return {**person(proposer, proposer["name"]), **base}
+        if kind == "meeting_declined":
+            return {**person(invitee, invitee["name"]), **base}
+        base["payload"].update(proposer_name=proposer["name"], invitee_name=invitee["name"])
+        return {**person(invitee, invitee["name"]), "room_id": mt["room_id"], **base}
+    return None
+
+
+MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
+    _m1_base_schema,
+    _m2_hash_tokens,
+    _m3_indexes,
+    _m4_structured_notices,
+]
 SCHEMA_VERSION = len(MIGRATIONS)
 
 
@@ -451,7 +634,24 @@ class Store:
     def attendees(self) -> list[dict]:
         return self.all("SELECT * FROM attendees ORDER BY created_at")
 
-    def notice(self, attendee_id: str, kind: str, text: str, audience: str = "both", **payload: Any) -> None:
+    def notice(
+        self,
+        attendee_id: str,
+        kind: str,
+        text: str,
+        *,
+        actor: Actor = SYSTEM,
+        audience: str = "both",
+        room_id: str | None = None,
+        meeting_id: str | None = None,
+        approval_id: str | None = None,
+        **payload: Any,
+    ) -> None:
+        """Record a notice for an attendee. `text` is the one-line wording (for
+        agents, and the fallback); the app renders from kind, actor, subject ids
+        and payload, so nothing needs to parse `text`."""
+        if actor.kind not in ACTOR_KINDS:
+            raise ValueError(f"unknown actor kind {actor.kind!r}")
         self.insert(
             "notices",
             attendee_id=attendee_id,
@@ -459,8 +659,25 @@ class Store:
             kind=kind,
             text=text,
             payload=payload,
+            actor_kind=actor.kind,
+            actor_id=actor.id,
+            actor_handle=actor.handle,
+            actor_name=actor.name,
+            room_id=room_id,
+            meeting_id=meeting_id,
+            approval_id=approval_id,
+            structured=1,
             created_at=time.time(),
         )
+
+    def notices(self, attendee_id: str, where: str = "", *args: Any, limit: int | None = None) -> list[dict]:
+        """An attendee's notices, oldest first unless `where` orders them, in the
+        shape the web app and agents get: kind, text, actor, subject, payload."""
+        sql = (
+            "SELECT n.*, r.name AS room_name FROM notices n LEFT JOIN rooms r ON r.id = n.room_id "
+            f"WHERE n.attendee_id = ? {where}" + (f" LIMIT {int(limit)}" if limit else "")
+        )
+        return [notice_view(n) for n in self.all(sql, attendee_id, *args)]
 
     # ------------------------------------------------------------- sessions
     def create_session(self, attendee_id: str, user_agent: str = "") -> str:

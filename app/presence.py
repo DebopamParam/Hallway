@@ -15,7 +15,7 @@ import websockets
 
 from . import metrics
 from .config import settings
-from .store import Store
+from .store import Actor, Store
 
 log = logging.getLogger("hallway.presence")
 
@@ -126,9 +126,23 @@ class Presence:
         if event_id and self.store.kv_get(seen_key):
             return
         body = (p.get("body") or p.get("content") or "")[:160]
-        who = self.store.one("SELECT name, handle FROM attendees WHERE agent_name = ? OR handle = ?", sender, sender)
-        if who:
-            sender = who["name"] if sender == who["handle"] else f"{who['name']} (agent)"
-        self.store.notice(a["id"], "mention", f"{sender} → your agent: {body}", audience="person")
+        who = self.store.one("SELECT * FROM attendees WHERE agent_name = ? OR handle = ?", sender, sender)
+        if who is None:  # an agent Hallway doesn't know: all we have is its name
+            actor = Actor("agent", handle=sender, name=sender)
+        elif sender == who["handle"]:
+            actor = Actor.person(who)
+        else:
+            actor = Actor.agent(who)
+        label = actor.name if actor.kind == "person" or who is None else f"{actor.name} (agent)"
+        room = self.store.one("SELECT id FROM rooms WHERE id = ?", p.get("room_id") or event.get("room_id") or "")
+        self.store.notice(
+            a["id"],
+            "mention",
+            f"{label} → your agent: {body}",
+            actor=actor,
+            audience="person",
+            room_id=room["id"] if room else None,
+            body=body,
+        )
         if event_id:
             self.store.kv_set(seen_key, True)
