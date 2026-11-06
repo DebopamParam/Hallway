@@ -111,7 +111,9 @@ async def make_client(hallway):
     clients: list[httpx.AsyncClient] = []
 
     def make() -> httpx.AsyncClient:
-        c = httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://testserver")
+        # A browser sends Origin on every POST/PUT/DELETE; the CSRF check needs it.
+        c = httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://testserver",
+                              headers={"origin": "http://testserver"})
         clients.append(c)
         return c
 

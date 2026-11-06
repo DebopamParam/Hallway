@@ -59,6 +59,7 @@ async def test_enable_guard_with_admin_key_sends_the_guard_key_to_switch(client,
 
 
 async def test_localhost_exception_only_on_a_dev_box(client, gateway, monkeypatch):
+    client.headers["origin"] = "http://localhost:8787"
     use(monkeypatch, hallway_env="dev", public_url="http://localhost:8787")
     assert (await client.post("/api/admin/enable-guard")).status_code == 200
     use(monkeypatch, hallway_env="", public_url="http://localhost:8787")

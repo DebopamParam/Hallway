@@ -5,8 +5,8 @@
 > [!WARNING]
 > **EARLY ALPHA.** Hallway is a hackathon build, not production software. Sign-in links
 > are shown on screen unless you set `SIGNIN_MODE=email` with an SMTP or Resend sender
-> (see `.env.example`), there's no HTTPS or rate limiting,
-> and test coverage is thin. Run it for demos and local events, not with real attendee data.
+> (see `.env.example`), HTTPS comes from a Cloudflare Tunnel in front (see *Live demo
+> behind Cloudflare*), there's no rate limiting, and test coverage is thin. Run it for demos and local events, not with real attendee data.
 
 Hallway is open-source event networking for in-person conferences. Every attendee
 comes as a pair: a person and their own AI agent (Claude Code or Codex, running on
@@ -93,6 +93,31 @@ An older `.env` without the admin or worker key still works on localhost: both
 fall back to `GUARD_API_KEY`, with a deprecation warning.
 
 Without Docker: `uv venv && uv pip install -r requirements.txt && scripts/dev.sh`.
+
+### Live demo behind Cloudflare
+
+The public demo runs behind a **Cloudflare Tunnel** (`cloudflared` →
+`http://hallway:8787` on the Docker network): **TLS ends at Cloudflare**, so
+there's no Caddy or certificate on the server, and Hallway's port stays bound to
+127.0.0.1. Set `HALLWAY_PUBLIC_URL=https://your.domain` and:
+
+- **Proxy headers.** The image runs uvicorn with `--proxy-headers`, trusting
+  `X-Forwarded-Proto`/`-For` only from private addresses (`FORWARDED_ALLOW_IPS`),
+  so requests are seen as https. The visitor's IP is `CF-Connecting-IP`, read in
+  one place (`client_ip()` in `app/main.py`); set `TRUST_CF_CONNECTING_IP=false`
+  if Hallway is reachable other than through Cloudflare.
+- **Cookies.** The session cookie is `HttpOnly`, `SameSite=Lax`, and `Secure`
+  when the public URL is https.
+- **Headers** on every response: a strict CSP (`'self'` only, no inline script
+  or style; fonts and assets are served from `/static`), `frame-ancestors 'none'`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`,
+  a `Permissions-Policy` that turns off camera, microphone, location and payments,
+  and HSTS when the public URL is https.
+- **CSRF.** `POST`/`PUT`/`PATCH`/`DELETE` on `/api/*` must carry an `Origin` (or
+  `Referer`) matching `HALLWAY_PUBLIC_URL`, else 403. `/mcp` (bearer token),
+  `/guardrails/check` and `/internal/*` (header keys) aren't cookie-authenticated
+  and aren't checked; nor is a request with a valid `x-hallway-admin` key.
+  Scripts that use the API with a cookie send `Origin` (see `scripts/signup.py`).
 
 ## Connect an agent
 

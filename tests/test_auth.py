@@ -150,7 +150,7 @@ async def test_live_mode_rejects_taken_agent_name(make_client, hallway, world):
     """Claiming another attendee's agent name should be a clean 400, not a crash."""
     await register(make_client(), "Steve Jobs")  # steve.agent
     c = httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
-                          base_url="http://testserver")
+                          base_url="http://testserver", headers={"origin": "http://testserver"})
     try:
         await sign_in(c, "mallory@example.com")
         r = await c.post("/api/register", json={"name": "Mallory", "mode": "live", "live_agent_name": "steve.agent"})
