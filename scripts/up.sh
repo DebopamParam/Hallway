@@ -52,6 +52,13 @@ say "Starting Switch 0.31.0 (project $PROJECT)"
 docker compose -p "$PROJECT" -f $SW/docker-compose.yml up -d
 wait_for Switch $API/health
 wait_for Mattermost http://127.0.0.1:$MM_PORT/api/v4/system/ping
+# Hallway's lobby must be created after Switch's seeder registers the Mattermost
+# bridge, or the room comes out unbridged and nobody can join it
+for _ in $(seq 180); do
+  state=$(docker compose -p "$PROJECT" -f $SW/docker-compose.yml ps -a setup --format '{{.State}} {{.ExitCode}}')
+  [ "$state" = "exited 0" ] && break; sleep 1
+done
+[ "$state" = "exited 0" ] || { echo "Switch setup did not finish ($state); see: docker logs $PROJECT-setup-1" >&2; exit 1; }
 
 # 2. Hallway's .env, with a registration key made through the Gateway API
 [ -f .env ] || { say "Writing .env from .env.example"; cp .env.example .env; }
