@@ -31,15 +31,14 @@ async def test_sync_keeps_person_and_agent_together(hallway, world, signup):
 
 
 async def test_sync_repairs_attendee_missing_from_lobby(hallway, world, signup):
-    """Live Switch sometimes can't resolve a just-created user: add_users returns
-    200 {"ok": false, "unresolved": [...]}. Hallway ignores that, and the sync
-    loop only repairs half-pairs, so a pair that missed the lobby never joins."""
+    """Switch can't resolve a user who isn't in the Mattermost team (seen live
+    when the team hit its 50-member cap): add_users answers 200 {"ok": false,
+    "unresolved": [...]}. A pair that missed the lobby must be repaired by sync."""
     world.unresolvable = {"asha", "asha.agent"}
     pc, _ = await signup("Asha Rao")
     world.unresolvable = set()  # Switch catches up
     await hallway.sync_once()
     r = await pc.get("/api/rooms/hallway-lobby/messages")
-    if r.status_code == 400:
-        pytest.xfail("bug: _join ignores add_users' ok:false/unresolved and sync_once never re-adds a pair "
-                     "missing from a room on both sides (seen live: scripts/ui_smoke.py can't find #say)")
     assert r.status_code == 200
+    ch = world.channels[world.rooms[hallway.lobby["id"]]]
+    assert {"u_asha", "u_asha.agent"} <= ch["members"]
