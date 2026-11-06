@@ -13,9 +13,11 @@ Vocabulary
 """
 
 import asyncio
+import contextlib
 import logging
 import re
 import time
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -88,6 +90,31 @@ def _overlap_keys(profile: dict) -> dict[str, str]:
     return keys
 
 
+class KeyedLocks:
+    """One asyncio.Lock per key, made on first use and dropped when nobody holds
+    or waits for it. Hallway runs as one process, so this is enough to make
+    "check, then await Switch/Mattermost, then write" flows run one at a time
+    per meeting or email."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, tuple[asyncio.Lock, list[int]]] = {}
+
+    @contextlib.asynccontextmanager
+    async def hold(self, key: str) -> AsyncIterator[None]:
+        lock, users = self._locks.setdefault(key, (asyncio.Lock(), [0]))
+        users[0] += 1
+        try:
+            async with lock:
+                yield
+        finally:
+            users[0] -= 1
+            if not users[0]:
+                del self._locks[key]
+
+    def __len__(self) -> int:
+        return len(self._locks)
+
+
 class Hallway:
     def __init__(self) -> None:
         self.store = Store()
@@ -99,6 +126,13 @@ class Hallway:
         self._sync_task: asyncio.Task[None] | None = None
         self._background: set[asyncio.Task[None]] = set()  # keep fire-and-forget tasks alive until done
         self._lock = asyncio.Lock()
+        self._serial = KeyedLocks()  # per meeting / per email: see _respond_meeting and register
+        # Names held between "is it free?" and the row being written, across the
+        # awaits on Switch and Mattermost in between, so two concurrent callers
+        # can't both pick the same one (and sync_once doesn't adopt a room we
+        # are still creating).
+        self._creating_rooms: set[str] = set()
+        self._reserved_names: set[str] = set()
 
     # ------------------------------------------------------------------ setup
     async def start(self) -> None:
@@ -189,8 +223,10 @@ class Hallway:
         """Whether `name` is already a Mattermost/Switch username here: the host
         agent's, or any attendee's (personas included) handle or agent name.
         People and agents share one namespace on Mattermost."""
-        return name == settings.host_agent_name or bool(
-            self.store.one("SELECT 1 FROM attendees WHERE handle = ? OR agent_name = ?", name, name)
+        return (
+            name == settings.host_agent_name
+            or name in self._reserved_names
+            or bool(self.store.one("SELECT 1 FROM attendees WHERE handle = ? OR agent_name = ?", name, name))
         )
 
     def _unique(self, base: str) -> str:
@@ -215,6 +251,32 @@ class Hallway:
         name, email = name.strip(), email.strip().lower()
         if not name or not email:
             raise HallwayError("Name and email are required.")
+        # A double-submitted onboarding form: the second call waits for the
+        # first and returns its attendee instead of failing on the UNIQUE email.
+        async with self._serial.hold(f"register:{email}"):
+            return await self._register(
+                name=name,
+                email=email,
+                profile=profile,
+                contact=contact,
+                autonomy=autonomy,
+                mode=mode,
+                live_agent_name=live_agent_name,
+                is_persona=is_persona,
+            )
+
+    async def _register(
+        self,
+        *,
+        name: str,
+        email: str,
+        profile: dict,
+        contact: dict,
+        autonomy: dict | None,
+        mode: str,
+        live_agent_name: str | None,
+        is_persona: bool,
+    ) -> dict:
         existing = self.store.attendee(email=email)
         if existing:
             return existing
@@ -236,6 +298,30 @@ class Hallway:
             agent_name = live_agent_name
         else:
             agent_name = self._unique(f"{handle}.agent")
+        # Held until the row is written: without this, two people called Steve
+        # registering at once both get "steve" (and the second takes over the
+        # first's Mattermost account, which create_user reuses by name).
+        names = {handle, agent_name}
+        self._reserved_names |= names
+        try:
+            return await self._create_attendee(
+                name, email, handle, agent_name, mode, profile, contact, autonomy, is_persona
+            )
+        finally:
+            self._reserved_names -= names
+
+    async def _create_attendee(
+        self,
+        name: str,
+        email: str,
+        handle: str,
+        agent_name: str,
+        mode: str,
+        profile: dict,
+        contact: dict,
+        autonomy: dict | None,
+        is_persona: bool,
+    ) -> dict:
         try:
             mm_user, mm_password = await self.mm.create_user(handle, email, name)
         except MMError as e:
@@ -451,31 +537,34 @@ class Hallway:
         members = [creator] + [self.resolve(h) for h in invite]
         uniq = {m["id"]: m for m in members}
         members = list(uniq.values())
-        base = slug(title)[:30] or "room"
-        name = base
-        n = 1
-        while self.store.one("SELECT 1 FROM rooms WHERE name = ?", name) or await self.mm.channel_by_name(name):
-            n += 1
-            name = f"{base}-{n}"
-        asked_ms = int(time.time() * 1000) - 2000
-        res = await self.switch.create_room(
-            self._host(),
-            name,
-            description or title,
-            [m["agent_name"] for m in members],
-            [m["handle"] for m in members],
-        )
-        channel = await self._wait_channel(res["name"], asked_ms)
-        self.store.insert(
-            "rooms",
-            id=res["id"],
-            name=res["name"],
-            title=title,
-            kind=kind,
-            mm_channel_id=channel["id"] if channel else None,
-            created_by=creator["id"],
-            created_at=time.time(),
-        )
+        name = await self._free_room_name(slug(title)[:30] or "room")
+        self._creating_rooms.add(name)
+        try:
+            asked_ms = int(time.time() * 1000) - 2000
+            res = await self.switch.create_room(
+                self._host(),
+                name,
+                description or title,
+                [m["agent_name"] for m in members],
+                [m["handle"] for m in members],
+            )
+            channel = await self._wait_channel(res["name"], asked_ms)
+            # The room id is Switch's. If sync_once recorded this room while we
+            # waited for its channel (it adopts rooms it finds on Switch), a plain
+            # INSERT fails on rooms.id; overwrite its guesses with what we know.
+            row = dict(
+                id=res["id"],
+                name=res["name"],
+                title=title,
+                kind=kind,
+                mm_channel_id=channel["id"] if channel else None,
+                created_by=creator["id"],
+                created_at=time.time(),
+            )
+            ours = ("name", "title", "kind", "created_by") + (("mm_channel_id",) if channel else ())
+            self.store.upsert("rooms", update=ours, **row)
+        finally:
+            self._creating_rooms.discard(name)
         room = self.store.need("SELECT * FROM rooms WHERE id = ?", res["id"])
         for m in members:
             await self._join(m, room)  # idempotent; covers platforms that skip user_names
@@ -484,6 +573,19 @@ class Hallway:
                     m["id"], "room", f"{creator['name']} started a room with you: {title}", room=room["name"]
                 )
         return room
+
+    def _room_name_held(self, name: str) -> bool:
+        return name in self._creating_rooms or bool(self.store.one("SELECT 1 FROM rooms WHERE name = ?", name))
+
+    async def _free_room_name(self, base: str) -> str:
+        """`base`, or `base-2`, `base-3`...: the first name no room here or
+        channel on Mattermost has, and no create_room in flight is using. The
+        caller adds it to _creating_rooms before its next await."""
+        name, n = base, 1
+        while self._room_name_held(name) or await self.mm.channel_by_name(name) or self._room_name_held(name):
+            n += 1
+            name = f"{base}-{n}"
+        return name
 
     def rooms_for(self, attendee: dict, member_ids: dict[str, set[str]]) -> list[dict]:
         out = []
@@ -536,7 +638,13 @@ class Hallway:
         try:
             for r in await self.switch.list_all_rooms(self._host()):
                 rid = r.get("id") or r.get("room_id")
-                if rid and rid not in known and r.get("name") not in known_names and not r.get("archived"):
+                if (
+                    rid
+                    and rid not in known
+                    and r.get("name") not in known_names
+                    and r.get("name") not in self._creating_rooms  # create_room records it
+                    and not r.get("archived")
+                ):
                     # Only rooms an attendee or their agent is actually in: the
                     # Switch server also hosts unrelated rooms.
                     ch = await self.mm.channel_by_name(r.get("name", ""))
@@ -546,7 +654,8 @@ class Hallway:
                         and ours & await self.mm.channel_member_ids(ch["id"])
                     ):
                         known_names.add(r["name"])
-                        self.store.insert(
+                        # Do nothing if create_room recorded it during our awaits.
+                        self.store.upsert(
                             "rooms",
                             id=rid,
                             name=r["name"],
@@ -613,7 +722,13 @@ class Hallway:
         self.store.update("approvals", ap["id"], status="approved" if approve else "declined", decided_at=time.time())
         result: Any = None
         if approve:
-            result = await self._execute(attendee, ap["kind"], ap["payload"])
+            try:
+                result = await self._execute(attendee, ap["kind"], ap["payload"])
+            except BaseException:
+                # Didn't happen: leave it to be approved again (or declined)
+                # rather than marked approved with nothing done.
+                self.store.update("approvals", ap["id"], status="pending", decided_at=None)
+                raise
         self.store.notice(
             attendee["id"],
             "approval",
@@ -806,10 +921,26 @@ class Hallway:
             )
         return await self._respond_meeting(attendee, meeting_id, accept)
 
+    def _meeting_outcome(self, m: dict) -> dict:
+        """What answering a meeting returns; the same for a repeat answer."""
+        out = {"status": m["status"], "meeting_id": m["id"]}
+        room = self.store.one("SELECT name FROM rooms WHERE id = ?", m["room_id"]) if m["room_id"] else None
+        if room:
+            out["room"] = room["name"]
+        return out
+
     async def _respond_meeting(self, attendee: dict, meeting_id: str, accept: bool) -> dict:
+        """Accept or decline once. The person (web), their agent (MCP) and an
+        approval can all answer the same proposal, at the same time: answers run
+        one at a time per meeting, and any after the first get its outcome
+        instead of making a second room."""
+        async with self._serial.hold(f"meeting:{meeting_id}"):
+            return await self._respond_meeting_once(attendee, meeting_id, accept)
+
+    async def _respond_meeting_once(self, attendee: dict, meeting_id: str, accept: bool) -> dict:
         m = self.store.need("SELECT * FROM meetings WHERE id = ?", meeting_id)
         if m["status"] != "proposed":
-            return {"status": m["status"], "meeting_id": m["id"]}
+            return self._meeting_outcome(m)
         proposer = self.store.need_attendee(id=m["proposer_id"])
         if not accept:
             self.store.update("meetings", m["id"], status="declined")
@@ -824,13 +955,18 @@ class Hallway:
             kind="meet",
             description=m["why"],
         )
+        # Confirmed as soon as the room exists, so a failure below can't lead a
+        # retry to make a second room.
         self.store.update("meetings", m["id"], status="confirmed", room_id=room["id"])
         card = (
             f"**Meeting confirmed** :handshake:\n**{proposer['name']}** + **{attendee['name']}**\n"
             f"When: **{m['time']}**  ·  Where: **{m['place']}**\nWhy: {m['why']}\n"
             f"_Agents: use this room to prep. Contact details are swapped only in the Hallway app, when both say yes._"
         )
-        await self.switch.post(self._host(), room["id"], card)
+        try:
+            await self.switch.post(self._host(), room["id"], card)
+        except SwitchError as e:
+            log.warning("meeting %s: could not post the card in %s: %s", m["id"], room["name"], e)
         for a in (proposer, attendee):
             self.store.notice(
                 a["id"],

@@ -121,7 +121,8 @@ async def test_mcp_key_is_stored_hashed_and_works(signup, client, hallway):
     a = hallway.store.attendee(handle="asha")
     assert "mcp_token" not in a and a["mcp_token_hash"] == sha(tok) and a["mcp_token_hint"] == tok[:7] + "…"
     assert (await mcp_call(client, tok, "whoami"))["your_human"]["handle"] == "asha"
-    assert (await mcp_call(client, tok[:-1] + "x", "whoami")) == {"error": "Unknown Hallway token."}
+    wrong = tok[:-1] + ("y" if tok.endswith("x") else "x")  # always differs from tok
+    assert (await mcp_call(client, wrong, "whoami")) == {"error": "Unknown Hallway token."}
 
 
 async def test_rotate_agent_key(signup, client, hallway):

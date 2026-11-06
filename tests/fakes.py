@@ -6,8 +6,12 @@ users named after the agent, and posts from either side land in the same
 channel. Only the methods Hallway calls are implemented, with the same
 signatures as app/switch.py and app/mm.py. Every call is recorded in
 `World.calls` so tests can assert on what reached Switch.
+
+Calls that create something yield to the event loop first, as a real HTTP
+call would, so concurrent requests interleave the way they do on the stack.
 """
 
+import asyncio
 import itertools
 import time
 from datetime import datetime
@@ -94,6 +98,7 @@ class FakeSwitch:
         return a
 
     async def register_agent(self, name: str, display_name: str, description: str) -> AgentCreds:
+        await asyncio.sleep(0)
         self.w.calls.append(("register_agent", name))
         existing = next((k for k, a in self.w.agents.items() if a["name"] == name), None)
         aid = existing or f"ag_{name}"
@@ -105,6 +110,7 @@ class FakeSwitch:
     async def create_room(
         self, agent: AgentCreds, name: str, description: str, agent_names: list[str], user_names: list[str]
     ) -> dict:
+        await asyncio.sleep(0)
         host = self._agent(agent)
         self.w.calls.append(("create_room", {"name": name, "agents": agent_names, "users": user_names}))
         cid = f"ch{next(_ids)}"
@@ -222,6 +228,7 @@ class FakeMM:
         return "team1"
 
     async def create_user(self, username: str, email: str, first_name: str) -> tuple[dict, str]:
+        await asyncio.sleep(0)
         self.w.calls.append(("mm_create_user", username))
         u = self.w.add_user(username, first_name=first_name, email=email)
         password = f"pw-{username}-{next(_ids)}"
