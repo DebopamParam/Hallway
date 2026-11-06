@@ -36,12 +36,11 @@ wait_for() {  # wait_for NAME URL [SECONDS]
 }
 
 # 1. Switch's .env: generated once, never regenerated (the secrets encrypt data)
-if [ ! -f $SW/.env ]; then
-  say "Generating Switch secrets ($SW/.env)"
-  cp $SW/env.template $SW/.env
-  for key in $(grep '=__RANDOM__$' $SW/env.template | cut -d= -f1); do setenv $SW/.env "$key" "$(rand)"; done
-  setenv $SW/.env SECRET_KEYS "hallway:$(rand 32)"
-fi
+[ -f $SW/.env ] || { say "Generating Switch secrets ($SW/.env)"; cp $SW/env.template $SW/.env; }
+for key in $(grep '=__RANDOM__$' $SW/env.template | cut -d= -f1); do
+  case "$(getenv $SW/.env "$key")" in ""|__RANDOM__) setenv $SW/.env "$key" "$(rand)";; esac
+done
+case "$(getenv $SW/.env SECRET_KEYS)" in ""|__SECRET_KEYS__) setenv $SW/.env SECRET_KEYS "hallway:$(rand 32)";; esac
 for kv in COMPOSE_PROJECT_NAME=$PROJECT API_HOST_PORT=$API_PORT GATEWAY_HOST_PORT=$GW_PORT \
           MATTERMOST_HOST_PORT=$MM_PORT POSTGRES_HOST_PORT=$PG_PORT \
           GATEWAY_PUBLIC_URL=http://localhost:$API_PORT FRONTEND_BASE_URL=http://localhost:$GW_PORT; do
