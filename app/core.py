@@ -896,6 +896,36 @@ class Hallway:
             raise HallwayError(f"No room '{ref}'. Call list_rooms.")
         return room
 
+    async def privacy_log(self, attendee: dict, limit: int = 30) -> list[dict]:
+        """What the guard caught that this attendee may see: checks in rooms
+        they're in (the excerpt, already redacted), and checks anywhere that
+        caught one of their own private values (no excerpt: the room isn't
+        theirs). Never another room's text."""
+        out: list[dict] = []
+        rooms: dict[str, str | None] = {}  # guard_log.room_id -> room name, if the attendee is in it
+        for r in self.store.all("SELECT * FROM guard_log ORDER BY id DESC LIMIT 1000"):
+            rid = r["room_id"] or ""
+            if rid not in rooms:
+                room = self.store.one("SELECT * FROM rooms WHERE id = ? OR name = ?", rid, rid) if rid else None
+                member = room is not None and attendee["mm_user_id"] in await self.room_members(room)
+                rooms[rid] = room["name"] if room and member else None
+            about_you = f",{attendee['id']}," in (r["about"] or "")
+            if not (rooms[rid] or about_you):
+                continue
+            out.append(
+                {
+                    "outcome": r["outcome"],
+                    "categories": r["categories"],
+                    "room": rooms[rid],
+                    "excerpt": r["excerpt"] if rooms[rid] else None,
+                    "about_you": about_you,
+                    "created_at": r["created_at"],
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
+
     async def require_member(self, attendee: dict, room: dict) -> None:
         if attendee["mm_user_id"] not in await self.room_members(room):
             raise HallwayError(f"You (and {attendee['name']}) are not in #{room['name']}.")

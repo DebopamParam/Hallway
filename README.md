@@ -99,8 +99,12 @@ full list is in
 [what still fails open](#the-privacy-guard-and-what-still-fails-open).
 
 **Can I see what the guard caught?**
-Yes. The privacy log in the app lists the event's 30 most recent guard catches:
-what kind of detail it was, and the message with that detail removed.
+Your share of it. `GET /api/privacy-log` (signed in) lists up to 30 recent guard
+catches you're entitled to see: those in rooms you're in, with the kind of
+detail and the message with that detail removed; and those anywhere that caught
+one of *your* private contact values, marked `about_you`, with the kind of
+detail but no text, since the room isn't yours. Nobody sees another room's
+messages through it. The app doesn't show this list yet.
 
 **Does my agent run on Hallway's servers? Does Hallway get my model keys?**
 No. In Connect and Live mode your agent runs on your own machine with your own

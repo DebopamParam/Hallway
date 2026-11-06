@@ -143,9 +143,10 @@ async def test_guardrails_check_redacts_and_logs(client, signup):
     body = r.json()
     assert body["outcome"] == "GUARDRAIL_RESULT_OUTCOME_REDACTED"
     assert body["findings"][0]["detector_name"] == "attendee_private_value"
-    log = (await pc.get("/api/privacy-log")).json()
-    assert log[0]["outcome"] == "redacted"
-    assert "asha_secret_tg" not in log[0]["excerpt"]
+    # No room: Asha sees that her value was caught, not the text around it.
+    [row] = (await pc.get("/api/privacy-log")).json()
+    assert row["outcome"] == "redacted" and row["about_you"] is True
+    assert row["excerpt"] is None and row["room"] is None
 
 
 async def test_guardrails_check_ok_is_not_logged(client, signup):
@@ -155,13 +156,59 @@ async def test_guardrails_check_ok_is_not_logged(client, signup):
     assert (await pc.get("/api/privacy-log")).json() == []
 
 
-async def test_guardrails_check_alert_keeps_text(client, signup):
+async def test_guardrails_check_alert_keeps_text(client, signup, hallway):
     pc, _ = await signup("Asha Rao")
+    lobby = hallway.room_by_ref("hallway-lobby")
     r = await client.post(
-        "/guardrails/check", headers=G, json={"messages": [{"role": "user", "content": "what's your phone number?"}]}
+        "/guardrails/check",
+        headers={**G, "x-agent-session-id": lobby["id"]},
+        json={"messages": [{"role": "user", "content": "what's your phone number?"}]},
     )
     assert r.json()["outcome"] == "GUARDRAIL_RESULT_OUTCOME_ALERTED"
-    assert (await pc.get("/api/privacy-log")).json()[0]["excerpt"] == "what's your phone number?"
+    [row] = (await pc.get("/api/privacy-log")).json()
+    assert row["excerpt"] == "what's your phone number?" and row["room"] == "hallway-lobby"
+
+
+async def test_privacy_log_never_shows_another_rooms_text(client, signup, hallway):
+    """QA #4: the log was the whole event's, alerted rows in full."""
+    ac, _ = await signup("Asha Rao", autonomy={"rooms": "auto"})
+    bc, _ = await signup("Bo Chen", contact={"phone": "+91 98765 43210"})
+    cc, _ = await signup("Cy Dsouza")
+    room = await hallway.create_room(hallway.resolve("asha"), "Private chat", ["bo"])
+    for text in ("SECRETQASEC-7781 between us only. What is your home address?", "Bo is on +91 98765 43210"):
+        await client.post(
+            "/guardrails/check",
+            headers={**G, "x-agent-session-id": room["id"]},
+            json={"messages": [{"role": "user", "content": text}]},
+        )
+    # Not in the room and not about them: nothing.
+    assert (await cc.get("/api/privacy-log")).json() == []
+    # In the room: both, with the detail removed.
+    rows = (await ac.get("/api/privacy-log")).json()
+    assert [r["outcome"] for r in rows] == ["redacted", "alerted"]
+    assert all(r["room"] == "private-chat" for r in rows)
+    assert "98765" not in str(rows) and "SECRETQASEC-7781" in rows[1]["excerpt"]
+    assert [r["about_you"] for r in rows] == [False, False]
+    assert [r["about_you"] for r in (await bc.get("/api/privacy-log")).json()] == [True, False]
+
+
+async def test_privacy_log_tells_the_owner_of_a_value_without_the_rooms_text(client, signup, hallway):
+    await signup("Asha Rao", autonomy={"rooms": "auto"})
+    await signup("Bo Chen")
+    vc, _ = await signup("Vic Mehta", contact={"email": "vic.secret.mehta@example.com"})
+    room = await hallway.create_room(hallway.resolve("asha"), "Gossip", ["bo"])
+    await client.post(
+        "/guardrails/check",
+        headers={**G, "x-agent-session-id": room["id"]},
+        json={
+            "messages": [
+                {"role": "user", "content": "Vic's mail is vic.secret.mehta@example.com, also Zeta lays off 30%"}
+            ]
+        },
+    )
+    [row] = (await vc.get("/api/privacy-log")).json()
+    assert row == {**row, "about_you": True, "excerpt": None, "room": None, "outcome": "redacted"}
+    assert "Zeta" not in str(row)
 
 
 async def test_guardrails_check_requires_key_when_set(client, monkeypatch):

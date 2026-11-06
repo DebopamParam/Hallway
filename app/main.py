@@ -766,8 +766,7 @@ async def notices(hw_session: str | None = Cookie(None)) -> list[dict]:
 
 @app.get("/api/privacy-log")
 async def privacy_log(hw_session: str | None = Cookie(None)) -> list[dict]:
-    _me(hw_session)
-    return hallway.store.all("SELECT outcome, categories, excerpt, created_at FROM guard_log ORDER BY id DESC LIMIT 30")
+    return await hallway.privacy_log(_me(hw_session))
 
 
 # ------------------------------------------------------------------ guard
@@ -877,6 +876,7 @@ async def guardrails_check(request: Request) -> dict:
     if outcome != "ok":
         try:
             excerpt = guard.redact(content, findings) if outcome == "redacted" else content
+            about = hallway.store.private_owners([f.text for f in findings]) if outcome == "redacted" else []
             hallway.store.insert(
                 "guard_log",
                 room_id=request.headers.get("x-agent-session-id"),
@@ -884,6 +884,7 @@ async def guardrails_check(request: Request) -> dict:
                 outcome=outcome,
                 categories=", ".join(sorted({f.category for f in findings})),
                 excerpt=excerpt[:240],
+                about="," + ",".join(about) + "," if about else None,
                 created_at=time.time(),
             )
         except Exception:

@@ -449,12 +449,21 @@ def _m5_live_agent_proof(db: sqlite3.Connection) -> None:
     db.execute("UPDATE attendees SET agent_verified = 0 WHERE mode = 'live'")
 
 
+def _m6_guard_log_about(db: sqlite3.Connection) -> None:
+    """5 -> 6: guard_log.about, the attendees whose private values a check
+    caught (",id1,id2,"), so each can see what was caught about them and
+    nobody else's. Older rows are about nobody."""
+    if "about" not in {r[1] for r in db.execute("PRAGMA table_info(guard_log)")}:
+        db.execute("ALTER TABLE guard_log ADD COLUMN about TEXT")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m1_base_schema,
     _m2_hash_tokens,
     _m3_indexes,
     _m4_structured_notices,
     _m5_live_agent_proof,
+    _m6_guard_log_about,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -616,6 +625,15 @@ class Store:
                 self.private_version += 1
             self._private, self._private_read_at = fresh, now
         return [v for vals in self._private.values() for v in vals]
+
+    def private_owners(self, texts: list[str]) -> list[str]:
+        """The attendees one of whose private values is in one of `texts` (the
+        guard's findings)."""
+        self.private_values()
+        found = [t.lower() for t in texts]
+        return sorted(
+            aid for aid, vals in (self._private or {}).items() if any(v.lower() in t for v in vals for t in found)
+        )
 
     def kv_get(self, key: str) -> Any:
         row = self.db.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
