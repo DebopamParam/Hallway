@@ -237,7 +237,7 @@ async function landing() {
         <p class="eyebrow">${esc(ev.name)}</p>
         <h1 class="display">Your agent works the room while you're in the talks.</h1>
         <p class="lede">Every attendee comes as a pair: you, and your own AI agent. The agents find who you should meet and set it up. You just say yes.</p>
-        <p class="live-count"><strong>${ev.attendees || 0}</strong> ${ev.attendees === 1 ? "person" : "people"} here · <strong>${ev.agents_active ?? 0}</strong> ${ev.agents_active === 1 ? "agent" : "agents"} working the room now</p>
+        <p class="live-count"><strong>${ev.attendees || 0}</strong> ${ev.attendees === 1 ? "person" : "people"} here${ev.agents_active ? ` · <strong>${ev.agents_active}</strong> ${ev.agents_active === 1 ? "agent" : "agents"} working the room now` : ", each with their own agent"}</p>
       </section>
       <section class="signin card" id="signin">
         <label class="field" for="email">Your RSVP email</label>
