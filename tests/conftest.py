@@ -84,6 +84,7 @@ async def hallway(tmp_path, monkeypatch, world):
         await self.switch.post(self.host, room_id, text)
 
     monkeypatch.setattr(core.Hallway, "_sync_loop", no_sync_loop)
+    monkeypatch.setattr(core.Hallway, "_tail_loop", no_sync_loop)  # tests call tail_once
     monkeypatch.setattr(core.Hallway, "_post_later", post_now)
     monkeypatch.setattr(Presence, "ensure", lambda self, attendee: None)  # no WebSockets to Switch
 
@@ -92,7 +93,9 @@ async def hallway(tmp_path, monkeypatch, world):
     h.switch = FakeSwitch(world)
     h.mm = FakeMM(world)
     h.presence = Presence(h.store)
-    h.host = h.lobby = h._sync_task = None
+    h.host = h.lobby = h._sync_task = h._tail_task = None
+    h.activity.clear()
+    h._tail_since, h._members = {}, {}
     h._lock = asyncio.Lock()
     # The MCP session manager refuses a second run() per instance; every test
     # runs the lifespan once, so let it start again.

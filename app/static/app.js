@@ -1312,6 +1312,7 @@ function passView(me) {
       ${p.recent.length ? `<ul class="feed">${p.recent.map((r) => `<li class="feed-item"><span class="feed-ic ${r.ok ? "" : "k-bad"}">${icon(r.ok ? "bolt" : "x", "sm")}</span>
         <div class="grow"><div class="feed-text">${esc(r.summary)}</div><time>${ago(r.created_at)} · ${usd(r.cost_usd)}</time></div></li>`).join("")}</ul>`
         : '<p class="small muted">Nothing yet. Its first run starts within a minute.</p>'}</section>
+    ${modeSwitch(me)}
     ${commonSections(me)}
   </div>`, { title: "" });
   document.getElementById("pause")?.addEventListener("click", async () => {
@@ -1326,6 +1327,7 @@ function passView(me) {
     } catch (e) { toast(e.message); }
   });
   bindCommon(me);
+  bindModeSwitch(me);
   const seen = JSON.stringify([p.runs, p.status]);
   every(5000, async () => {
     try {
@@ -1340,6 +1342,28 @@ function passView(me) {
 
 const CONNECT_TABS = [["cc", "Claude Code"], ["cx", "Codex"]];
 
+// Who drives the agent: the attendee's own (Connect) or the organiser's day pass.
+// The stand-in, rooms and meetings stay; a Live agent is moved by the organiser.
+function modeSwitch(me) {
+  if (!(state.event || {}).daypass_enabled || me.mode === "live") return "";
+  const opts = [["connect", "My own agent"], ["daypass", "Day pass"]];
+  return `<section class="block"><div class="block-head"><h2>Who runs your agent</h2></div>
+    <div class="seg" id="modeswitch" role="group" aria-label="Who runs your agent">${opts.map(([id, label]) => `<button data-mode="${id}" class="${me.mode === id ? "on" : ""}" aria-pressed="${me.mode === id}">${label}</button>`).join("")}</div>
+    <p class="small muted">${me.mode === "daypass" ? "The organiser runs it for you, within the day pass budget. Switch to your own Claude Code or Codex any time; what the pass spent stays spent." : "Your own Claude Code or Codex runs it. Or let the organiser run it with a day pass; your rooms, meetings and contacts stay as they are."}</p></section>`;
+}
+
+function bindModeSwitch(me) {
+  document.querySelectorAll("#modeswitch button").forEach((b) => (b.onclick = async () => {
+    const mode = b.dataset.mode;
+    if (mode === me.mode) return;
+    try {
+      state.me = await api("/api/me/mode", { body: { mode } });
+      toast(mode === "daypass" ? "Day pass on. Its next run starts within a minute." : "Switched. Give your agent the setup prompt.", "ok");
+      render();
+    } catch (e) { toast(e.message); }
+  }));
+}
+
 async function meView() {
   const me = state.me;
   if (me.pass) return passView(me);
@@ -1352,7 +1376,7 @@ async function meView() {
   const started = Boolean(pv.started_at || pv.checked_at);
   const steps = [
     { done: connected, title: live ? "Add Hallway's tools (optional)" : "Give your agent this prompt",
-      body: `<p class="small muted">${live ? "Your agent already talks in rooms through Switch. Paste this into Claude Code or Codex to add meetings, approvals and contact swaps." : "Paste it into Claude Code or Codex on your laptop. It connects to Hallway with your key, then starts working the hallway."}</p>
+      body: `<p class="small muted">${live ? "Your agent already talks in rooms through Switch. Paste this into Claude Code or Codex to add meetings, approvals and contact swaps." : "Paste it into Claude Code or Codex on your laptop. It adds Hallway's tools with your key and starts a small watcher that wakes your agent the moment something arrives for it, without an LLM polling."}</p>
         <div class="code-card"><div class="code-tabs"><div class="seg" id="ctabs" role="group" aria-label="Your agent">${CONNECT_TABS.map(([id, label], i) => `<button data-c="${id}" class="${i ? "" : "on"}" aria-pressed="${!i}">${label}</button>`).join("")}</div>
           <button class="iconbtn sm" id="copy" aria-label="Copy the prompt">${icon("copy", "sm")}</button></div>
           ${CONNECT_TABS.map(([id], i) => `<pre class="code prompt" id="${id}" ${i ? "hidden" : ""}>${esc(prompt(id))}</pre>`).join("")}</div>
@@ -1389,6 +1413,7 @@ async function meView() {
     </section>
     <section class="block"><div class="block-head"><h2>Agent key</h2><button class="btn ghost sm" id="rotate">${icon("key", "sm")}New key</button></div>
       <p class="small muted"><span class="mono" id="keyhint">${esc(c.token_hint)}</span> · A new key replaces this one at once. Your agent needs the new key to keep working.</p></section>
+    ${modeSwitch(me)}
     ${commonSections(me)}
   </div>`, { title: "" });
   let shown = "cc";
@@ -1418,6 +1443,7 @@ async function meView() {
   document.getElementById("rotate").onclick = rotate;
   document.getElementById("fill-key")?.addEventListener("click", rotate);
   bindCommon(me);
+  bindModeSwitch(me);
   const watchKey = JSON.stringify([connected, pv.passed, pv.checked_at, started, me.agent_verified]);
   every(5000, async () => {
     try {

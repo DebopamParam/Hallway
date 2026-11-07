@@ -305,30 +305,54 @@ def _kickoff() -> str:
 
 def _setup_prompt(agent: str, key: str) -> str:
     """What an attendee pastes into Claude Code or Codex: add (or replace) the
-    hallway MCP server with their key, then the kickoff. Both load MCP servers
-    when a session starts, so a changed key needs a restart: say so, since an
-    old session keeps answering "Unknown Hallway token" with the old key."""
+    hallway MCP server with their key, then start the watcher (/watch.mjs),
+    which runs the agent headless whenever the event feed has something new.
+    The watcher starts a fresh agent process each time, so a new key works at
+    once; only the session the prompt was pasted into keeps the old setup."""
     url = _mcp_url()
+    watch = (
+        "mkdir -p ~/.hallway-agent && "
+        f"curl -fsSL {settings.public_url}/watch.mjs -o ~/.hallway-agent/hallway-watch.mjs && "
+        "(pkill -f hallway-watch.mjs; "
+        f"HALLWAY_KEY={key} nohup node ~/.hallway-agent/hallway-watch.mjs {'claude' if agent == 'cc' else 'codex'} "
+        "> ~/.hallway-agent/watch.log 2>&1 &)"
+    )
     if agent == "cc":
         add = (
-            "1. Add the Hallway MCP server with your shell (remove an old one first, it may hold an old key):\n"
-            "   claude mcp remove hallway 2>/dev/null; "
-            f'claude mcp add --transport http hallway {url} --header "Authorization: Bearer {key}"\n'
-            "2. Claude Code loads MCP servers when a session starts. If the hallway tools aren't available to you "
-            "yet, tell me to run /mcp (reconnect) or restart Claude Code, then continue from step 3."
+            "1. Add the Hallway MCP server for your user (remove an old one first, it may hold an old key):\n"
+            "   claude mcp remove -s user hallway 2>/dev/null; "
+            f'claude mcp add -s user --transport http hallway {url} --header "Authorization: Bearer {key}"'
         )
-        loop = "\n\nTo keep working while I'm in talks, I can run this as /loop 5m <prompt>."
+        restart = "To use the hallway tools in this session too, restart Claude Code (or run /mcp)."
     else:
         add = (
             "1. In ~/.codex/config.toml, replace any existing [mcp_servers.hallway] section (it may hold an old key) "
             "with exactly:\n"
             f'[mcp_servers.hallway]\nurl = "{url}"\nhttp_headers = {{ "Authorization" = "Bearer {key}" }}\n'
-            "2. Codex loads MCP servers when a session starts, so this session still has the old setup. Tell me to "
-            'quit and run `codex resume --last`, then continue from step 3. Until then, "Unknown Hallway token" '
-            "means the old key is still loaded, not that the new one is wrong."
+            'default_tools_approval_mode = "approve"'
         )
-        loop = ""
-    return f"Set up Hallway for me, then work the event as my agent.\n\n{add}\n3. {_kickoff()}{loop}"
+        restart = (
+            "To use the hallway tools in this session too, quit and run `codex resume --last`: Codex loads MCP "
+            'servers when a session starts, so until then "Unknown Hallway token" means the old key is loaded.'
+        )
+    return (
+        "Set up Hallway for me. You'll set things up; a watcher then runs my agent whenever something happens "
+        f"at {settings.event_name}, so nobody has to poll.\n\n{add}\n"
+        "2. Start the Hallway watcher in the background (Node 18+). It waits on Hallway's event feed without an "
+        "LLM and runs a headless agent with only the hallway tools when there's news:\n"
+        f"   {watch}\n"
+        "3. Check ~/.hallway-agent/watch.log says it is watching, then tell me it's running and that I can follow "
+        f"it with: tail -f ~/.hallway-agent/watch.log. {restart}\n\n"
+        "If you test the endpoint by hand, use curl, Python httpx or requests, or Node fetch. Don't use Python's "
+        "urllib: Cloudflare, in front of public Hallway deployments, refuses its default user agent (HTTP 403)."
+    )
+
+
+@app.get("/watch.mjs")
+async def watch_script() -> Response:
+    """The watcher (static/hallway-watch.mjs) with this Hallway's address in it."""
+    body = (STATIC / "hallway-watch.mjs").read_text().replace("__HALLWAY_URL__", settings.public_url)
+    return Response(body, media_type="text/javascript; charset=utf-8")
 
 
 class StartAuth(BaseModel):
@@ -680,6 +704,53 @@ async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)) -> di
         web_lookup=body.web_lookup,
     )
     return _me_view(a)
+
+
+class ModeChange(BaseModel):
+    mode: str
+
+
+@app.post("/api/me/mode")
+async def change_mode(body: ModeChange, hw_session: str | None = Cookie(None)) -> dict:
+    """Switch between your own agent (connect) and a day pass (daypass)."""
+    a = hallway.switch_mode(_me(hw_session), body.mode)
+    log.info("attendee %s switched to %s mode", a["handle"], a["mode"])
+    return _me_view(a)
+
+
+# ---------------------------------------------------------------- event feed
+EVENTS_WAIT_MAX_S = 25  # under Cloudflare's 100 s, and short enough to notice a dead watcher
+
+
+@app.get("/agent/events")
+async def agent_events(request: Request, after: str = "", wait: float = 0) -> dict:
+    """The agent's event feed, for a watcher script or the day pass worker: no
+    LLM, no tokens. Holds the request up to `wait` seconds until something is
+    new for the agent (a mention, a message in one of its small rooms, a
+    meeting request, a decision), then returns it with the next `after`.
+    Authenticated like /mcp (the agent's key). Reading it marks nothing read."""
+    token = ""
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+    token = token or request.headers.get("x-hallway-key", "") or request.query_params.get("key", "")
+    a = hallway.store.mcp_attendee(token) if token else None
+    if not a:
+        raise HTTPException(401, "Unknown Hallway key.")
+    if not hallway.pass_usable(a):
+        raise HTTPException(403, "This day pass is paused or out of budget.")
+    if wait_s := limiter.hit("mcp_call", a["id"]):
+        raise HTTPException(429, f"Too many requests: wait {wait_s} s.")
+    cursor = None
+    if after:
+        try:
+            n, t = after.split(".", 1)
+            cursor = {"n": int(n), "t": int(t)}
+        except ValueError:
+            raise HTTPException(400, "Bad 'after': pass back the value from the last answer.") from None
+    events, cursor = await hallway.wait_events(a, cursor, max(0.0, min(wait, EVENTS_WAIT_MAX_S)))
+    hallway.store.update("attendees", a["id"], agent_seen_at=time.time())  # a watcher counts as the agent online
+    return {"events": events, "after": f"{cursor['n']}.{cursor['t']}"}
 
 
 class PassState(BaseModel):
@@ -1266,7 +1337,7 @@ async def daypass_due(request: Request, every_s: int | None = None) -> list[dict
     stored hashed): it expires within the hour and is revoked when the run reports."""
     _worker(request)
     out = []
-    for p in hallway.due_passes(settings.daypass_every_s if every_s is None else every_s):
+    for p in await hallway.woken_passes(settings.daypass_every_s if every_s is None else every_s):
         out.append(
             {
                 "attendee_id": p["attendee_id"],
@@ -1278,6 +1349,7 @@ async def daypass_due(request: Request, every_s: int | None = None) -> list[dict
                 "remaining_usd": _remaining_usd(p),
                 "here_for": p["profile"].get("here_for", ""),
                 "note": p["note"],
+                "events": p.get("events", []),  # what woke it, if anything did
             }
         )
     return out
