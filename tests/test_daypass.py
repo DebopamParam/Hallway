@@ -187,3 +187,41 @@ async def test_idle_pass_skips_rounds_until_someone_new_arrives(client, hallway,
     assert (await client.get("/internal/daypass/due?every_s=0", headers=W)).json() == []
     await signup("Bo Chen")  # someone new to look at
     assert [p["handle"] for p in (await client.get("/internal/daypass/due?every_s=0", headers=W)).json()] == ["sana"]
+
+
+@pytest.mark.parametrize("lobby", [True, False])
+async def test_lobby_choice_at_sign_up_reaches_the_first_run(client, signup, lobby):
+    """Chosen at sign-up, it's on the row before the pass is due: the first run
+    (handed over straight away) already knows whether to introduce them."""
+    await signup("Sana Qureshi", mode="daypass", lobby=lobby)
+    [due] = (await client.get("/internal/daypass/due", headers=W)).json()
+    assert due["runs"] == 0 and due["lobby"] is lobby
+
+
+async def test_letting_the_agent_into_the_lobby_wakes_it(client, hallway, signup):
+    """Turning the lobby on in the app is their ask: the agent starts now and
+    introduces them. Not again when it's already on, not when the agent turns it
+    on itself, and never in their own chat log."""
+    c, me = await signup("Sana Qureshi", mode="daypass", lobby=False)
+    aid = await attendee_id(hallway, "sana")
+    await report(client, aid, 0.01)
+    assert (await client.get("/internal/daypass/due", headers=W)).json() == []  # just ran
+
+    assert (await c.put("/api/me", json={"lobby_agent": True})).status_code == 200
+    [due] = (await client.get("/internal/daypass/due", headers=W)).json()
+    [ev] = due["events"]
+    assert due["lobby"] is True and ev["kind"] == "chat"
+    assert ev["text"].startswith("Sana (in the app): I've let you into the lobby. Introduce me")
+    assert (await c.get("/api/me/chat")).json()["messages"] == []
+    assert "lobby" not in str((await c.get("/api/notices")).json())
+
+    await report(client, aid, 0.01)
+    await c.put("/api/me", json={"lobby_agent": True})  # already on
+    assert (await client.get("/internal/daypass/due", headers=W)).json() == []
+
+    # The agent letting itself in (with their approval) isn't them asking it to start.
+    await c.put("/api/me", json={"lobby_agent": False})
+    res = await mcp_call(client, me["connect"]["token"], "change_settings", {"lobby": True})
+    assert (await c.post(f"/api/approvals/{res['approval_id']}", json={"approve": True})).status_code == 200
+    assert (await c.get("/api/me")).json()["lobby_agent"] is True
+    assert hallway.store.one("SELECT COUNT(*) AS n FROM notices WHERE attendee_id = ? AND kind = 'chat'", aid)["n"] == 1

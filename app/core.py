@@ -449,6 +449,7 @@ class Hallway:
         autonomy: dict | None,
         mode: str = "connect",
         live_agent_name: str | None = None,
+        lobby_agent: bool = False,
         is_persona: bool = False,
         onboarding_key: str | None = None,
     ) -> dict:
@@ -470,6 +471,7 @@ class Hallway:
                 autonomy=autonomy,
                 mode=mode,
                 live_agent_name=live_agent_name,
+                lobby_agent=lobby_agent,
                 is_persona=is_persona,
                 onboarding_key=onboarding_key,
             )
@@ -484,6 +486,7 @@ class Hallway:
         autonomy: dict | None,
         mode: str,
         live_agent_name: str | None,
+        lobby_agent: bool,
         is_persona: bool,
         onboarding_key: str | None,
     ) -> dict:
@@ -519,7 +522,7 @@ class Hallway:
         try:
             proof = await self._open_proof_room(handle, agent_name) if mode == "live" else None
             attendee = await self._create_attendee(
-                name, email, handle, agent_name, mode, profile, contact, autonomy, is_persona
+                name, email, handle, agent_name, mode, profile, contact, autonomy, is_persona, lobby_agent
             )
         finally:
             self._reserved_names -= names
@@ -543,6 +546,7 @@ class Hallway:
         contact: dict,
         autonomy: dict | None,
         is_persona: bool,
+        lobby_agent: bool = False,
     ) -> dict:
         try:
             mm_user, mm_password = await self.mm.create_user(handle, email, name)
@@ -566,7 +570,7 @@ class Hallway:
             mm_user_id=mm_user["id"],
             mm_password=mm_password,
             is_persona=int(is_persona),
-            lobby_agent=int(is_persona),  # people turn it on themselves, in the lobby
+            lobby_agent=int(is_persona or lobby_agent),  # people choose it at sign-up or in the lobby
             agent_verified=int(mode != "live"),  # a Live agent proves it is theirs first: verify_live_agent
             created_at=time.time(),
         )
@@ -1085,6 +1089,21 @@ class Hallway:
             attendee["id"], "chat", f"{first} (in the app): {text}", actor=Actor.person(attendee), audience="agent"
         )
         return mid
+
+    def lobby_opened(self, attendee: dict) -> None:
+        """They just let their agent into the lobby. It hears that as their ask, so a
+        day pass introduces them now, not at a timed round that may never come."""
+        if attendee["mode"] not in STAND_IN_MODES:
+            return
+        first = attendee["name"].split()[0]
+        self.store.notice(
+            attendee["id"],
+            "chat",
+            f"{first} (in the app): I've let you into the lobby. Introduce me there in one line, then find one or "
+            "two people worth meeting.",
+            actor=Actor.person(attendee),
+            audience="agent",
+        )
 
     def chat_from_agent(self, attendee: dict, text: str) -> None:
         if text := text.strip():

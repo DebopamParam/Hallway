@@ -191,15 +191,12 @@ async def register(
             "contact": contact or {},
             "autonomy": {**({"join_rooms": "auto"} if rooms_open else {}), **(autonomy or {})},
             "mode": mode,
+            "lobby_agent": lobby,
             **extra,
         },
     )
     assert r.status_code == 200, r.text
-    me = r.json()
-    if lobby:
-        assert (await client.put("/api/me", json={"lobby_agent": True})).status_code == 200
-        me["lobby_agent"] = True
-    return me
+    return r.json()
 
 
 @pytest.fixture
