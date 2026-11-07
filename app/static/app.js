@@ -1303,11 +1303,7 @@ function passView(me) {
         ${p.status === "spent" ? "" : `<button class="btn ${p.status === "paused" ? "signal" : "ghost"} sm" id="pause">${icon(p.status === "paused" ? "play" : "pause", "sm")}${p.status === "paused" ? "Resume" : "Pause"}</button>`}</div>
       <p class="tiny muted">The organiser runs it with Hallway's tools only, and it stops by itself at the cap. ${me.privacy && me.privacy.passed ? "It passed the privacy check." : ""}</p>
     </section>
-    ${p.status === "spent" ? "" : `<section class="block"><div class="block-head"><h2>Tell your agent</h2></div>
-      <div class="fieldset"><label class="field" for="pass-note">What should it work on?</label>
-        <textarea id="pass-note" rows="2" maxlength="280" placeholder="Find me DevOps people working on Kubernetes.">${esc(p.note || "")}</textarea>
-        <div class="hint">${p.note_at ? `Sent ${ago(p.note_at)}. It reads this before every check.` : "It reads this before every check, next to what you're here for. Your agent may quote it, so keep private details out."}</div></div>
-      <button class="btn signal sm" id="save-note">Send to my agent ${icon("arrow", "sm")}</button></section>`}
+    ${p.status === "spent" ? "" : chatSection(me, false)}
     <section class="block"><div class="block-head"><h2>What it did</h2></div>
       ${p.recent.length ? `<ul class="feed">${p.recent.map((r) => `<li class="feed-item"><span class="feed-ic ${r.ok ? "" : "k-bad"}">${icon(r.ok ? "bolt" : "x", "sm")}</span>
         <div class="grow"><div class="feed-text">${esc(r.summary)}</div><time>${ago(r.created_at)} · ${usd(r.cost_usd)}</time></div></li>`).join("")}</ul>`
@@ -1318,26 +1314,86 @@ function passView(me) {
   document.getElementById("pause")?.addEventListener("click", async () => {
     try { state.me = await api("/api/me/pass", { body: { paused: p.status !== "paused" } }); render(); } catch (e) { toast(e.message); }
   });
-  const note = document.getElementById("pass-note");
-  document.getElementById("save-note")?.addEventListener("click", async () => {
-    try {
-      state.me = await api("/api/me/pass", { body: { note: note.value } });
-      toast(note.value.trim() ? "Sent. Your agent acts on it at its next check." : "Cleared.", "ok");
-      render();
-    } catch (e) { toast(e.message); }
-  });
   bindCommon(me);
   bindModeSwitch(me);
+  bindChat(me);
   const seen = JSON.stringify([p.runs, p.status]);
   every(5000, async () => {
     try {
       state.me = await api("/api/me");
-      // Don't re-render over a request being typed.
-      const typing = note && (document.activeElement === note || note.value !== (p.note || ""));
+      // Don't re-render under someone typing to their agent.
+      const typing = document.activeElement && document.activeElement.id === "chat-in";
       if (!typing && JSON.stringify([state.me.pass.runs, state.me.pass.status]) !== seen) render();
       refreshPill();
     } catch { /* keep the last view */ }
   });
+}
+
+// Talking to your own agent: what you asked, its replies, and each Hallway tool
+// it calls on the way (written by the server as it happens). Polled while open.
+function chatSection(me, connect) {
+  const c = chatState(me);
+  return `<section class="block agent-chat"><div class="block-head"><h2>Talk to your agent</h2><span class="chat-state small" id="chat-state"></span></div>
+    <div class="chat-log" id="chat-log" role="log" aria-live="polite" aria-label="Your conversation with your agent">${chatLog(c)}</div>
+    <form class="chat-compose" id="chat-form"><label class="sr-only" for="chat-in">Message your agent</label>
+      <textarea id="chat-in" rows="1" maxlength="1000" placeholder="Find me GTM people to hire">${esc(c.draft)}</textarea>
+      <button class="iconbtn chat-send" id="chat-send" aria-label="Send">${icon("arrow", "sm")}</button></form>
+    <p class="tiny muted">${connect ? "Reaches your agent through its watcher in a second or two." : "It starts the moment you send."} Others never see this chat; your agent may quote it, so keep private details out.</p></section>`;
+}
+
+function chatState(me) {
+  if (!state.chat || state.chat.who !== me.handle) state.chat = { who: me.handle, msgs: [], last: 0, busy: false, draft: "" };
+  return state.chat;
+}
+
+function chatLog(c) {
+  if (!c.msgs.length && !c.busy) return '<p class="small muted chat-empty">Ask it anything: who to meet, what\'s happening in the lobby, to set up a meeting. You\'ll see each step it takes here.</p>';
+  const rows = c.msgs.map((m) => m.role === "step"
+    ? `<div class="chat-step">${icon("bolt", "xs")}<span>${esc(m.text)}</span></div>`
+    : `<div class="msg ${m.role === "you" ? "out person" : "in agent"}"><div class="bubble-wrap"><div class="bubble">${esc(m.text)}</div><div class="meta"><time>${ago(m.at)}</time></div></div></div>`);
+  if (c.busy) rows.push('<div class="chat-typing" aria-label="Your agent is working"><i></i><i></i><i></i><span>Working</span></div>');
+  return rows.join("");
+}
+
+function bindChat(me) {
+  const c = chatState(me);
+  const log = document.getElementById("chat-log");
+  const input = document.getElementById("chat-in");
+  if (!log || !input) return;
+  const paint = () => {
+    const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+    log.innerHTML = chatLog(c);
+    if (atEnd) log.scrollTop = log.scrollHeight;
+  };
+  log.scrollTop = log.scrollHeight;
+  input.addEventListener("input", () => { c.draft = input.value; });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("chat-form").requestSubmit(); }
+  });
+  const poll = async () => {
+    try {
+      const r = await api(`/api/me/chat?after=${c.last}`);
+      const fresh = r.messages.filter((m) => m.id > c.last);
+      if (!fresh.length && r.busy === c.busy) return;
+      c.msgs = [...c.msgs, ...fresh].slice(-120);
+      if (fresh.length) c.last = fresh[fresh.length - 1].id;
+      c.busy = r.busy;
+      paint();
+    } catch { /* keep what's shown */ }
+  };
+  document.getElementById("chat-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    try {
+      await api("/api/me/chat", { body: { text } });
+      input.value = c.draft = "";
+      c.busy = true;  // it starts right away; the next poll confirms
+      await poll();
+      paint();
+    } catch (err) { toast(err.message); }
+  });
+  every(1500, poll);
 }
 
 const CONNECT_TABS = [["cc", "Claude Code"], ["cx", "Codex"]];
@@ -1411,6 +1467,7 @@ async function meView() {
           <details ${i === current ? "open" : ""}><summary><span class="ck" aria-hidden="true">${s.done ? icon("check", "sm") : s.bad ? icon("x", "sm") : i + 1}</span><span class="grow"><span class="sr-only">${s.done ? "Done" : s.bad ? "Failed" : `Step ${i + 1}`}: </span>${s.title}</span>${icon("chev", "sm chev")}</summary>
           <div class="ck-body">${s.body}</div></details></li>`).join("")}</ol>
     </section>
+    ${connected ? chatSection(me, true) : ""}
     <section class="block"><div class="block-head"><h2>Agent key</h2><button class="btn ghost sm" id="rotate">${icon("key", "sm")}New key</button></div>
       <p class="small muted"><span class="mono" id="keyhint">${esc(c.token_hint)}</span> · A new key replaces this one at once. Your agent needs the new key to keep working.</p></section>
     ${modeSwitch(me)}
@@ -1444,6 +1501,7 @@ async function meView() {
   document.getElementById("fill-key")?.addEventListener("click", rotate);
   bindCommon(me);
   bindModeSwitch(me);
+  bindChat(me);
   const watchKey = JSON.stringify([connected, pv.passed, pv.checked_at, started, me.agent_verified]);
   every(5000, async () => {
     try {
