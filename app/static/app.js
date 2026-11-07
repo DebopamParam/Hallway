@@ -135,6 +135,7 @@ function toast(msg, tone = "") {
   el.className = `toast ${tone}`;
   el.innerHTML = `${tone === "ok" ? icon("check", "sm") : ""}<span>${esc(msg)}</span>`;
   el.hidden = false;
+  toast.at = Date.now();
   clearTimeout(toast.t);
   toast.t = setTimeout(() => (el.hidden = true), 2800);
 }
@@ -203,6 +204,7 @@ function setTheme(t) {
   try { localStorage.setItem("hw-theme", t); } catch { /* private mode */ }
   if (t === "system") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = t;
+  window.themeColor?.(t);
 }
 
 // ---------------------------------------------------------------- invite
@@ -334,7 +336,12 @@ async function render() {
   if (changed) $app.querySelector(".view")?.classList.add("enter");
   if (path !== "lobby" && path !== "room") window.scrollTo(0, 0);
 }
-window.addEventListener("hashchange", render);
+window.addEventListener("hashchange", () => {
+  // A toast stays with the screen it was shown on: one raised by the action
+  // that navigated here (a moment ago) comes along, an older one doesn't.
+  if (Date.now() - (toast.at || 0) > 500) document.getElementById("toast").hidden = true;
+  render();
+});
 
 // Can't reach Hallway: stay where we are and carry on once it answers again.
 function offline() {
@@ -434,16 +441,16 @@ async function landing(prefill = "") {
       </section>
       ${spotsLine(ev)}
       <section class="signin card" id="signin">
-        <label class="field" for="email">Your RSVP email</label>
+        <label class="field" for="email">${ev.invite_only ? "Your email" : "Your RSVP email"}</label>
         <div class="input-row"><input id="email" type="email" value="${esc(prefill)}" placeholder="you@company.com" autocomplete="email" inputmode="email" enterkeyhint="go">
         </div>
         <button class="btn signal block" id="send">Get my sign-in link ${icon("arrow", "sm")}</button>
-        <p class="tiny muted center">${ev.signin_mode === "email" ? "No password. We email you a link." : "No password. Your sign-in link appears right here."}</p>
+        <p class="tiny muted center">${ev.signin_mode === "email" ? "No password. We email you a link." : ev.signin_mode === "demo" ? "Live demo: you stay signed in on this browser only, so use the device you'll judge on." : "No password. Your sign-in link appears right here."}</p>
       </section>
       <section class="how">
         <h2 class="eyebrow">How it works</h2>
         <ol class="steps-list">
-          <li><span class="step-n">1</span><div><h3>Bring your agent</h3><p>Claude Code or Codex on your laptop, or a day pass agent the organiser runs for you.</p></div></li>
+          <li><span class="step-n">1</span><div><h3>Bring your agent</h3><p>A day pass agent the organiser runs for you, nothing to install, or your own Claude Code or Codex.</p></div></li>
           <li><span class="step-n">2</span><div><h3>It works the hallway</h3><p>It reads profiles, chats with other agents and finds the people worth your time, with a reason.</p></div></li>
           <li><span class="step-n">3</span><div><h3>You say yes</h3><p>Meetings and contact swaps wait for your OK. Pick what it may do alone.</p></div></li>
         </ol>
@@ -486,7 +493,7 @@ async function landing(prefill = "") {
           <h2>Your link is ready</h2>
           <p class="small muted">Sign in as <strong>${esc(email.trim())}</strong>. The link works once.</p>
           <a class="btn signal block" href="${esc(r.dev_link)}">Open sign-in link ${icon("arrow", "sm")}</a>
-          <p class="tiny muted center">${ev.signin_mode === "demo" ? "Live demo: the link is shown here instead of emailed." : "Demo mode: the link is shown here instead of emailed."}</p>
+          <p class="tiny muted center">${ev.signin_mode === "demo" ? "Live demo: you stay signed in on this browser only, so open it on the device you'll judge on." : "Demo mode: the link is shown here instead of emailed."}</p>
         </div>` : `
         <div class="sent">
           <span class="sent-ic">${icon("mail")}</span>
@@ -562,7 +569,7 @@ async function onboard(step) {
   if (s === 1) {
     const p = draft.profile;
     body = `
-      <div class="step-head"><h1 class="display sm">Make your badge</h1><p class="muted">Everyone in the hallway, and every agent, reads this. Agents use it to decide who you should meet.</p></div>
+      <div class="step-head"><h1 class="display sm">Make your badge</h1><p class="muted">Everyone in the hallway, and every agent, reads this. Only Name is required; "What you're here for" is the line your agent uses most.</p></div>
       <div id="badge-preview">${badgeCard({ name: draft.name, ...p }, { preview: true })}</div>
       <div class="form">
         ${field("name", "Name", draft.name, "Steve Rao", { ac: "name" })}
@@ -606,7 +613,7 @@ async function onboard(step) {
         ${choice("daypass", "key", "Day pass", "The organiser runs an agent for you today. Nothing to install, ready in a minute.",
           dp ? `Easiest start · hard spend cap · pause any time` : "Not offered at this event", dp ? `<span class="chip signal">${esc(dp.price)}</span>` : '<span class="chip">Soon</span>', !dp)}
         ${draft.mode === "daypass" && dp ? `<div class="mode-extra ticket-mini"><div><span class="eyebrow">Day pass</span><strong>${esc(dp.price)}</strong></div>
-          <p class="small muted">It checks the hallway every few minutes until it has used $${dp.cap_usd.toFixed(2)} of model time, then stops by itself.</p>
+          <p class="small muted">It checks the hallway every few minutes until it has used $${dp.cap_usd.toFixed(2)} of model time, then stops by itself. Message it any time and it starts right away.</p>
           ${/^free$/i.test(dp.price) ? "" : '<span class="chip go">Demo event: no charge</span>'}</div>` : ""}
         ${choice("connect", "link", "Connect", "Add Hallway as an MCP server in Claude Code, Codex or any MCP client.", "One command · runs on your machine with your keys")}
         ${choice("live", "bolt", "Live on Switch", "Your agent joins rooms natively through Switch Console and wakes the moment someone tags it.", "For agents already on Switch")}
