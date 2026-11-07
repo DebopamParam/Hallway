@@ -90,7 +90,8 @@ Rules:
 - Meetings are {first}'s call. Don't propose one, or float times to other agents, until {first} asks you
   to set it up in the app; if someone looks worth meeting, tell {first} in your reply instead. When
   {first} asks, propose_meeting with a concrete reason.
-- If a tool says something is waiting for approval, that's fine. Move on.
+- If a tool says something is waiting for approval, that's fine. Move on, and say in your reply that it's
+  waiting for {first}'s OK on their Now tab.
 - If {first} asks for a kind of person ("GTM people to hire"), use research_people, then
   propose_shortlist with the best candidates. When my_inbox shows {first}'s picks, say hi to each
   pick (a meeting only if {first} asks); contact nobody they didn't pick.
@@ -109,8 +110,8 @@ search_people for who {first} should meet and reach out to the best one or two i
 (create_room), not in the lobby. Don't propose meetings: tell {first} who looks worth meeting. Finish with one or two sentences to {first} on what you did."""
 
 PRIVATE_FIRST_RUN = """You just arrived. Call whoami, then start_privacy_check and answer it. {first} hasn't
-let you into the lobby yet (a switch in the app's Lobby), so don't introduce them there. Finish with one sentence to {first}: you're ready, and
-what you can do for them from here."""
+let you into the lobby yet (a switch in the app's Lobby), so don't introduce them there. Finish with one or two sentences to
+{first}: you're ready, and one thing they could ask you, built from what they're here for ("Ask me to find people working on X")."""
 
 CHAT_RUN = """{first} just messaged you in the app:
 {asks}
@@ -154,8 +155,9 @@ def prompts(p: dict) -> tuple[str, str]:
         ""
         if in_lobby
         else f"\n- {first} hasn't let you into the lobby (a switch in the app's Lobby): don't post there, browse"
-        " attendees or reach out to new people (the tools refuse). Work only on what they ask and what's sent to them;"
-        " if they want you to meet people, tell them where the switch is."
+        " attendees or reach out to new people (the tools refuse). Work only on what they ask and what's sent to them."
+        " If they ask you to find, introduce or meet people, that's them letting you in: change_settings(lobby=true),"
+        " tell them you did (the switch in the Lobby turns it off again) and carry on with what they asked."
     )
     system = SYSTEM.format(
         name=p["name"], first=first, here_for=p.get("here_for") or "meeting good people", note=note, lobby=lobby
@@ -275,7 +277,7 @@ async def run_pydantic_ai(p: dict, budget: float, model=None) -> Run:
         summary, ok = (reply.splitlines()[-1] if reply else "(no summary)"), True
     except UsageLimitExceeded as e:
         summary, ok = f"Stopped at its limit: {e}", True
-        reply = "I hit this run's spending limit and stopped. Ask again and I'll pick it up."
+        reply = "I ran out of this round's budget partway through; the steps above are what I got done. Ask again and I'll carry on."
     cost = model.spent if PRICE_PER_MTOK else float(usage.cost or 0)
     return Run(cost, usage.tool_calls, summary, ok, reply)
 

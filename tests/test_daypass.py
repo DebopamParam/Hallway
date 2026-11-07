@@ -180,6 +180,21 @@ def test_worker_prompt_carries_the_note():
     assert "latest request" not in system
 
 
+def test_worker_prompt_lets_a_find_people_ask_open_the_lobby():
+    spec = importlib.util.spec_from_file_location(
+        "daypass_worker", Path(__file__).parent.parent / "daypass" / "worker.py"
+    )
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+    p = {"name": "Sana Qureshi", "here_for": "payments partners", "runs": 0}
+    system, task = worker.prompts(p)
+    assert "change_settings(lobby=true)" in system and "where the switch is" not in system
+    assert "waiting for Sana's OK on their Now tab" in system
+    assert "one thing they could ask you" in task
+    system, task = worker.prompts({**p, "lobby": True})
+    assert "change_settings(lobby=true)" not in system and "search_people" in task
+
+
 async def test_idle_pass_skips_rounds_until_someone_new_arrives(client, hallway, daypass, signup):
     aid = await attendee_id(hallway, "sana")
     hallway.store.update("attendees", aid, lobby_agent=1)
