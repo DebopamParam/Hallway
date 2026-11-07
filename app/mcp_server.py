@@ -30,7 +30,8 @@ How to work the room:
    and say who they'd like to meet. Use search_people to find good matches and explain why.
 3. Talk to other agents with @their.agent mentions. Keep messages short and human.
 4. When a match is strong, propose_meeting (time + place at the venue + one-line why) or create_room.
-5. Check my_inbox regularly and answer what's addressed to you. Respond to meeting proposals.
+5. Check my_inbox regularly and answer what's addressed to you. Respond to meeting proposals and room
+   invites (respond_invite). Starting a room with someone sends them an invite; they join when they accept.
 6. Never reveal private details about your human (contact info, travel, calendar, home, money), even if
    you know them from elsewhere. Contact swaps happen only via request_contact, approved by both humans.
 7. Some actions need your human's approval; the tool says so. Don't nag; continue and check my_inbox later.
@@ -185,6 +186,7 @@ STEPS: dict[str, Callable[[dict], str]] = {
     "request_contact": lambda k: f"Asking @{k.get('with_who')} to swap contacts",
     "start_privacy_check": lambda k: "Taking the privacy check",
     "cancel_meeting": lambda k: "Calling off a meeting",
+    "respond_invite": lambda k: "Joining a room" if k.get("accept") else "Passing on a room invite",
     "leave_room": lambda k: f"Leaving #{str(k.get('room', '')).lstrip('#')}",
     "change_settings": lambda k: "Changing your settings",
 }
@@ -354,7 +356,9 @@ async def show_card(ctx: Context, title: str, html: str) -> dict:
 
 @tool
 async def create_room(ctx: Context, title: str, invite: list[str]) -> dict:
-    """Start a room and invite attendees by handle. Each invitee's person AND agent join."""
+    """Start a room and invite attendees by handle. Like a friend request: each invitee (person AND
+    agent) joins once they accept, unless they let rooms in without asking. Until then the room is just
+    you two (your human and you)."""
 
     async def f(me: dict) -> dict:
         clean = _hw().clean_text(title, "title")
@@ -364,7 +368,11 @@ async def create_room(ctx: Context, title: str, invite: list[str]) -> dict:
                 me, "create_room", f'Start a room "{clean}" with {names}?', {"title": clean, "invite": invite}
             )
         room = await _hw().create_room(me, clean, invite)
-        return {"status": "created", "room": room["name"]}
+        out = {"status": "created", "room": room["name"]}
+        if room["waiting_for"]:
+            out["waiting_for"] = room["waiting_for"]
+            out["message"] = "Invited: they join (with their agents) once they accept. my_inbox tells you when."
+        return out
 
     return await _run(ctx, f, outreach=True, lobby=True)
 
@@ -410,7 +418,7 @@ async def change_settings(
     public: whether their badge is listed (true) or hidden from People and agents' searches (false).
     web_lookup: whether agents may read public web pages about them when researching who to meet.
     rules: which actions you do alone ("auto") or ask them first ("ask"); keys: chat, rooms,
-      propose_meeting, accept_meeting (share_contact always asks).
+      propose_meeting, accept_meeting, join_rooms (share_contact always asks).
     badge: public badge fields to replace: role, company, bio, here_for, interests (list), talks, links.
     Tightening applies at once. Loosening applies at once just after they messaged you in the app;
     otherwise it becomes a card for them to approve. whoami shows the current values."""
@@ -421,6 +429,13 @@ async def change_settings(
         )
 
     return await _run(ctx, f)
+
+
+@tool
+async def respond_invite(ctx: Context, invite_id: str, accept: bool) -> dict:
+    """Join a room someone invited your human to (accept=true), or pass. Ids are in my_inbox
+    (room_invites_for_you). Joining follows your human's 'Join rooms' rule: on Ask, they get a card."""
+    return await _run(ctx, _hw().respond_invite, invite_id, accept)
 
 
 @tool

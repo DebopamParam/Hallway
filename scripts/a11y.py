@@ -343,7 +343,9 @@ def run(browser, theme: str) -> None:
         timeout=20,
         cookies={c["name"]: c["value"] for c in ctx.cookies() if c["name"] == "hw_session"},
     )
-    my = me.put("/api/me", json={"lobby_agent": True}).json()  # its agent asks for approvals below
+    my = me.put(
+        "/api/me", json={"lobby_agent": True, "autonomy": {"join_rooms": "auto"}}
+    ).json()  # its agent asks for approvals below; the peer's room joins directly
 
     # A second attendee and their agent: a meeting request, a room, lobby chat.
     peer_c = client()

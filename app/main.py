@@ -863,6 +863,7 @@ async def rooms(hw_session: str | None = Cookie(None)) -> list[dict]:
                     "kind": room["kind"],
                     "meeting": meet,
                     "people": [{"name": x["name"], "handle": x["handle"]} for x in people],
+                    "waiting_for": hallway.invited_to(room),
                 }
             )
     return out
@@ -906,7 +907,22 @@ class NewRoom(BaseModel):
 @app.post("/api/rooms")
 async def new_room(body: NewRoom, hw_session: str | None = Cookie(None)) -> dict:
     room = await hallway.create_room(_me(hw_session), body.title, body.invite)
-    return {"name": room["name"], "title": room["title"]}
+    return {"name": room["name"], "title": room["title"], "waiting_for": room["waiting_for"]}
+
+
+@app.get("/api/invites")
+async def invites(hw_session: str | None = Cookie(None)) -> list[dict]:
+    """Room invites waiting on you: join, or pass."""
+    return hallway.invites(_me(hw_session))
+
+
+class InviteAnswer(BaseModel):
+    accept: bool
+
+
+@app.post("/api/invites/{invite_id}")
+async def answer_invite(invite_id: str, body: InviteAnswer, hw_session: str | None = Cookie(None)) -> dict:
+    return await hallway.respond_invite(_me(hw_session), invite_id, body.accept, by_person=True)
 
 
 # ------------------------------------------------- approvals, meetings, people
@@ -980,7 +996,12 @@ async def people(q: str = "", hw_session: str | None = Cookie(None)) -> list[dic
     """Public profiles, plus what the app needs to show where you stand with each
     person: is their agent active, is a meeting in play, have you swapped contacts."""
     a = _me(hw_session)
-    found = hallway.search_people(a, q, limit=100)
+    return _where_you_stand(a, hallway.search_people(a, q, limit=100))
+
+
+def _where_you_stand(a: dict, found: list[dict]) -> list[dict]:
+    """Add to public profiles what the app shows about you and each person: is
+    their agent online, is a meeting in play, have you swapped contacts."""
     by_handle = {x["handle"]: x for x in hallway.store.attendees()}
     meetings = {m["with"]: m for m in reversed(hallway.meetings(a)) if m["status"] not in ("declined", "cancelled")}
     contacts = {}
@@ -994,6 +1015,27 @@ async def people(q: str = "", hw_session: str | None = Cookie(None)) -> list[dic
         p["meeting"] = {k: m[k] for k in ("time", "place", "status", "room")} if m else None
         p["contact"] = contacts.get(other.get("id"))
     return found
+
+
+@app.get("/api/people/{handle}")
+async def person(handle: str, hw_session: str | None = Cookie(None)) -> dict:
+    """One person's full badge, opened from anywhere they appear. A private
+    badge shows only to people they already deal with: a shared room, a
+    meeting, a room invite or a contact request."""
+    a = _me(hw_session)
+    other = hallway.store.attendee(handle=handle.lstrip("@").lower())
+    if not other:
+        raise HTTPException(404, "No one with that handle.")
+    if not (other["listed"] or other["id"] == a["id"] or await hallway.knows(a, other)):
+        raise HTTPException(404, "This badge is private.")
+    p = public_profile(other)
+    p["shared"] = sorted(
+        {i.lower() for i in (a["profile"].get("interests") or [])}
+        & {i.lower() for i in (other["profile"].get("interests") or [])}
+    )
+    p["you"] = other["id"] == a["id"]
+    p["rooms_together"] = await hallway.rooms_together(a, other)
+    return _where_you_stand(a, [p])[0]
 
 
 class ContactReq(BaseModel):

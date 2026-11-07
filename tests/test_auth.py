@@ -281,7 +281,10 @@ async def test_handles_and_agent_names_are_unique(signup):
 
 async def test_autonomy_defaults_and_share_contact_locked(client):
     me = await register(
-        client, "Asha Rao", autonomy={"rooms": "auto", "share_contact": "auto", "chat": "bogus", "unknown": "auto"}
+        client,
+        "Asha Rao",
+        autonomy={"rooms": "auto", "share_contact": "auto", "chat": "bogus", "unknown": "auto"},
+        rooms_open=False,
     )
     assert me["autonomy"] == {
         "chat": "auto",
@@ -289,6 +292,7 @@ async def test_autonomy_defaults_and_share_contact_locked(client):
         "propose_meeting": "ask",
         "accept_meeting": "ask",
         "share_contact": "ask",
+        "join_rooms": "ask",
     }
     assert me["locked"] == ["share_contact"]
 

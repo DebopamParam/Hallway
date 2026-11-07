@@ -728,7 +728,7 @@ function bindPresets(target, onChange) {
 }
 
 // ---------------------------------------------------------------- now (home)
-const KIND_LABEL = { chat: "Chat", post: "Post a message", create_room: "Start a room", rooms: "Start a room", propose_meeting: "Propose a meeting", accept_meeting: "Accept a meeting", share_contact: "Swap contacts", shortlist: "Shortlist", settings: "Change your settings" };
+const KIND_LABEL = { chat: "Chat", post: "Post a message", create_room: "Start a room", rooms: "Start a room", propose_meeting: "Propose a meeting", accept_meeting: "Accept a meeting", share_contact: "Swap contacts", shortlist: "Shortlist", settings: "Change your settings", join_room: "Join a room" };
 
 // A shortlist card: the agent's candidates, rendered from data (never agent HTML),
 // each ticked or not. Approving sends the ticked handles; the agent reaches out to those.
@@ -797,7 +797,7 @@ function bindShortlist(card, onDone) {
     } catch (e) { toast(e.message); card.querySelectorAll("button, input").forEach((x) => (x.disabled = false)); sync(); }
   }));
 }
-const NOTICE_ICON = { agent_verified: "check", mention: "at", meeting_proposed: "calendar", meeting_confirmed: "check", meeting_declined: "x", meeting_cancelled: "x", contact_exchanged: "swap", approval: "bolt" };
+const NOTICE_ICON = { agent_verified: "check", mention: "at", meeting_proposed: "calendar", meeting_confirmed: "check", meeting_declined: "x", meeting_cancelled: "x", room_invite: "lobby", room_joined: "check", room_invite_declined: "x", contact_exchanged: "swap", approval: "bolt" };
 
 function greeting() {
   const h = new Date().getHours();
@@ -834,6 +834,9 @@ const NOTICE_LINE = {
   meeting_proposed: (n, a, p, mine) => has(a.name, p.time, p.place) && `${esc(a.name)} would like to meet you at ${esc(p.time)}, ${esc(p.place)}: ${rich(p.why, mine)}`,
   meeting_declined: (n, a, p) => has(a.name, p.time) && `${esc(a.name)} can't make ${esc(p.time)}.`,
   meeting_cancelled: (n, a, p) => has(a.name, p.time) && `${esc(a.name)} called off ${esc(p.time)}.`,
+  room_invite: (n, a, p) => has(a.name, p.title) && `<strong>${esc(a.name)}</strong> invited you to a room: ${esc(p.title)}`,
+  room_joined: (n, a, p) => has(a.name, p.title) && `<strong>${esc(a.name)}</strong> joined ${esc(p.title)}`,
+  room_invite_declined: (n, a, p) => has(a.name, p.title) && `${esc(a.name)} passed on ${esc(p.title)} for now`,
   meeting_confirmed: (n, a, p) => has(p.proposer_name, p.invitee_name, p.time, p.place) && `Meeting confirmed: ${esc(p.proposer_name)} + ${esc(p.invitee_name)} at ${esc(p.time)}, ${esc(p.place)}`,
   contact_exchanged: (n, a) => has(a.name) && `Contact details swapped with ${esc(a.name)}. They're in the app (People → Contacts).`,
   privacy_check: (n, a, p) => has(p.passed) && (p.passed ? "Privacy check passed: your agent kept your private details private. It can now talk in the lobby."
@@ -877,32 +880,42 @@ async function nowView() {
   let lastKey = "";
   let known = null;  // the cards already on screen: only new ones are announced
   const load = async () => {
-    const [list, meetings, notices] = await Promise.all([api("/api/approvals"), api("/api/meetings"), api("/api/notices")]);
+    const [list, meetings, notices, invites] = await Promise.all([api("/api/approvals"), api("/api/meetings"), api("/api/notices"), api("/api/invites")]);
     const pending = list.filter((a) => a.status === "pending");
     const incoming = meetings.filter((m) => m.status === "proposed" && !m.you_proposed);
-    const key = JSON.stringify([pending.map((a) => a.id), incoming.map((m) => m.id), meetings.map((m) => m.status), notices[0] && notices[0].id]);
+    const key = JSON.stringify([pending.map((a) => a.id), incoming.map((m) => m.id), invites.map((i) => i.id), meetings.map((m) => m.status), notices[0] && notices[0].id]);
     if (key === lastKey) return;
     lastKey = key;
-    const ids = [...pending.map((a) => `a${a.id}`), ...incoming.map((m) => `m${m.id}`)];
+    const ids = [...pending.map((a) => `a${a.id}`), ...incoming.map((m) => `m${m.id}`), ...invites.map((i) => `i${i.id}`)];
     if (known) {
       const fresh = [...incoming.filter((m) => !known.has(`m${m.id}`)).map((m) => `${m.with_name} wants to meet at ${m.time}`),
-        ...pending.filter((a) => !known.has(`a${a.id}`)).map((a) => `Your agent asks: ${a.summary}`)];
+        ...pending.filter((a) => !known.has(`a${a.id}`)).map((a) => `Your agent asks: ${a.summary}`),
+        ...invites.filter((i) => !known.has(`i${i.id}`)).map((i) => `${i.from_name} invited you to a room`)];
       if (fresh.length) announce(fresh.length === 1 ? fresh[0] : `${fresh.length} new cards need you. ${fresh[0]}`);
     }
     known = new Set(ids);
     // Keep a half-ticked shortlist's ticks when the cards redraw.
     const ticked = new Set([...needsEl.querySelectorAll("[data-pick-handle]:checked")].map((b) => b.dataset.pickHandle));
-    const needs = pending.length + incoming.length;
+    const needs = pending.length + incoming.length + invites.length;
     needsEl.innerHTML = `
       <div class="block-head"><h2>Needs you</h2>${needs ? `<span class="count">${needs}</span>` : ""}</div>
       ${needs ? `<div class="tickets">
         ${incoming.map((m) => `
           <article class="ticket" data-card>
-            <div class="ticket-top">${pair(m.with_name)}<div class="grow"><div class="ticket-kicker">Meeting request</div><div class="ticket-who">${esc(m.with_name)} wants to meet</div></div></div>
+            <div class="ticket-top">${pair(m.with_name)}<div class="grow"><div class="ticket-kicker">Meeting request</div><div class="ticket-who"><button class="name-btn" data-profile="${esc(m.with)}">${esc(m.with_name)}</button> wants to meet</div></div></div>
             <div class="ticket-when"><span class="t-time">${esc(m.time)}</span><span class="t-place">${esc(m.place)}</span></div>
             <p class="ticket-why">${esc(m.why)}</p>
             <div class="ticket-tear"></div>
             <div class="ticket-actions"><button class="btn ghost" data-meet="${m.id}" data-v="0">Can't make it</button><button class="btn primary" data-meet="${m.id}" data-v="1">${icon("check", "sm")}Accept</button></div>
+            <span class="stamp" aria-hidden="true"></span>
+          </article>`).join("")}
+        ${invites.map((i) => `
+          <article class="ticket" data-card>
+            <div class="ticket-top"><span class="tap" data-profile="${esc(i.from)}">${pair(i.from_name)}</span><div class="grow"><div class="ticket-kicker">Room invite</div><div class="ticket-who"><button class="name-btn" data-profile="${esc(i.from)}">${esc(i.from_name)}</button> invited you to a room</div></div></div>
+            <p class="ticket-why">“${esc(i.title)}”. You and your agent join together; their agent is in it too.</p>
+            <div class="ticket-meta">${ago(i.at)}</div>
+            <div class="ticket-tear"></div>
+            <div class="ticket-actions"><button class="btn ghost" data-invite="${i.id}" data-v="0">Not now</button><button class="btn primary" data-invite="${i.id}" data-v="1">${icon("check", "sm")}Join</button></div>
             <span class="stamp" aria-hidden="true"></span>
           </article>`).join("")}
         ${pending.map((a) => a.kind === "shortlist" ? shortlistTicket(a, me, ticked) : `
@@ -939,6 +952,8 @@ async function nowView() {
     }));
     needsEl.querySelectorAll(".shortlist").forEach((card) => bindShortlist(card, () => { lastKey = ""; load(); refreshCounts(); }));
     decideWith("[data-decide]", (b) => `/api/approvals/${b.dataset.decide}`, "approve", ["Approved", "Declined"]);
+    decideWith("[data-invite]", (b) => `/api/invites/${b.dataset.invite}`, "accept",
+      ["Joined", "Passed", (r, yes) => (yes ? "You're in. Your agent joined too." : "Passed for now")]);
     decideWith("[data-meet]", (b) => `/api/meetings/${b.dataset.meet}`, "accept",
       ["Accepted", "Declined", (r, yes) => (yes ? (r.status === "confirmed" ? "Meeting confirmed. A room is open for you both." : "Accepted") : "Declined")]);
   };
@@ -954,8 +969,8 @@ async function nowView() {
     cardsEl.hidden = false;
     cardsEl.innerHTML = `<div class="block-head"><h2>Notice Board</h2></div>
       ${list.length ? "" : '<p class="small muted">Your agent pins things here when they\'re worth a second look: who to meet and why, a meeting recap, a plan for the afternoon.</p>'}
-      <div class="agent-cards">${list.slice(0, 5).map((x, i) => `
-        <details class="agent-card-box" ${i ? "" : "open"}><summary><span class="grow">${esc(x.title)}</span><span class="muted small">${ago(x.created_at)}</span>${icon("chev", "sm")}</summary>
+      <div class="agent-cards">${list.slice(0, 5).map((x) => `
+        <details class="agent-card-box"><summary><span class="grow">${esc(x.title)}</span><span class="muted small">${ago(x.created_at)}</span>${icon("chev", "sm")}</summary>
           ${cardFrame(x.id, x.title)}</details>`).join("")}</div>`;
   };
   every(8000, () => loadCards().catch(() => {}));
@@ -988,7 +1003,9 @@ async function roomView(name, tab) {
   const info = rooms.find((x) => x.name === r.name);
   const members = info ? info.people : [];
   const sub = lobby ? `${plural(members.length, "person", "people")} · ${plural(members.length, "agent")}`
-    : r.kind === "meet" && info && info.meeting ? `${esc(info.meeting.time)} · ${esc(info.meeting.place)}` : `${plural(members.length, "person", "people")} + their agents`;
+    : r.kind === "meet" && info && info.meeting ? `${esc(info.meeting.time)} · ${esc(info.meeting.place)}`
+    : info && (info.waiting_for || []).length ? `Waiting for ${esc(info.waiting_for.map((p) => first(p.name)).join(", "))} to accept`
+    : `${plural(members.length, "person", "people")} + their agents`;
   const stack = `<span class="stack-av" aria-hidden="true">${members.slice(0, 3).map((p) => av(p.name, "person", "xs")).join("")}</span>`;
   shell(tab, `<div class="chat" id="chat" role="log" aria-label="Messages" aria-live="off"></div>
     <button class="newpill" id="newpill" hidden>${icon("send", "xs")}New messages</button>
@@ -1040,8 +1057,8 @@ async function roomView(name, tab) {
       const name = m.mine ? "You" : m.my_agent ? "Your agent" : kind === "agent" ? `${owner}'s agent` : owner;
       chat.insertAdjacentHTML("beforeend", `
         <div class="msg ${side} ${kind} ${cont ? "cont" : ""} ${initial ? "" : "fresh"}">
-          ${side === "in" ? av(owner, kind, "sm") : ""}
-          <div class="bubble-wrap">${cont ? `<span class="sr-only">${esc(name)}:</span>` : `<div class="meta">${kind === "agent" ? '<span class="bot-tag">Agent</span>' : ""}<span class="name">${esc(name)}</span><time>${clock(m.at)}</time></div>`}
+          ${side === "in" ? `<span class="tap" data-profile="${esc(ownerHandle(m.sender.handle))}">${av(owner, kind, "sm")}</span>` : ""}
+          <div class="bubble-wrap">${cont ? `<span class="sr-only">${esc(name)}:</span>` : `<div class="meta">${kind === "agent" ? '<span class="bot-tag">Agent</span>' : ""}${side === "in" ? `<button class="name name-btn" data-profile="${esc(ownerHandle(m.sender.handle))}">${esc(name)}</button>` : `<span class="name">${esc(name)}</span>`}<time>${clock(m.at)}</time></div>`}
           <div class="bubble">${rich(m.text, mine)}</div></div></div>`);
       prev = { handle: m.sender.handle, at: m.at };
     }
@@ -1108,7 +1125,7 @@ async function roomsView() {
     <div class="block-head"><h2>Your rooms</h2></div>
     ${rest.length ? `<div class="list">${rest.map((r) => `
       <a class="room-row" href="${href(r)}"><span class="room-ic">${icon("rooms", "sm")}</span>
-        <span class="grow"><strong>${esc(r.title)}</strong><span>With ${esc(others(r).map((p) => first(p.name)).join(", ") || "just you")}, plus agents</span></span>${icon("chev", "sm")}</a>`).join("")}</div>`
+        <span class="grow"><strong>${esc(r.title)}</strong><span>With ${esc(others(r).map((p) => first(p.name)).join(", ") || "just you")}, plus agents${(r.waiting_for || []).length ? ` · waiting for ${esc(r.waiting_for.map((p) => first(p.name)).join(", "))}` : ""}</span></span>${icon("chev", "sm")}</a>`).join("")}</div>`
       : '<p class="small muted">Start a room for a topic, or let your agent open one when it finds people who should talk.</p>'}
   </div>`, { title: "" });
   document.getElementById("new").onclick = () => newRoomSheet();
@@ -1116,7 +1133,7 @@ async function roomsView() {
 
 async function newRoomSheet(preselect = []) {
   const people = await api("/api/people");
-  await sheet(`<h2>New room</h2><p class="small muted">Each person you invite joins with their agent.</p>
+  await sheet(`<h2>New room</h2><p class="small muted">Each person you invite gets a request, and joins with their agent once they accept.</p>
     <div class="fieldset"><label class="field" for="rt">Room name</label><input id="rt" placeholder="PQC pilots" autocomplete="off"></div>
     <p class="field" id="invite-label">Invite</p>
     <div class="picker" role="group" aria-labelledby="invite-label">${people.length ? "" : '<p class="small muted">No one else has joined yet.</p>'}${people.map((p) => `<label class="pick"><input type="checkbox" data-h="${esc(p.handle)}" ${preselect.includes(p.handle) ? "checked" : ""}>
@@ -1127,7 +1144,12 @@ async function newRoomSheet(preselect = []) {
         const title = root.querySelector("#rt").value.trim();
         const invite = [...root.querySelectorAll("[data-h]")].filter((c) => c.checked).map((c) => c.dataset.h);
         if (!title || !invite.length) return toast("Name the room and pick someone");
-        try { const r = await api("/api/rooms", { body: { title, invite } }); close("ok"); go("room/" + encodeURIComponent(r.name)); } catch (e) { toast(e.message); }
+        try {
+          const r = await api("/api/rooms", { body: { title, invite } });
+          close("ok");
+          if (r.waiting_for && r.waiting_for.length) toast(`Invited ${r.waiting_for.map(first).join(", ")}. They join once they accept.`, "ok");
+          go("room/" + encodeURIComponent(r.name));
+        } catch (e) { toast(e.message); }
       };
     },
   });
@@ -1141,8 +1163,8 @@ function personCard(p) {
     : p.contact === "pending" ? `<button class="btn ghost sm" disabled>Swap requested</button>`
     : `<button class="btn ghost sm" data-contact="${esc(p.handle)}" data-name="${esc(p.name)}">${icon("swap", "sm")}Swap contacts</button>`;
   return `<article class="pcard">
-    <div class="person-top">${pair(p.name, p.agent_active, "lg")}
-      <div class="grow"><h3>${esc(p.name)}</h3><p class="person-role">${esc([p.role, p.company].filter(Boolean).join(" · "))}</p></div>
+    <div class="person-top"><span class="tap" data-profile="${esc(p.handle)}">${pair(p.name, p.agent_active, "lg")}</span>
+      <div class="grow"><h3><button class="name-btn" data-profile="${esc(p.handle)}">${esc(p.name)}</button></h3><p class="person-role">${esc([p.role, p.company].filter(Boolean).join(" · "))}</p></div>
       ${p.agent_active ? '<span class="agent-on" title="Their agent is online">Agent online</span>' : ""}</div>
     ${p.here_for ? `<p class="person-quote">${esc(p.here_for)}</p>` : p.bio ? `<p class="person-quote">${esc(p.bio)}</p>` : ""}
     ${p.shared && p.shared.length ? `<div class="common"><span class="common-k">In common</span>${p.shared.map((s) => `<span class="chip signal">${esc(s)}</span>`).join("")}</div>` : ""}
@@ -1151,6 +1173,93 @@ function personCard(p) {
       : `<button class="btn primary sm" data-room="${esc(p.handle)}" data-name="${esc(p.name)}">${icon("lobby", "sm")}Start a room</button>`}${contactBtn}</div>
   </article>`;
 }
+
+// Starting a room is a request: the other person joins (with their agent) once
+// they accept, unless they let rooms in without asking.
+async function startRoomWith(handle, name) {
+  const r = await api("/api/rooms", { body: { title: `${first(state.me.name)} + ${first(name)}`, invite: [handle] } });
+  if (r.waiting_for && r.waiting_for.length) toast(`Invited ${first(name)}. They join once they accept.`, "ok");
+  go("room/" + encodeURIComponent(r.name));
+}
+
+async function askSwap(handle, name) {
+  const who = first(name);
+  const ans = await sheet(`<div class="sheet-ic">${icon("swap")}</div><h2>Swap contacts with ${esc(who)}?</h2>
+    <p class="muted">You'll confirm on your Now screen, and ${esc(who)} will be asked too. Once you both say yes, you each see the other's details here. No agent ever sees them.</p>
+    <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-answer="yes">Ask to swap</button></div>`);
+  if (ans !== "yes") return false;
+  await api("/api/contacts", { body: { handle } });
+  toast("Requested. Approve it on your Now screen.", "ok");
+  refreshCounts();
+  return true;
+}
+
+// Anyone's full badge, opened by tapping them wherever they show up.
+const ownerHandle = (h) => String(h || "").replace(/\.agent$/, "");
+const linkHref = (v) => (/^https?:\/\//i.test(v) ? v : /^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(v) ? `//${v}` : "");
+async function openProfile(handle) {
+  let p;
+  try { p = await api(`/api/people/${encodeURIComponent(ownerHandle(handle))}`); } catch (e) { toast(e.message); return; }
+  const shared = new Set((p.shared || []).map((x) => x.toLowerCase()));
+  const sec = (title, body) => (body ? `<div class="pf-sec"><h3>${title}</h3>${body}</div>` : "");
+  const links = Object.entries(p.links || {}).filter(([, v]) => v).map(([k, v]) => {
+    const href = linkHref(v);
+    return `<li><span class="pf-k">${esc(k)}</span>${href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(v)}</a>` : `<span>${esc(v)}</span>`}</li>`;
+  }).join("");
+  const m = p.meeting;
+  const roomBtn = m && m.room ? `<a class="btn primary" href="#/room/${encodeURIComponent(m.room)}" data-close>${icon("lobby", "sm")}Open room</a>`
+    : `<button class="btn primary" id="pf-room">${icon("lobby", "sm")}Start a room</button>`;
+  const contactBtn = p.contact === "exchanged" ? `<span class="chip go">${icon("check", "xs")}Contacts swapped</span>`
+    : p.contact === "pending" ? '<button class="btn ghost" disabled>Swap requested</button>'
+    : `<button class="btn ghost" id="pf-swap">${icon("swap", "sm")}Swap contacts</button>`;
+  await sheet(`<div class="profile">
+    <div class="pf-top">${pair(p.name, p.agent_active, "lg")}<div class="grow"><h2>${esc(p.name)}</h2>
+      <p class="person-role">${esc([p.role, p.company].filter(Boolean).join(" · "))}</p>
+      <p class="pf-handle">@${esc(p.handle)} · ${p.agent_active ? '<span class="agent-on">Agent online</span>' : "Agent offline"}</p></div></div>
+    ${m ? `<div class="relation ${m.status === "confirmed" ? "go" : ""}">${icon("calendar", "xs")}${m.status === "confirmed" ? "Meeting" : "Proposed"} ${esc(m.time)} · ${esc(m.place)}</div>` : ""}
+    ${sec("Here for", p.here_for ? `<p>${esc(p.here_for)}</p>` : "")}
+    ${sec("About", p.bio ? `<p>${esc(p.bio)}</p>` : "")}
+    ${sec("Interests", (p.interests || []).length ? `<div class="pf-chips">${p.interests.map((i) => `<span class="chip ${shared.has(i.toLowerCase()) ? "signal" : ""}">${esc(i)}</span>`).join("")}</div>${shared.size ? '<p class="tiny muted">Highlighted: you share these.</p>' : ""}` : "")}
+    ${sec("Sessions they're attending", (p.talks || []).length ? `<div class="talks-mini">${p.talks.map((t) => `<span><b>${esc(t.slice(0, 5))}</b>${esc(t.slice(6))}</span>`).join("")}</div>` : "")}
+    ${sec("Links", links ? `<ul class="pf-links">${links}</ul>` : "")}
+    ${sec("Rooms together", (p.rooms_together || []).length ? `<div class="pf-rooms">${p.rooms_together.map((r) => `<a class="chip" href="#/room/${encodeURIComponent(r.room)}" data-close>${icon("lobby", "xs")}${esc(r.title)}</a>`).join("")}</div>` : "")}
+    ${p.you ? "" : `<button class="btn ghost wide pf-ask" id="pf-ask">${icon("agent", "sm")}Ask my agent about ${esc(firstName(p.name))}</button>`}
+    <div class="sheet-actions">${p.you ? '<button class="btn ghost" data-close>Close</button>' : `${contactBtn}${roomBtn}`}</div></div>`, {
+    onOpen: (root, close) => {
+      root.querySelector("#pf-ask")?.addEventListener("click", () => {
+        close("ask");
+        askAgentAbout(p);
+      });
+      root.querySelector("#pf-room")?.addEventListener("click", async (e) => {
+        e.target.disabled = true;
+        try { close("room"); await startRoomWith(p.handle, p.name); } catch (err) { toast(err.message); }
+      });
+      root.querySelector("#pf-swap")?.addEventListener("click", async () => {
+        close("swap");
+        try { await askSwap(p.handle, p.name); } catch (err) { toast(err.message); }
+      });
+    },
+  });
+}
+const firstName = (n) => String(n || "").trim().split(/\s+/)[0];
+// Opens your agent chat with a message about this person filled in, ready to
+// edit or send: what they're about, what's public about them, why to meet.
+function askAgentAbout(p) {
+  const who = [p.role, p.company].filter(Boolean).join(" at ");
+  chatState(state.me).draft = `Tell me about ${p.name} (@${p.handle})${who ? `, ${who}` : ""}. `
+    + "Search the web for their work and talks, then tell me if we should meet and how to open.";
+  const me = state.me;
+  const canChat = me.pass ? me.pass.status !== "spent" : Boolean(me.agent_seen_at);
+  state.chatFocus = canChat;
+  if (!canChat) toast(me.pass ? "Your day pass budget is used up" : "Connect your agent first: your question will be waiting in its chat");
+  location.hash = "#/me";
+}
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-profile]");
+  if (!t || !state.me) return;
+  e.preventDefault();
+  openProfile(t.dataset.profile);
+});
 
 async function peopleView() {
   shell("people", `<div class="page">
@@ -1189,17 +1298,10 @@ async function peopleView() {
       : `<div class="empty">${MARK("empty-mark")}<h2>You're early</h2><p class="small muted">No one else is here yet. As people arrive, the best matches show up first.</p></div>`);
     document.querySelectorAll("[data-room]").forEach((b) => (b.onclick = async () => {
       b.disabled = true;
-      try { const r = await api("/api/rooms", { body: { title: `${first(state.me.name)} + ${first(b.dataset.name)}`, invite: [b.dataset.room] } }); go("room/" + encodeURIComponent(r.name)); }
-      catch (e) { toast(e.message); b.disabled = false; }
+      try { await startRoomWith(b.dataset.room, b.dataset.name); } catch (e) { toast(e.message); b.disabled = false; }
     }));
     document.querySelectorAll("[data-contact]").forEach((b) => (b.onclick = async () => {
-      const who = first(b.dataset.name);
-      const ans = await sheet(`<div class="sheet-ic">${icon("swap")}</div><h2>Swap contacts with ${esc(who)}?</h2>
-        <p class="muted">You'll confirm on your Now screen, and ${esc(who)} will be asked too. Once you both say yes, you each see the other's details here. No agent ever sees them.</p>
-        <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-answer="yes">Ask to swap</button></div>`);
-      if (ans !== "yes") return;
-      try { await api("/api/contacts", { body: { handle: b.dataset.contact } }); toast("Requested. Approve it on your Now screen.", "ok"); refreshCounts(); load(); }
-      catch (e) { toast(e.message); }
+      try { if (await askSwap(b.dataset.contact, b.dataset.name)) load(); } catch (e) { toast(e.message); }
     }));
   };
   let t;
@@ -1415,7 +1517,17 @@ function bindChat(me) {
     if (atEnd) log.scrollTop = log.scrollHeight;
   };
   log.scrollTop = log.scrollHeight;
-  input.addEventListener("input", () => { c.draft = input.value; });
+  const fit = () => { input.style.height = "auto"; input.style.height = `${input.scrollHeight}px`; };
+  if (input.value) fit();
+  if (state.chatFocus) {
+    state.chatFocus = false;
+    setTimeout(() => {  // after render() puts the page back at the top
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(input.value.length, input.value.length);
+      document.getElementById("chat-form").scrollIntoView({ block: "center" });
+    });
+  }
+  input.addEventListener("input", () => { c.draft = input.value; fit(); });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("chat-form").requestSubmit(); }
   });
@@ -1437,6 +1549,7 @@ function bindChat(me) {
     try {
       await api("/api/me/chat", { body: { text } });
       input.value = c.draft = "";
+      fit();
       c.busy = true;  // it starts right away; the next poll confirms
       await poll();
       paint();
