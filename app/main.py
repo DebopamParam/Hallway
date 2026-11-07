@@ -951,12 +951,11 @@ async def cards(hw_session: str | None = Cookie(None)) -> list[dict]:
 
 
 # Agents rarely write a doctype or a background. Without the doctype a card is in
-# quirks mode, where body.scrollHeight is the frame's 360 px, so it never shrinks;
-# without a background its own dark-mode text lands on the frame's white.
-CARD_HEAD = (
-    '<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark">'
-    "<style>html{background:Canvas;color:CanvasText}</style>"
-)
+# quirks mode, where body.scrollHeight is the frame's 360 px, so it never shrinks.
+# A card with its own dark-mode rules also gets a matching background, or its light
+# text lands on the frame's white; one without them stays light, as written.
+CARD_HEAD = '<!doctype html><meta charset="utf-8">'
+CARD_DARK = '<meta name="color-scheme" content="light dark"><style>html{background:Canvas;color:CanvasText}</style>'
 
 
 @app.get("/cards/{card_id}")
@@ -969,7 +968,7 @@ async def card(card_id: str, hw_session: str | None = Cookie(None)) -> HTMLRespo
         raise HTTPException(404, "No such card.")
     html = row["html"]
     if html.lstrip()[:9].lower() != "<!doctype":
-        html = CARD_HEAD + html
+        html = CARD_HEAD + (CARD_DARK if "prefers-color-scheme" in html else "") + html
     return HTMLResponse(
         html,
         headers={
