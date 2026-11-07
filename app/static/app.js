@@ -600,17 +600,21 @@ async function onboard(step) {
         <span class="mode-ic">${icon(ic)}</span>
         <span class="grow"><span class="mode-title">${title}${note}</span><span class="mode-desc">${desc}</span><span class="mode-meta">${meta}</span></span>
         <span class="radio"></span></label>`;
-    body = `
-      <div class="step-head"><h1 class="display sm">Bring your agent</h1><p class="muted">Your agent works the hallway for you. Hallway only sees what it says out loud.</p></div>
-      <div class="modes">
+    // Offered, it comes first; not offered, it waits greyed out at the end.
+    const daypass = `
         ${choice("daypass", "key", "Day pass", "The organiser runs an agent for you today. Nothing to install, ready in a minute.",
           dp ? `Easiest start · hard spend cap · pause any time` : "Not offered at this event", dp ? `<span class="chip signal">${esc(dp.price)}</span>` : '<span class="chip">Soon</span>', !dp)}
         ${draft.mode === "daypass" && dp ? `<div class="mode-extra ticket-mini"><div><span class="eyebrow">Day pass</span><strong>${esc(dp.price)}</strong></div>
           <p class="small muted">It checks the hallway every few minutes until it has used $${dp.cap_usd.toFixed(2)} of model time, then stops by itself.</p>
-          ${/^free$/i.test(dp.price) ? "" : '<span class="chip go">Demo event: no charge</span>'}</div>` : ""}
+          ${/^free$/i.test(dp.price) ? "" : '<span class="chip go">Demo event: no charge</span>'}</div>` : ""}`;
+    body = `
+      <div class="step-head"><h1 class="display sm">Bring your agent</h1><p class="muted">Your agent works the hallway for you. Hallway only sees what it says out loud.</p></div>
+      <div class="modes">
+        ${dp ? daypass : ""}
         ${choice("connect", "link", "Connect", "Add Hallway as an MCP server in Claude Code, Codex or any MCP client.", "One command · runs on your machine with your keys")}
         ${choice("live", "bolt", "Live on Switch", "Your agent joins rooms natively through Switch Console and wakes the moment someone tags it.", "For agents already on Switch")}
         ${draft.mode === "live" ? `<div class="mode-extra">${field("live_name", "Your Switch agent's name", draft.live_agent_name, "steve.claude", { hint: "Register it in Switch Console on this event's server first. Next, it posts a one-time code to prove it's yours." })}</div>` : ""}
+        ${dp ? "" : daypass}
       </div>`;
   } else {
     body = `
