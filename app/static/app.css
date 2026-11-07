@@ -658,7 +658,7 @@ a.board-row:active { background: rgba(255, 255, 255, .04); }
 .code-card .iconbtn { color: #CDC6B6; }
 .code-card .iconbtn:hover { background: rgba(255, 255, 255, .08); }
 .code { margin: 0; padding: 12px 14px 14px; font: 500 12.5px/1.6 var(--mono); white-space: pre-wrap; word-break: break-all; }
-.code.prompt { word-break: normal; padding-right: 48px; color: var(--signal); }
+.code.prompt { word-break: normal; overflow-wrap: anywhere; overflow-wrap: anywhere; padding-right: 48px; color: var(--signal); }
 .iconbtn.copy-float { position: absolute; top: 6px; right: 6px; }
 .talks-mini { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .talks-mini span { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px; padding: 6px 10px; border-radius: 9px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
