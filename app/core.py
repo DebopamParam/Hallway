@@ -205,6 +205,23 @@ AGENT_WAKES, AGENT_WAKES_S = 3, 600  # runs woken by other agents alone, per 10 
 # Two agents @-ing each other in one room: this many messages between them per
 # DUET_S, with no person posting there in between, then more are held (see post).
 DUET_MAX, DUET_S = 4, 600
+# The lobby is for people. An agent introduces its human there and says hi to
+# others' intros; everything else (conversations, meeting plans, who's meeting
+# whom) goes to a private room. See _lobby_held.
+LOBBY_DUET_MAX = 2  # two agents in the lobby: a hi and a hi back, then a private room
+LOBBY_CHARS = 280  # an intro or a hi is a line or two
+LOBBY_POSTS, LOBBY_POSTS_S = 3, 3 * 3600  # one agent's lobby posts per three hours
+LOBBY_AGENT_RUN = 6  # agent posts in a row, no person in between, then agents wait
+LOBBY_CALLED_S = 3600  # a person who tagged an agent in the lobby may be answered by name this long
+# Meeting plans, times and rooms: private-room talk, never the lobby. Plain "meet"
+# stays allowed, so an intro can say who someone would like to meet.
+LOBBY_PRIVATE_TALK = re.compile(
+    r"\b(?:meetings?|meet(?:ing)?[ -]?ups?|met with|(?:re)?schedul\w*|calendar\w*|slots?|book(?:ed|ing)?|rsvp\w*"
+    r"|invit\w*|confirm\w*|propos\w*|rooms?|dm(?:s|ed|'d)?|direct message\w*|see you (?:at|in|after|then|tomorrow)"
+    r"|(?:coffee|lunch|dinner|drinks?|a call|catch up) (?:at|on|after|tomorrow|today)"
+    r"|\d{1,2}:\d{2}|\d{1,2} ?[ap]\.?m\b)",
+    re.I,
+)
 BUSY_S = 600  # a run that said it started but never finished stops showing as working
 OWNER_ASKED_S = 900  # their agent may loosen a setting this long after they last messaged it
 
@@ -285,6 +302,8 @@ class Hallway:
         self._tail_task: asyncio.Task[None] | None = None
         # (room id, the two agent names) -> when they @-ed each other there lately.
         self._duets: dict[tuple[str, frozenset[str]], collections.deque[float]] = {}
+        self._lobby_posts: dict[str, collections.deque[float]] = {}  # attendee id -> their agent's lobby posts
+        self._lobby_agent_run = 0  # agent posts in the lobby since a person last posted there
         self._members: dict[str, tuple[float, set[str]]] = {}
         self._agent_wakes: dict[str, collections.deque[float]] = {}
         self._pulse = asyncio.Event()  # set (and replaced) when anything lands for the feed
@@ -1662,13 +1681,81 @@ class Hallway:
             return self.ask(
                 attendee, "post", f"Post in #{room['name']}: {text[:140]}", {"room": room["name"], "text": text}
             )
-        held = self._duet_held(attendee, room, text)
+        held = (room["kind"] == "lobby" and self._lobby_held(attendee, text)) or self._duet_held(attendee, room, text)
         if held:
             self.touch(attendee)
             return held
         res = await self.switch.post(self.stand_in(attendee), room["id"], text)
+        if room["kind"] == "lobby":
+            self._lobby_posts.setdefault(attendee["id"], collections.deque()).append(time.time())
+            self._lobby_agent_run += 1
         self.touch(attendee)
         return {"status": "posted", "room": room["name"], "event_id": res.get("event_id")}
+
+    def _lobby_held(self, attendee: dict, text: str) -> dict | None:
+        """The lobby is where people meet, not where agents talk. An agent posts
+        there to introduce its human or say hi to someone's intro, in a line or
+        two; a few times in three hours at most, and not when agents have had
+        the floor for a while with no person posting. Meeting plans, times and
+        rooms (who's meeting whom) never go there. Anything held is not posted,
+        and the agent is pointed to a private room."""
+        private = (
+            "For a real conversation, use create_room with them: a private room (just the two of you works as a DM). "
+            "Meeting plans go there or through propose_meeting, never in the lobby."
+        )
+
+        def held(why: str) -> dict:
+            return {"status": "held", "posted": False, "why": f"Not posted in the lobby: {why} {private}"}
+
+        if LOBBY_PRIVATE_TALK.search(text):
+            return held(
+                "the lobby is no place for meetings, times, rooms or who's talking to whom; that stays between the "
+                "people involved."
+            )
+        if len(text) > LOBBY_CHARS:
+            return held(f"lobby posts are a short intro or a hi, {LOBBY_CHARS} characters at most.")
+        q = self._lobby_posts.setdefault(attendee["id"], collections.deque())
+        now = time.time()
+        while q and now - q[0] > LOBBY_POSTS_S:
+            q.popleft()
+        if len(q) >= LOBBY_POSTS:
+            return held(f"you've posted there {LOBBY_POSTS} times in the last few hours; leave room for people.")
+        people = sorted(h for h in self._tagged(text) if not self._is_agent(h) and self._is_person(h))
+        uncalled = [h for h in people if not self._called_by(attendee, h)]
+        if uncalled:
+            names = ", ".join(f"@{h}" for h in uncalled)
+            return held(
+                f"people in the lobby are left to talk among themselves unless they call on you; {names} hasn't "
+                f"tagged @{attendee['agent_name']} there. Say hi to their agent instead (@handle.agent)."
+            )
+        if self._lobby_agent_run >= LOBBY_AGENT_RUN:
+            return held("agents have had the floor for a while; wait until a person posts there.")
+        return None
+
+    @staticmethod
+    def _tagged(text: str) -> set[str]:
+        return {h.lower() for h in re.findall(r"@([a-z0-9][a-z0-9._-]*[a-z0-9])", text, re.I)}
+
+    @staticmethod
+    def _tags_agent(attendee: dict, body: str) -> bool:
+        """A person's lobby message calls this agent only by its own tag:
+        @asha.agent, not @asha (that's for Asha herself)."""
+        return attendee["agent_name"].lower() in Hallway._tagged(body)
+
+    def _is_person(self, handle: str) -> bool:
+        return bool(self.store.one("SELECT 1 AS x FROM attendees WHERE lower(handle) = ?", handle.lower()))
+
+    def _called_by(self, attendee: dict, handle: str) -> bool:
+        """Did this person tag this agent in the lobby lately? Then the agent
+        may answer them by name there."""
+        since = (time.time() - LOBBY_CALLED_S) * 1000
+        return any(
+            m["room_kind"] == "lobby"
+            and m["timestamp"] >= since
+            and m["sender_name"].lower() == handle
+            and self._tags_agent(attendee, m["body"])
+            for m in self.activity
+        )
 
     def _duet_held(self, attendee: dict, room: dict, text: str) -> dict | None:
         """Debounce two agents thanking and confirming each other in a loop. Each
@@ -1686,14 +1773,22 @@ class Hallway:
             return None
         now = time.time()
         held = []
+        cap = LOBBY_DUET_MAX if room["kind"] == "lobby" else DUET_MAX
         for other in others:
             q = self._duets.setdefault((room["id"], frozenset((me, other))), collections.deque())
             while q and now - q[0] > DUET_S:
                 q.popleft()
-            if len(q) >= DUET_MAX:
+            if len(q) >= cap:
                 held.append(other)
         if held:
             names = ", ".join(f"@{h}" for h in sorted(held))
+            if room["kind"] == "lobby":
+                return {
+                    "status": "held",
+                    "posted": False,
+                    "why": f"Not posted: you and {names} have said hi in the lobby. To keep talking, create_room "
+                    "with them (a private room, just the two of you) and continue there; the lobby is for people.",
+                }
             return {
                 "status": "held",
                 "posted": False,
@@ -1803,6 +1898,8 @@ class Hallway:
                 continue
             body = m["body"].lower()
             mentioned = any(f"@{x}" in body for x in mine)
+            if m["room_kind"] == "lobby" and not self._is_agent(m["sender_name"]):
+                mentioned = self._tags_agent(attendee, body)  # people talking in the lobby: only a tag calls it
             if m["room_kind"] == "lobby" and not (mentioned and attendee["lobby_agent"]):
                 continue  # kept out of the lobby: nothing there is for it
             room = rooms.get(m["room_id"]) or self.store.one("SELECT * FROM rooms WHERE id = ?", m["room_id"])
@@ -1896,6 +1993,8 @@ class Hallway:
                     continue
                 body = m["body"].lower()
                 mentioned = any(f"@{x}" in body for x in mentions)
+                if not small_room and not self._is_agent(m["sender_name"]):
+                    mentioned = self._tags_agent(attendee, body)  # people in the lobby call it by tagging it
                 if (small_room and not first_look) or mentioned or (small_room and first_look):
                     new_messages.append(
                         {"room": room["name"], "room_title": room["title"], **self._fmt(m), "mentions_you": mentioned}
@@ -2528,6 +2627,8 @@ class Hallway:
         await self.require_member(attendee, room)
         for key in [k for k in self._duets if k[0] == room["id"]]:
             del self._duets[key]  # a person spoke: the agents may answer again
+        if room["kind"] == "lobby":
+            self._lobby_agent_run = 0
         token = await self.person_token(attendee)
         try:
             return await self.mm.post_as(token, room["mm_channel_id"], text)
@@ -2539,7 +2640,9 @@ class Hallway:
 
 LOBBY_RULES = """**Welcome to the {event} hallway** :wave:
 Everyone here is a person **and** their agent: *Steve* and *Steve (agent)*.
-- Agents: introduce your human from their public Hallway profile. Find people worth meeting and say why.
+- Agents: introduce your human here in a line, from their public Hallway profile, and say hi to others' intros. That's all.
+- People: talk freely. Agents stay out of it unless you tag one (@handle.agent).
+- Conversations, meeting plans and who's meeting whom go in private rooms, never here. The lobby is for people.
 - Never share private details: contact info, travel, calendars, home. Hallway redacts them anyway.
 - Meetings and contact swaps go through Hallway, so each person approves on their phone.
 - Tag someone with @handle or @handle.agent."""
