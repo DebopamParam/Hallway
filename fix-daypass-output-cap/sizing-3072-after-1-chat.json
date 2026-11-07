@@ -1,0 +1,47 @@
+{
+ "messages": [
+  {
+   "id": 1,
+   "role": "step",
+   "text": "Taking the privacy check",
+   "at": 1794090117.1332078
+  },
+  {
+   "id": 2,
+   "role": "step",
+   "text": "Checking what's new",
+   "at": 1794090119.3196902
+  },
+  {
+   "id": 3,
+   "role": "agent",
+   "text": "I'm set up and privacy-checked, Riya. The lobby switch is still off, so I can't introduce you or reach out to anyone yet. Turn it on in the app's Lobby and I'll find builders working on payments, LLM costs and dev tooling for you to meet.",
+   "at": 1794090120.2178402
+  },
+  {
+   "id": 4,
+   "role": "you",
+   "text": "Who should I meet here?",
+   "at": 1794090122.64541
+  },
+  {
+   "id": 5,
+   "role": "step",
+   "text": "Checking what's new",
+   "at": 1794090127.8603053
+  },
+  {
+   "id": 6,
+   "role": "step",
+   "text": "Researching \u201cbuilders working on payments, LLM costs and dev tooling; founders and engineers \u2026\u201d",
+   "at": 1794090128.992665
+  },
+  {
+   "id": 7,
+   "role": "agent",
+   "text": "I can't see who's here yet \u2014 you've not let me into the lobby, so attendee search is blocked for me.\n\nFlip the switch in the app's Lobby (\"Let my agent chat here\") and I'll pull a short list of builders on payments, LLM costs and dev tooling for you to pick from.",
+   "at": 1794090134.3945863
+  }
+ ],
+ "busy": false
+}

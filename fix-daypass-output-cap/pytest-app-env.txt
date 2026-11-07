@@ -1,0 +1,3 @@
+SKIPPED [1] tests/test_daypass.py:218: could not import 'pydantic_ai': No module named 'pydantic_ai'
+SKIPPED [1] tests/test_daypass.py:239: could not import 'pydantic_ai': No module named 'pydantic_ai'
+549 passed, 2 skipped in 25.49s

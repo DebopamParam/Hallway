@@ -1,0 +1,4 @@
+E       assert ([1024] == [8192]
+___________ test_failed_run_still_charges_the_pass_for_its_requests ____________
+    async def test_failed_run_still_charges_the_pass_for_its_requests(hallway, daypass, make_client, priced_worker):
+E       assert 0.0 == 0.009 ± 1.0e-06
