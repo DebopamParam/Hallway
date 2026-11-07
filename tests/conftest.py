@@ -96,6 +96,7 @@ async def hallway(tmp_path, monkeypatch, world):
     h.host = h.lobby = h._sync_task = h._tail_task = None
     h.activity.clear()
     h._tail_since, h._members = {}, {}
+    h._duets, h._lobby_posts, h._lobby_agent_run = {}, {}, 0
     h._lock = asyncio.Lock()
     # The MCP session manager refuses a second run() per instance; every test
     # runs the lifespan once, so let it start again.
