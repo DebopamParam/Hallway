@@ -669,10 +669,8 @@ async function onboard(step) {
     btn.disabled = true;
     try {
       state.me = keepKey(await api("/api/register", { body: { name: draft.name, profile: draft.profile, contact: draft.contact,
-        autonomy: draft.autonomy, mode: draft.mode || "connect", live_agent_name: draft.live_agent_name || null } }));
-      if (draft.lobby_agent && draft.mode !== "live") {
-        try { state.me = { ...state.me, ...(await api("/api/me", { method: "PUT", body: { lobby_agent: true } })) }; } catch { /* the Lobby page has the switch too */ }
-      }
+        autonomy: draft.autonomy, mode: draft.mode || "connect", live_agent_name: draft.live_agent_name || null,
+        lobby_agent: Boolean(draft.lobby_agent) && draft.mode !== "live" } }));
       dropDraft();
       go("me");
       toast(draft.mode === "daypass" ? "You're in. Your agent starts within a minute." : "You're in. Now connect your agent.", "ok");
@@ -1467,7 +1465,8 @@ function passView(me) {
   const [tone, label] = PASS_STATUS[p.status];
   const next = p.status !== "active" ? (p.status === "paused" ? "Paused. Resume whenever you like." : "It stopped at the cap, as promised.")
     : !p.last_run_at ? "First run within a minute"
-    : `Next check in about ${Math.max(1, Math.round((p.last_run_at + p.every_s - Date.now() / 1000) / 60))} min`;
+    : p.last_run_at + p.every_s - Date.now() / 1000 > 30 ? `Next check in about ${Math.max(1, Math.round((p.last_run_at + p.every_s - Date.now() / 1000) / 60))} min`
+    : "Waiting for something new: a message here wakes it at once";
   const cells = 20;
   const filled = Math.round((pct / 100) * cells);
   shell("me", `<div class="page">
@@ -1499,7 +1498,10 @@ function passView(me) {
       state.me = await api("/api/me");
       // Don't re-render under someone typing to their agent.
       const typing = document.activeElement && document.activeElement.id === "chat-in";
-      if (!typing && JSON.stringify([state.me.pass.runs, state.me.pass.status]) !== seen) render();
+      if (!typing && JSON.stringify([state.me.pass.runs, state.me.pass.status]) !== seen) {
+        const y = window.scrollY;  // a finished run updates the card, not where they were reading
+        render().then(() => window.scrollTo(0, y));
+      }
       refreshPill();
     } catch { /* keep the last view */ }
   });
@@ -1514,7 +1516,7 @@ function chatSection(me, connect) {
     <form class="chat-compose" id="chat-form"><label class="sr-only" for="chat-in">Message your agent</label>
       <textarea id="chat-in" rows="1" maxlength="1000" placeholder="Find me GTM people to hire">${esc(c.draft)}</textarea>
       <button class="iconbtn chat-send" id="chat-send" aria-label="Send">${icon("arrow", "sm")}</button></form>
-    <p class="tiny muted">${connect ? "Reaches your agent through its watcher in a second or two." : "It starts the moment you send."} Others never see this chat; your agent may quote it, so keep private details out.</p></section>`;
+    <p class="tiny muted">${connect ? "Reaches your agent through its watcher in a second or two." : me.pass && me.pass.status === "paused" ? "Your day pass is paused: your agent answers when you resume it." : me.pass && me.pass.status !== "active" ? "Your day pass has used its budget, so your agent can't answer here any more." : "It starts the moment you send."} Others never see this chat; your agent may quote it, so keep private details out.</p></section>`;
 }
 
 function chatState(me) {
@@ -1564,7 +1566,11 @@ function bindChat(me) {
       c.msgs = [...c.msgs, ...fresh].slice(-120);
       if (fresh.length) c.last = fresh[fresh.length - 1].id;
       c.busy = r.busy;
+      // With the composer on screen when a reply lands, keep the newest message above the tab bar.
+      const form = document.getElementById("chat-form");
+      const near = form.getBoundingClientRect().top < window.innerHeight;
       paint();
+      if (near && fresh.some((m) => m.role !== "you")) form.scrollIntoView({ block: "nearest" });
     } catch { /* keep what's shown */ }
   };
   document.getElementById("chat-form").addEventListener("submit", async (e) => {

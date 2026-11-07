@@ -661,6 +661,7 @@ class Register(BaseModel):
     autonomy: dict = {}
     mode: str = "connect"
     live_agent_name: str | None = None
+    lobby_agent: bool = False  # set with the row, so a day pass's first run already sees it
 
 
 @app.post("/api/register")
@@ -691,6 +692,7 @@ async def register(body: Register, request: Request, response: Response, hw_sess
                 autonomy=body.autonomy,
                 mode=body.mode,
                 live_agent_name=body.live_agent_name,
+                lobby_agent=body.lobby_agent and body.mode != "live",
                 is_persona=persona,
                 onboarding_key=_pre_key(hw_session),
             )
@@ -719,8 +721,9 @@ class UpdateMe(BaseModel):
 
 @app.put("/api/me")
 async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)) -> dict:
+    before = _me(hw_session)
     a = hallway.update_settings(
-        _me(hw_session),
+        before,
         profile=body.profile,
         contact=body.contact,
         autonomy=body.autonomy,
@@ -728,6 +731,8 @@ async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)) -> di
         web_lookup=body.web_lookup,
         lobby_agent=body.lobby_agent,
     )
+    if body.lobby_agent and not before["lobby_agent"]:
+        hallway.lobby_opened(a)
     return _me_view(a)
 
 
