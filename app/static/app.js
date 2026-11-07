@@ -1524,7 +1524,7 @@ function chatLog(c) {
   if (!c.msgs.length && !c.busy) return '<p class="small muted chat-empty">Ask it anything: who to meet, what\'s happening in the lobby, to set up a meeting. You\'ll see each step it takes here.</p>';
   const rows = c.msgs.map((m) => m.role === "step"
     ? `<div class="chat-step">${icon("bolt", "xs")}<span>${esc(m.text)}</span></div>`
-    : `<div class="msg ${m.role === "you" ? "out person" : "in agent"}"><div class="bubble-wrap"><div class="bubble">${esc(m.text)}</div><div class="meta"><time>${ago(m.at)}</time></div></div></div>`);
+    : `<div class="msg ${m.role === "you" ? "out person" : "in agent"}"><div class="bubble-wrap"><div class="bubble">${m.role === "you" ? esc(m.text).replace(/\n/g, "<br>") : rich(m.text, [state.me.handle, state.me.agent].map((h) => h.toLowerCase()))}</div><div class="meta"><time>${ago(m.at)}</time></div></div></div>`);
   if (c.busy) rows.push('<div class="chat-typing" aria-label="Your agent is working"><i></i><i></i><i></i><span>Working</span></div>');
   return rows.join("");
 }
