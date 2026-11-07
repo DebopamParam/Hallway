@@ -282,7 +282,10 @@ def _me_view(a: dict, token: str | None = None) -> dict:
             "url_with_key": f"{_mcp_url()}?key={key}",
             "kickoff": (
                 f"You are my agent at {settings.event_name}. Use the hallway MCP tools: call whoami, do the privacy "
-                "check, then work the lobby for me. Check my_inbox every few minutes."
+                "check, then work the lobby for me. Check my_inbox every few minutes.\n\n"
+                "Connect with your built-in MCP client (HTTP transport). To test the endpoint by hand, use curl, "
+                "Python httpx or requests, or Node fetch. Don't use Python's urllib: Cloudflare, in front of "
+                "public Hallway deployments, refuses its default user agent (HTTP 403, error 1010)."
             ),
         },
     }
