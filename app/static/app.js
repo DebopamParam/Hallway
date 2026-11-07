@@ -1176,6 +1176,11 @@ function passView(me) {
         ${p.status === "spent" ? "" : `<button class="btn ${p.status === "paused" ? "signal" : "ghost"} sm" id="pause">${icon(p.status === "paused" ? "play" : "pause", "sm")}${p.status === "paused" ? "Resume" : "Pause"}</button>`}</div>
       <p class="tiny muted">The organiser runs it with Hallway's tools only, and it stops by itself at the cap. ${me.privacy && me.privacy.passed ? "It passed the privacy check." : ""}</p>
     </section>
+    ${p.status === "spent" ? "" : `<section class="block"><div class="block-head"><h2>Tell your agent</h2></div>
+      <div class="fieldset"><label class="field" for="pass-note">What should it work on?</label>
+        <textarea id="pass-note" rows="2" maxlength="280" placeholder="Find me DevOps people working on Kubernetes.">${esc(p.note || "")}</textarea>
+        <div class="hint">${p.note_at ? `Sent ${ago(p.note_at)}. It reads this before every check.` : "It reads this before every check, next to what you're here for. Your agent may quote it, so keep private details out."}</div></div>
+      <button class="btn signal sm" id="save-note">Send to my agent ${icon("arrow", "sm")}</button></section>`}
     <section class="block"><div class="block-head"><h2>What it did</h2></div>
       ${p.recent.length ? `<ul class="feed">${p.recent.map((r) => `<li class="feed-item"><span class="feed-ic ${r.ok ? "" : "k-bad"}">${icon(r.ok ? "bolt" : "x", "sm")}</span>
         <div class="grow"><div class="feed-text">${esc(r.summary)}</div><time>${ago(r.created_at)} · ${usd(r.cost_usd)}</time></div></li>`).join("")}</ul>`
@@ -1185,12 +1190,22 @@ function passView(me) {
   document.getElementById("pause")?.addEventListener("click", async () => {
     try { state.me = await api("/api/me/pass", { body: { paused: p.status !== "paused" } }); render(); } catch (e) { toast(e.message); }
   });
+  const note = document.getElementById("pass-note");
+  document.getElementById("save-note")?.addEventListener("click", async () => {
+    try {
+      state.me = await api("/api/me/pass", { body: { note: note.value } });
+      toast(note.value.trim() ? "Sent. Your agent acts on it at its next check." : "Cleared.", "ok");
+      render();
+    } catch (e) { toast(e.message); }
+  });
   bindCommon(me);
   const seen = JSON.stringify([p.runs, p.status]);
   every(5000, async () => {
     try {
       state.me = await api("/api/me");
-      if (JSON.stringify([state.me.pass.runs, state.me.pass.status]) !== seen) render();
+      // Don't re-render over a request being typed.
+      const typing = note && (document.activeElement === note || note.value !== (p.note || ""));
+      if (!typing && JSON.stringify([state.me.pass.runs, state.me.pass.status]) !== seen) render();
       refreshPill();
     } catch { /* keep the last view */ }
   });

@@ -247,6 +247,8 @@ def _pass_view(a: dict) -> dict | None:
         "status": p["status"],
         "last_run_at": p["last_run_at"],
         "every_s": settings.daypass_every_s,
+        "note": p["note"],
+        "note_at": p["note_at"],
         "recent": runs,
     }
 
@@ -634,13 +636,17 @@ async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)) -> di
 
 
 class PassState(BaseModel):
-    paused: bool
+    paused: bool | None = None
+    note: str | None = None
 
 
 @app.post("/api/me/pass")
 async def pass_state(body: PassState, hw_session: str | None = Cookie(None)) -> dict:
     a = _me(hw_session)
-    hallway.set_pass_paused(a, body.paused)
+    if body.paused is not None:
+        hallway.set_pass_paused(a, body.paused)
+    if body.note is not None:
+        hallway.set_pass_note(a, body.note)
     return _me_view(a)
 
 
@@ -1192,6 +1198,7 @@ async def daypass_due(request: Request, every_s: int | None = None) -> list[dict
                 "runs": p["runs"],
                 "remaining_usd": _remaining_usd(p),
                 "here_for": p["profile"].get("here_for", ""),
+                "note": p["note"],
             }
         )
     return out

@@ -1,6 +1,8 @@
 """Day pass ledger: the worker API (/internal/daypass/*), spend cap, pause."""
 
+import importlib.util
 import time
+from pathlib import Path
 
 import pytest
 
@@ -126,3 +128,50 @@ async def test_due_orders_never_run_first(client, hallway, signup, daypass):
     )
     due = (await client.get("/internal/daypass/due", headers=W)).json()
     assert [d["handle"] for d in due] == ["tara", "sana"]
+
+
+async def test_note_reaches_the_worker_and_runs_early(client, hallway, daypass):
+    pc, _ = daypass
+    aid = await attendee_id(hallway, "sana")
+    await report(client, aid, 0.01)
+    hallway.store.db.execute("UPDATE passes SET last_run_at = ?", (time.time() - 300,))
+    assert (await client.get("/internal/daypass/due", headers=W)).json() == []  # ran 5 min ago: not due
+
+    r = await pc.post("/api/me/pass", json={"note": "  Find me   DevOps people.  "})
+    assert r.status_code == 200
+    p = r.json()["pass"]
+    assert p["note"] == "Find me DevOps people." and p["note_at"] and p["status"] == "active"
+    [due] = (await client.get("/internal/daypass/due", headers=W)).json()
+    assert due["note"] == "Find me DevOps people."
+
+
+async def test_note_nudges_at_most_every_two_minutes(client, hallway, daypass):
+    pc, _ = daypass
+    await report(client, await attendee_id(hallway, "sana"), 0.01)  # ran seconds ago
+    await pc.post("/api/me/pass", json={"note": "Find me DevOps people."})
+    assert (await client.get("/internal/daypass/due", headers=W)).json() == []
+
+
+async def test_note_limits_and_pause_untouched(signup, daypass):
+    pc, _ = daypass
+    r = await pc.post("/api/me/pass", json={"note": "x" * 281})
+    assert r.status_code == 400 and "280" in r.json()["error"]
+    r = await pc.post("/api/me/pass", json={"note": ""})
+    assert r.status_code == 200 and r.json()["pass"]["note"] == "" and r.json()["pass"]["status"] == "active"
+    other, _ = await signup("Asha Rao")
+    r = await other.post("/api/me/pass", json={"note": "hi"})
+    assert r.status_code == 400 and "don't have a day pass" in r.json()["error"]
+
+
+def test_worker_prompt_carries_the_note():
+    spec = importlib.util.spec_from_file_location(
+        "daypass_worker", Path(__file__).parent.parent / "daypass" / "worker.py"
+    )
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+    p = {"name": "Sana Qureshi", "here_for": "payments partners", "runs": 3, "note": "Find me DevOps people."}
+    system, task = worker.prompts(p)
+    assert "Sana's latest request for you" in system and "Find me DevOps people." in system
+    assert "left you a request" in task
+    system, _ = worker.prompts({**p, "note": ""})
+    assert "latest request" not in system

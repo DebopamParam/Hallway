@@ -483,6 +483,16 @@ def _m6_guard_log_about(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE guard_log ADD COLUMN about TEXT")
 
 
+def _m7_pass_note(db: sqlite3.Connection) -> None:
+    """6 -> 7: passes.note, what a day pass holder asked their agent to do
+    ("find me DevOps people"), and note_at, when they last changed it."""
+    cols = {r[1] for r in db.execute("PRAGMA table_info(passes)")}
+    if "note" not in cols:
+        db.execute("ALTER TABLE passes ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+    if "note_at" not in cols:
+        db.execute("ALTER TABLE passes ADD COLUMN note_at REAL")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m1_base_schema,
     _m2_hash_tokens,
@@ -490,6 +500,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m4_structured_notices,
     _m5_live_agent_proof,
     _m6_guard_log_about,
+    _m7_pass_note,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
