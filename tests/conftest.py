@@ -174,10 +174,12 @@ async def register(
     autonomy: dict | None = None,
     mode: str = "connect",
     lobby: bool = True,
+    rooms_open: bool = True,
     **extra,
 ) -> dict:
     """Sign in a new person and finish onboarding. Returns /api/register's body.
-    `lobby`: let their agent work the lobby, as most tests need (people start with it off)."""
+    `lobby`: let their agent work the lobby, as most tests need (people start with it off).
+    `rooms_open`: join rooms they're invited to without asking (people start on Ask)."""
     email = email or f"{name.split()[0].lower()}.{next(_emails)}@example.com"
     await sign_in(client, email)
     r = await client.post(
@@ -186,7 +188,7 @@ async def register(
             "name": name,
             "profile": profile or PROFILE,
             "contact": contact or {},
-            "autonomy": autonomy or {},
+            "autonomy": {**({"join_rooms": "auto"} if rooms_open else {}), **(autonomy or {})},
             "mode": mode,
             **extra,
         },

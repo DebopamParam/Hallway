@@ -755,3 +755,25 @@ iframe.agent-card { display: block; width: 100%; height: 360px; border: 0; borde
 .lobby-switch input:checked { background: var(--go); }
 .lobby-switch input:checked::after { transform: translateX(16px); }
 .lobby-switch input:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* Tap anyone (their name or face) to open their badge. */
+.tap { cursor: pointer; display: inline-flex; }
+.name-btn { position: relative; appearance: none; background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; transition: text-decoration-color .15s; }
+.name-btn:hover, .name-btn:focus-visible { text-decoration-color: currentColor; }
+h3 .name-btn { font-weight: inherit; }
+.name-btn::after { content: ""; position: absolute; inset: -14px -4px; } /* 44px tap target around a line of text */
+.profile { display: grid; gap: 16px; }
+.pf-top { display: flex; align-items: center; gap: 14px; }
+.pf-top h2 { margin: 0; font-size: 22px; }
+.pf-top .person-role { margin: 2px 0 0; }
+.pf-handle { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); font-family: var(--mono); }
+.pf-sec h3 { font-size: 11.5px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+.pf-sec p { margin: 0; line-height: 1.5; }
+.pf-chips, .pf-rooms { display: flex; flex-wrap: wrap; gap: 6px; }
+.pf-chips + .tiny { margin-top: 6px; }
+.pf-links { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.pf-links li { display: flex; gap: 10px; align-items: baseline; min-width: 0; }
+.pf-links a, .pf-links span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-k { flex: none; min-width: 64px; font-size: 12px; color: var(--muted); text-transform: capitalize; }
+.pf-rooms .chip { min-height: 32px; display: inline-flex; align-items: center; gap: 4px; text-decoration: none; }
+.pf-ask { width: 100%; margin-top: 18px; }

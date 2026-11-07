@@ -58,6 +58,7 @@ def as_(who: dict) -> httpx.Client:
 
 
 ca = as_(a)
+as_(b).put("/api/me", json={"autonomy": {"join_rooms": "auto"}}).raise_for_status()  # rooms join directly
 long_title = "Qafix" + "x" * 75  # 80 characters, no spaces: the longest title allowed
 r = ca.post("/api/rooms", json={"title": long_title, "invite": [b["handle"]]})
 r.raise_for_status()

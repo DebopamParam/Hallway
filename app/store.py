@@ -549,6 +549,23 @@ def _m11_lobby_agent(db: sqlite3.Connection) -> None:
         db.execute("UPDATE attendees SET lobby_agent = 1 WHERE is_persona = 1")
 
 
+def _m12_room_invites(db: sqlite3.Connection) -> None:
+    """11 -> 12: room_invites. Starting a room with someone asks them first,
+    like a friend request, unless they let rooms in without asking."""
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS room_invites (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL,
+  inviter_id TEXT NOT NULL,
+  invitee_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at REAL NOT NULL,
+  decided_at REAL
+)"""
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS room_invites_invitee ON room_invites (invitee_id, status)")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m1_base_schema,
     _m2_hash_tokens,
@@ -561,6 +578,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m9_cards,
     _m10_agent_chat,
     _m11_lobby_agent,
+    _m12_room_invites,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 

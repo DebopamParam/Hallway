@@ -38,6 +38,7 @@ AUTONOMY_KEYS = {
     "propose_meeting": "Propose a meeting",
     "accept_meeting": "Accept a meeting",
     "share_contact": "Share my contact details",
+    "join_rooms": "Join rooms people invite me to",
 }
 DEFAULT_AUTONOMY = {
     "chat": "auto",
@@ -45,6 +46,7 @@ DEFAULT_AUTONOMY = {
     "propose_meeting": "ask",
     "accept_meeting": "ask",
     "share_contact": "ask",
+    "join_rooms": "ask",
 }
 LOCKED_ASK = {"share_contact"}
 STAND_IN_MODES = ("connect", "daypass")
@@ -1187,9 +1189,12 @@ class Hallway:
             raise HallwayError("Give the room a title.")
         if description is not None:
             description = self.clean_text(description, "why")
-        members = [creator] + [self.resolve(h) for h in invite]
-        uniq = {m["id"]: m for m in members}
-        members = list(uniq.values())
+        invited = list({m["id"]: m for m in (self.resolve(h) for h in invite) if m["id"] != creator["id"]}.values())
+        # A meeting's room opens for both (they both said yes); otherwise someone
+        # joins at once only if they let rooms in without asking. The rest get
+        # an invite, like a friend request.
+        members = [creator] + [m for m in invited if kind == "meet" or m["autonomy"].get("join_rooms") == "auto"]
+        asked = [m for m in invited if m not in members]
         name = await self._free_room_name(slug(title)[:30] or "room")
         self._creating_rooms.add(name)
         try:
@@ -1234,7 +1239,114 @@ class Hallway:
                     room=room["name"],
                     title=title,
                 )
-        return room
+        for m in asked:
+            iid = new_id()
+            self.store.insert(
+                "room_invites",
+                id=iid,
+                room_id=room["id"],
+                inviter_id=creator["id"],
+                invitee_id=m["id"],
+                created_at=time.time(),
+            )
+            self.store.notice(
+                m["id"],
+                "room_invite",
+                f"{creator['name']} invited you to a room: {title}",
+                actor=Actor.person(creator),
+                room_id=room["id"],
+                room=room["name"],
+                title=title,
+                invite_id=iid,
+            )
+        return {**room, "waiting_for": [m["name"] for m in asked]}
+
+    async def rooms_together(self, a: dict, b: dict) -> list[dict]:
+        """Rooms (not the lobby) both people are in."""
+        out = []
+        for room in self.store.all("SELECT * FROM rooms WHERE kind NOT IN ('lobby', 'verify') ORDER BY created_at"):
+            members = await self.room_members(room)
+            if a["mm_user_id"] in members and b["mm_user_id"] in members:
+                out.append({"room": room["name"], "title": room["title"]})
+        return out
+
+    async def knows(self, a: dict, b: dict) -> bool:
+        """Do they already deal with each other: a meeting, a room invite, a
+        contact request or a room together?"""
+        pair = (a["id"], b["id"], b["id"], a["id"])
+        for table, x, y in (
+            ("meetings", "proposer_id", "invitee_id"),
+            ("room_invites", "inviter_id", "invitee_id"),
+            ("contacts", "requester_id", "target_id"),
+        ):
+            if self.store.one(f"SELECT 1 FROM {table} WHERE ({x} = ? AND {y} = ?) OR ({x} = ? AND {y} = ?)", *pair):
+                return True
+        return bool(await self.rooms_together(a, b))
+
+    def invites(self, attendee: dict) -> list[dict]:
+        """Room invites waiting on this person."""
+        rows = self.store.all(
+            "SELECT i.*, r.name AS room, r.title, a.name AS from_name, a.handle AS from_handle FROM room_invites i "
+            "JOIN rooms r ON r.id = i.room_id JOIN attendees a ON a.id = i.inviter_id "
+            "WHERE i.invitee_id = ? AND i.status = 'pending' ORDER BY i.created_at",
+            attendee["id"],
+        )
+        return [
+            {
+                "id": r["id"],
+                "room": r["room"],
+                "title": r["title"],
+                "from": r["from_handle"],
+                "from_name": r["from_name"],
+                "at": r["created_at"],
+            }
+            for r in rows
+        ]
+
+    def invited_to(self, room: dict) -> list[dict]:
+        """Who a room is still waiting on."""
+        return self.store.all(
+            "SELECT a.name, a.handle FROM room_invites i JOIN attendees a ON a.id = i.invitee_id "
+            "WHERE i.room_id = ? AND i.status = 'pending'",
+            room["id"],
+        )
+
+    async def respond_invite(self, attendee: dict, invite_id: str, accept: bool, by_person: bool = False) -> dict:
+        """Join a room someone invited them to, or turn it down. Their agent joining
+        follows their 'Join rooms' rule: on Ask, it becomes a card for them."""
+        inv = self.store.one("SELECT * FROM room_invites WHERE id = ? AND invitee_id = ?", invite_id, attendee["id"])
+        if not inv:
+            raise HallwayError("No room invite for you with that id. my_inbox lists them.")
+        room = self.store.need("SELECT * FROM rooms WHERE id = ?", inv["room_id"])
+        if inv["status"] != "pending":
+            return {"status": inv["status"], "room": room["name"]}
+        inviter = self.store.need_attendee(id=inv["inviter_id"])
+        if accept and not by_person and self.needs_approval(attendee, "join_rooms"):
+            return self.ask(
+                attendee, "join_room", f'Join {inviter["name"]}\'s room "{room["title"]}"?', {"invite_id": invite_id}
+            )
+        return await self._respond_invite(attendee, inv, room, inviter, accept)
+
+    async def _respond_invite(self, attendee: dict, inv: dict, room: dict, inviter: dict, accept: bool) -> dict:
+        async with self._serial.hold(f"invite:{inv['id']}"):
+            if self.store.need("SELECT status FROM room_invites WHERE id = ?", inv["id"])["status"] != "pending":
+                return {"status": "answered", "room": room["name"]}
+            if accept:
+                await self._join(attendee, room)
+            self.store.update(
+                "room_invites", inv["id"], status="accepted" if accept else "declined", decided_at=time.time()
+            )
+        first = attendee["name"].split()[0]
+        self.store.notice(
+            inviter["id"],
+            "room_joined" if accept else "room_invite_declined",
+            f"{attendee['name']} joined {room['title']}" if accept else f"{first} passed on {room['title']} for now.",
+            actor=Actor.person(attendee),
+            room_id=room["id"],
+            room=room["name"],
+            title=room["title"],
+        )
+        return {"status": "joined" if accept else "declined", "room": room["name"]}
 
     async def _host_create_room(
         self, name: str, description: str, agent_names: list[str], user_names: list[str]
@@ -1499,6 +1611,10 @@ class Hallway:
             return self._shortlist_picked(attendee, p, selected or [])
         if kind == "settings":
             return self._apply_settings(attendee, p)
+        if kind == "join_room":
+            inv = self.store.need("SELECT * FROM room_invites WHERE id = ?", p["invite_id"])
+            room = self.store.need("SELECT * FROM rooms WHERE id = ?", inv["room_id"])
+            return await self._respond_invite(attendee, inv, room, self.store.need_attendee(id=inv["inviter_id"]), True)
         raise HallwayError(f"unknown approval kind {kind}")
 
     # --------------------------------------------------------------- messaging
@@ -1747,6 +1863,7 @@ class Hallway:
             "messages": new_messages[-40:],
             "notices": [agent_notice(n) for n in notices],
             "pending_meetings_for_you": self.meetings(attendee, only_pending_for_me=True),
+            "room_invites_for_you": self.invites(attendee),
             "pending_approvals_waiting_on_your_human": [
                 {"id": a["id"], "summary": a["summary"]}
                 for a in self.store.all(
