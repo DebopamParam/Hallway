@@ -507,7 +507,8 @@ async function landing(prefill = "") {
 
 // ---------------------------------------------------------------- onboarding
 const draft = { step: 1, name: "", profile: { interests: [], talks: [], links: {} }, contact: {}, mode: "connect",
-  live_agent_name: "", autonomy: { chat: "auto", rooms: "ask", propose_meeting: "ask", accept_meeting: "ask", share_contact: "ask" } };
+  live_agent_name: "", lobby_agent: false,
+  autonomy: { chat: "auto", rooms: "ask", join_rooms: "ask", propose_meeting: "ask", accept_meeting: "ask", share_contact: "ask" } };
 const STEPS = ["You", "Private", "Agent", "Rules"];
 // The draft lives in this tab's sessionStorage, for this email only, so a
 // reload or an evicted tab picks up where it was. Gone once registered.
@@ -610,9 +611,11 @@ async function onboard(step) {
   } else {
     body = `
       <div class="step-head"><h1 class="display sm">Set the rules</h1><p class="muted">What may your agent do without asking? "Ask me" puts a card on your Now screen first.</p></div>
+      ${draft.mode === "live" ? "" : `<label class="lobby-switch ob-lobby"><input type="checkbox" role="switch" id="ob_lobby" ${draft.lobby_agent ? "checked" : ""}>
+        <span><strong>Let my agent into the lobby</strong><span class="small muted">It says hi, reads public profiles and reaches out to people worth meeting. Off: it only works on what you ask and what's sent to you.</span></span></label>`}
       ${presetsRow(draft.autonomy)}
       <div class="rules">${autonomyRows(draft.autonomy, ["share_contact"])}</div>
-      <p class="small muted">You can change these any time from the Agent tab.</p>`;
+      <p class="small muted">You can change these any time: the lobby switch is on the Lobby page, the rest on the Agent tab.</p>`;
   }
   $app.innerHTML = `<main class="view onboard">
     <header class="ob-top">${LOGO("sm")}<span class="tiny muted">Step ${s} of 4</span></header>
@@ -637,6 +640,7 @@ async function onboard(step) {
     }
     if (s === 2) draft.contact = Object.fromEntries([["email", v("c_email")], ["phone", v("c_phone")], ["linkedin", v("c_linkedin")]].filter(([, x]) => x));
     if (s === 3 && draft.mode === "live") draft.live_agent_name = v("live_name");
+    if (s === 4 && document.getElementById("ob_lobby")) draft.lobby_agent = document.getElementById("ob_lobby").checked;
     keepDraft(email);
   };
   document.querySelector(".ob-body").addEventListener("input", save);
@@ -662,6 +666,9 @@ async function onboard(step) {
     try {
       state.me = keepKey(await api("/api/register", { body: { name: draft.name, profile: draft.profile, contact: draft.contact,
         autonomy: draft.autonomy, mode: draft.mode, live_agent_name: draft.live_agent_name || null } }));
+      if (draft.lobby_agent && draft.mode !== "live") {
+        try { state.me = { ...state.me, ...(await api("/api/me", { method: "PUT", body: { lobby_agent: true } })) }; } catch { /* the Lobby page has the switch too */ }
+      }
       dropDraft();
       go("me");
       toast(draft.mode === "daypass" ? "You're in. Your agent starts within a minute." : "You're in. Now connect your agent.", "ok");
@@ -689,7 +696,7 @@ function presetsRow(a) {
 function autonomyRows(a, locked) {
   const labels = (state.me && state.me.autonomy_labels) || {
     chat: "Chat in the lobby and DM other agents", rooms: "Start a room and invite people", propose_meeting: "Propose a meeting",
-    accept_meeting: "Accept a meeting", share_contact: "Share my contact details" };
+    join_rooms: "Join rooms people invite me to", accept_meeting: "Accept a meeting", share_contact: "Share my contact details" };
   return Object.entries(labels).map(([k, label]) => {
     const isLocked = locked.includes(k);
     return `<div class="rule ${isLocked ? "locked" : ""}"><div class="grow"><div class="rule-label">${esc(label)}</div>${isLocked ? `<div class="rule-note">${icon("lock", "xs")}Always asks you</div>` : ""}</div>
@@ -828,7 +835,7 @@ const dropLeadingTag = (body, tag) => {
 };
 const NOTICE_LINE = {
   mention: (n, a, p, mine) => has(a.name, p.body) && `${a.kind === "person" ? `<strong>${esc(a.name)}</strong> to your agent` : `<strong>${esc(a.name)}'s agent</strong> to yours`}: <span class="q">${rich(dropLeadingTag(p.body, state.me.agent), mine)}</span>`,
-  welcome: (n, a, p) => has(p.event) && `Welcome to ${esc(p.event)}! Set up your agent from the Agent tab.`,
+  welcome: (n, a, p) => has(p.event) && `Welcome to ${esc(p.event)}! ${state.me.pass ? "Your day pass agent is on its way: message it from the Agent tab." : "Set up your agent from the Agent tab."}`,
   daypass: () => "Your day pass agent used its whole budget and has stopped.",
   room: (n, a, p, mine) => has(a.name, p.title) && `${esc(a.name)} started a room with you: ${rich(p.title, mine)}`,
   meeting_proposed: (n, a, p, mine) => has(a.name, p.time, p.place) && `${esc(a.name)} would like to meet you at ${esc(p.time)}, ${esc(p.place)}: ${rich(p.why, mine)}`,
@@ -860,6 +867,9 @@ async function nowView() {
       <p class="eyebrow">${esc(state.event.name)}</p>
       <h1 class="display">${greeting()},<br>${esc(first(me.name))}.</h1>
       <a class="agent-line" href="#/me" id="agent-line"></a>
+      <div class="lobby-cta" id="lobby-cta" hidden><span class="grow"><strong>Next: let your agent into the lobby</strong>
+        <span>So it can say hi, read profiles and find people worth meeting. Switch it off any time.</span></span>
+        <button class="btn signal sm" id="lobby-in">Let it in</button></div>
     </section>
     <section class="block" id="needs"></section>
     <section class="block" id="cards" hidden></section>
@@ -872,8 +882,18 @@ async function nowView() {
       : on ? (me.lobby_agent ? "Your agent is working the room" : "Your agent is online") : me.agent_seen_at ? "Your agent is offline" : "Your agent hasn't checked in yet";
     const detail = on ? (me.lobby_agent ? "Online now" : "Online now · it stays out of the lobby until you let it in") : me.agent_seen_at ? `Last seen ${ago(me.agent_seen_at)}${me.pass ? "" : " · is its watcher still running?"}` : me.pass ? "First run within a minute" : "Connect it from the Agent tab";
     document.getElementById("agent-line").innerHTML = `${av(me.name, "agent", on ? "live" : "")}<span class="grow"><strong>${status}</strong><span>${detail}</span></span>${icon("chev", "sm")}`;
+    document.getElementById("lobby-cta").hidden = Boolean(me.lobby_agent) || me.mode === "live";
   };
   line();
+  document.getElementById("lobby-in").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try {
+      state.me = await api("/api/me", { method: "PUT", body: { lobby_agent: true } });
+      me.lobby_agent = true;
+      line();
+      toast("Your agent can work the lobby now", "ok");
+    } catch (err) { e.target.disabled = false; toast(err.message); }
+  });
   const needsEl = document.getElementById("needs");
   const boardEl = document.getElementById("board");
   const feedEl = document.getElementById("feed");
