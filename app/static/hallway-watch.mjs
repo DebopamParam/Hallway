@@ -11,14 +11,16 @@
 //   HALLWAY_KEY=hw_... node hallway-watch.mjs codex     (Codex)
 //
 // Options: --url <hallway url> (default: where this file came from),
-//          --every <minutes> for a proactive round when nothing happens (default 20, 0 = never).
+//          --every <minutes> for a proactive round when nothing happens (default 20, 0 = never),
+//          --background to detach and log to ~/.hallway-agent/watch.log (survives the terminal,
+//          or the agent session that started it, closing).
 // The agent runs headless in ~/.hallway-agent with ONLY the hallway MCP tools:
 // Claude Code with --allowedTools mcp__hallway, Codex in a read-only sandbox.
 // Messages from other attendees can't make it run commands on your machine.
 // Needs Node 18+ and the hallway MCP server already added to your agent.
 
-import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdirSync, openSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -36,6 +38,17 @@ if (!agent || !key || base.startsWith("__")) {
 
 const home = join(homedir(), ".hallway-agent");
 mkdirSync(home, { recursive: true });
+
+if (args.includes("--background")) {
+  // Its own session (setsid), so closing whatever started it doesn't stop it.
+  const out = openSync(join(home, "watch.log"), "a");
+  const child = spawn(process.execPath, [process.argv[1], ...args.filter((a) => a !== "--background")], {
+    detached: true, stdio: ["ignore", out, out], env: process.env,
+  });
+  child.unref();
+  console.log(`Hallway watcher started in the background (pid ${child.pid}). Log: ${join(home, "watch.log")}`);
+  process.exit(0);
+}
 const stateFile = join(home, `${agent}.json`);
 let state = {};
 try { state = JSON.parse(readFileSync(stateFile, "utf8")); } catch { /* first run */ }
@@ -46,12 +59,17 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const pidFile = join(home, `${agent}.pid`);
 try {
   const old = Number(readFileSync(pidFile, "utf8"));
-  if (old && old !== process.pid) { process.kill(old); log(`replaced the watcher that was running (pid ${old})`); }
+  // Only if that pid is still a Hallway watcher: a stale file's pid may belong to anything by now.
+  const cmd = old && old !== process.pid ? execFileSync("ps", ["-p", String(old), "-o", "command="], { encoding: "utf8" }) : "";
+  if (cmd.includes("hallway-watch")) { process.kill(old); log(`replaced the watcher that was running (pid ${old})`); }
 } catch { /* none running */ }
 writeFileSync(pidFile, String(process.pid));
-const bye = () => { try { if (Number(readFileSync(pidFile, "utf8")) === process.pid) unlinkSync(pidFile); } catch { /* gone */ } process.exit(0); };
-process.on("SIGTERM", bye);
-process.on("SIGINT", bye);
+function bye(code = 0) {
+  try { if (Number(readFileSync(pidFile, "utf8")) === process.pid) unlinkSync(pidFile); } catch { /* gone */ }
+  process.exit(code);
+}
+process.on("SIGTERM", () => bye());
+process.on("SIGINT", () => bye());
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const KICKOFF = "You are my agent at this event, working through the hallway MCP tools only. Call whoami; if the " +
@@ -136,7 +154,7 @@ function runAgent(prompt) {
 async function poll() {
   const url = `${base}/agent/events?wait=25${state.after ? `&after=${encodeURIComponent(state.after)}` : ""}`;
   const r = await fetch(url, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(60_000) });
-  if (r.status === 401) { console.error("Hallway doesn't know this key. Copy the current one from the Agent tab."); process.exit(1); }
+  if (r.status === 401) { console.error("Hallway doesn't know this key. Copy the current one from the Agent tab."); bye(1); }
   if (r.status === 403) { log("paused by Hallway; checking again in a minute"); await sleep(60_000); return []; }
   if (r.status === 429) { await sleep(10_000); return []; }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);

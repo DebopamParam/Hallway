@@ -199,6 +199,7 @@ TAIL_KEEP = 2000  # recent messages kept in memory for the feed
 FEED_MAX = 20  # events in one answer
 PASS_WAKE_GAP_S = 5  # a day pass agent woken by others' events runs at most this often
 CHAT_MAX = 1000  # characters in one chat message
+AGENT_WAKES, AGENT_WAKES_S = 3, 600  # runs woken by other agents alone, per 10 minutes (see chatter_held)
 BUSY_S = 600  # a run that said it started but never finished stops showing as working
 
 ADDRESSING_OPENED = "stand_ins_addressing_open"  # kv: every stand-in got _open_addressing
@@ -277,6 +278,7 @@ class Hallway:
         self._tail_since: dict[str, int] = {}  # room id -> last message ms
         self._tail_task: asyncio.Task[None] | None = None
         self._members: dict[str, tuple[float, set[str]]] = {}
+        self._agent_wakes: dict[str, collections.deque[float]] = {}
         self._pulse = asyncio.Event()  # set (and replaced) when anything lands for the feed
 
     # ------------------------------------------------------------------ setup
@@ -927,7 +929,7 @@ class Hallway:
             # Their own person waits for nobody; others' chatter is rate limited.
             asked = any(e["kind"] == "chat" for e in events)
             gap_ok = p["last_run_at"] is None or now - p["last_run_at"] >= PASS_WAKE_GAP_S
-            if timed or asked or (events and gap_ok):
+            if timed or asked or (events and gap_ok and not self.chatter_held(a, events)):
                 self.store.kv_set(key, cursor)  # this run will see them (my_inbox)
                 out.append({**p, "events": events})
             elif not events:
@@ -1497,7 +1499,10 @@ class Hallway:
         ):
             n = x["id"]
             if not (x["actor_kind"] == "agent" and x["actor_id"] == attendee["id"]):
-                events.append({"kind": x["kind"], "text": x["text"]})
+                e = {"kind": x["kind"], "text": x["text"]}
+                if x["actor_kind"] == "agent":
+                    e["from_agent"] = True
+                events.append(e)
         mine = {attendee["agent_name"].lower(), attendee["handle"].lower()}
         rooms: dict[str, dict] = {}
         for m in list(self.activity):
@@ -1518,16 +1523,34 @@ class Hallway:
             rooms[m["room_id"]] = room
             if attendee["mm_user_id"] not in await self._members_of(m["room_id"], room):
                 continue
-            events.append(
-                {
-                    "kind": "message",
-                    "room": m["room"],
-                    "from": m["sender_name"],
-                    "text": m["body"][:300],
-                    "mentions_you": mentioned,
-                }
-            )
+            e = {"kind": "message", "room": m["room"], "from": m["sender_name"], "text": m["body"][:300]}
+            e["mentions_you"] = mentioned
+            if self._is_agent(m["sender_name"]):
+                e["from_agent"] = True
+            events.append(e)
         return events, {"n": n, "t": t}
+
+    def _is_agent(self, name: str) -> bool:
+        n = name.lower()
+        return n == settings.host_agent_name.lower() or bool(
+            self.store.one("SELECT 1 AS x FROM attendees WHERE lower(agent_name) = ?", n)
+        )
+
+    def chatter_held(self, attendee: dict, events: list[dict]) -> bool:
+        """Two agents that keep answering each other would loop until both passes
+        are spent. Runs woken only by other agents get AGENT_WAKES per
+        AGENT_WAKES_S; past that their messages wait (in my_inbox, and for the
+        next wake a person causes). People always get through."""
+        if not events or not all(e.get("from_agent") for e in events):
+            return False
+        now = time.time()
+        q = self._agent_wakes.setdefault(attendee["id"], collections.deque())
+        while q and now - q[0] > AGENT_WAKES_S:
+            q.popleft()
+        if len(q) >= AGENT_WAKES:
+            return True
+        q.append(now)
+        return False
 
     def poke(self) -> None:
         """Something landed (a notice, a room message): wake every feed waiter."""
@@ -1550,7 +1573,10 @@ class Hallway:
         first = cursor is None  # no cursor yet: answer at once with one
         while True:
             pulse = self._pulse  # taken before reading, so nothing lands unseen in between
-            events, cursor = await self.events_for(attendee, cursor)
+            events, after = await self.events_for(attendee, cursor)
+            if events and self.chatter_held(attendee, events):
+                events, after = [], cursor or after  # left for later, cursor unmoved
+            cursor = after
             if events or first or time.time() >= deadline:
                 return events, cursor
             await self._until(pulse, deadline)

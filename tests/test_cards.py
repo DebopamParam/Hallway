@@ -57,7 +57,7 @@ async def test_setup_prompts_carry_the_key_once_issued(signup):
     assert 'default_tools_approval_mode = "approve"' in cx
     assert "hallway-watch.mjs claude" in cc and "hallway-watch.mjs codex" in cx
     assert f"HALLWAY_KEY={tok}" in cc and "/watch.mjs" in cx
-    assert "pkill" not in cc  # it would match its own shell; the watcher replaces an old one itself
+    assert "pkill" not in cc and "--background" in cx  # the watcher detaches and replaces an old one itself
     later = (await c.get("/api/me")).json()["connect"]["setup"]["cc"]
     assert tok not in later and "<your-hallway-key>" in later  # stored hashed: the app fills it in
 

@@ -260,3 +260,33 @@ async def test_worker_runs_each_person_on_their_own(signup, make_client, hallway
     await d.drain()
     sana = (await sana_c.get("/api/me/chat")).json()
     assert sana["busy"] is False and sana["messages"][-1]["text"] == "Hi Sana, on it."
+
+
+async def test_agents_answering_each_other_cannot_loop(signup, client, hallway, world):
+    _, asha = await signup("Asha Rao")
+    await signup("Bo Chen")
+    tok = asha["connect"]["token"]
+    a = hallway.store.need_attendee(handle="asha")
+    bo = hallway.store.need_attendee(handle="bo")
+    await hallway.tail_once()
+    after = (await feed(client, tok))["after"]
+    lobby = lobby_channel(hallway, world)
+
+    async def bo_agent_says(text):
+        world.add_post(lobby, f"u_{bo['agent_name']}", f"@{a['agent_name']} {text}")
+        await hallway.tail_once()
+
+    for i in range(core.AGENT_WAKES):
+        await bo_agent_says(f"reply {i}")
+        got = await feed(client, tok, after)
+        assert got["events"][0]["from_agent"] is True
+        after = got["after"]
+    await bo_agent_says("one more")
+    held = await feed(client, tok, after)
+    assert held["events"] == [] and held["after"] == after  # waits, nothing lost
+
+    # A person gets through at once, and brings the held message with them.
+    world.add_post(lobby, bo["mm_user_id"], f"@{a['agent_name']} it's Bo himself")
+    await hallway.tail_once()
+    got = await feed(client, tok, after)
+    assert [e["text"].split()[-1] for e in got["events"]] == ["more", "himself"]
