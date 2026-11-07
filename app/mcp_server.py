@@ -131,11 +131,48 @@ def _outcome(result: object) -> str:
     return "ok"
 
 
+def _q(v: object, n: int = 80) -> str:
+    t = " ".join(str(v or "").split())
+    return f"“{t[:n]}…”" if len(t) > n else f"“{t}”"
+
+
+# What the person sees in their app chat while their agent works: one line per
+# tool that does something (reads of its own state, like whoami, stay quiet).
+STEPS: dict[str, Callable[[dict], str]] = {
+    "my_inbox": lambda k: "Checking what's new",
+    "read_room": lambda k: f"Reading #{str(k.get('room', '')).lstrip('#')}",
+    "post": lambda k: f"Posting in #{str(k.get('room', '')).lstrip('#')}: {_q(k.get('text'), 140)}",
+    "search_people": lambda k: f"Searching attendees for {_q(k['query'])}" if k.get("query") else "Browsing attendees",
+    "research_people": lambda k: f"Researching {_q(k.get('query'))}",
+    "propose_shortlist": lambda k: f"Putting a shortlist in your app: {_q(k.get('goal'))}",
+    "show_card": lambda k: f"Making you a card: {_q(k.get('title'))}",
+    "create_room": lambda k: "Opening a room with " + ", ".join(f"@{h}" for h in (k.get("invite") or [])[:5]),
+    "propose_meeting": lambda k: f"Proposing a meeting with @{k.get('with_who')} at {k.get('time')}",
+    "respond_meeting": lambda k: "Accepting a meeting" if k.get("accept") else "Declining a meeting",
+    "request_contact": lambda k: f"Asking @{k.get('with_who')} to swap contacts",
+    "start_privacy_check": lambda k: "Taking the privacy check",
+}
+
+
+def _log_step(name: str, args: tuple, kwargs: dict) -> None:
+    """Write the step to its person's chat, before the tool runs, so the app
+    shows it live. Never gets in the tool's way."""
+    step = STEPS.get(name)
+    ctx = kwargs.get("ctx") or next((a for a in args if isinstance(a, Context)), None)
+    if not step or ctx is None:
+        return
+    try:
+        _hw().chat_step(_me(ctx), step(kwargs))
+    except Exception:  # an unknown key: the tool itself answers that
+        return
+
+
 def tool[**P, R](fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
     """@mcp.tool(), counted and timed per tool for /metrics."""
 
     @functools.wraps(fn)
     async def counted(*args: P.args, **kwargs: P.kwargs) -> R:
+        _log_step(fn.__name__, args, kwargs)
         started, outcome = time.perf_counter(), "exception"
         try:
             result = await fn(*args, **kwargs)

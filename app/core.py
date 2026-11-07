@@ -197,7 +197,9 @@ SHORTLIST_OK_S = 3 * 3600  # how long a shortlist pick stands in for approval to
 TAIL_S = 2  # how often every room's new messages are read
 TAIL_KEEP = 2000  # recent messages kept in memory for the feed
 FEED_MAX = 20  # events in one answer
-PASS_WAKE_GAP_S = 20  # a day pass agent woken by events runs at most this often
+PASS_WAKE_GAP_S = 5  # a day pass agent woken by others' events runs at most this often
+CHAT_MAX = 1000  # characters in one chat message
+BUSY_S = 600  # a run that said it started but never finished stops showing as working
 
 ADDRESSING_OPENED = "stand_ins_addressing_open"  # kv: every stand-in got _open_addressing
 HOST_CREATE_TRIES, HOST_CREATE_BACKOFF_S = 6, 0.5  # Switch busy creating a room: retry for ~10 s
@@ -275,6 +277,7 @@ class Hallway:
         self._tail_since: dict[str, int] = {}  # room id -> last message ms
         self._tail_task: asyncio.Task[None] | None = None
         self._members: dict[str, tuple[float, set[str]]] = {}
+        self._pulse = asyncio.Event()  # set (and replaced) when anything lands for the feed
 
     # ------------------------------------------------------------------ setup
     async def start(self) -> None:
@@ -325,6 +328,7 @@ class Hallway:
         if not self.store.kv_get(ADDRESSING_OPENED):
             await self._open_all_stand_ins()
         self._sync_task = asyncio.create_task(self._sync_loop())
+        self.store.on_notice = self.poke
         self._tail_task = asyncio.create_task(self._tail_loop())
         self.presence.ensure_all()
 
@@ -897,11 +901,13 @@ class Hallway:
             cutoff,
         )
 
-    async def woken_passes(self, every_s: float) -> list[dict]:
+    async def woken_passes(self, every_s: float, busy: frozenset[str] = frozenset()) -> list[dict]:
         """due_passes, plus active passes with something new for their agent (a
-        mention, a meeting request, a decision), each with `events`: so a day
-        pass answers within seconds, not at its next timed run."""
-        due = self.due_passes(every_s)
+        message from their person, a mention, a meeting request, a decision),
+        each with `events`: so a day pass agent acts within seconds, not at its
+        next timed run. `busy`: attendee ids whose agent is running now; they
+        keep their events for the run after."""
+        due = [p for p in self.due_passes(every_s) if p["attendee_id"] not in busy]
         seen = {p["attendee_id"] for p in due}
         rows = due + [  # timed ones first, in due_passes' order
             p
@@ -909,7 +915,7 @@ class Hallway:
                 "SELECT p.*, a.name, a.handle, a.profile FROM passes p JOIN attendees a ON a.id = p.attendee_id "
                 "WHERE p.status = 'active' AND a.mode = 'daypass'"
             )
-            if p["attendee_id"] not in seen
+            if p["attendee_id"] not in seen and p["attendee_id"] not in busy
         ]
         now = time.time()
         out = []
@@ -918,13 +924,49 @@ class Hallway:
             key = f"passfeed:{a['id']}"
             events, cursor = await self.events_for(a, self.store.kv_get(key))
             timed = p["attendee_id"] in seen
+            # Their own person waits for nobody; others' chatter is rate limited.
+            asked = any(e["kind"] == "chat" for e in events)
             gap_ok = p["last_run_at"] is None or now - p["last_run_at"] >= PASS_WAKE_GAP_S
-            if timed or (events and gap_ok):
+            if timed or asked or (events and gap_ok):
                 self.store.kv_set(key, cursor)  # this run will see them (my_inbox)
                 out.append({**p, "events": events})
             elif not events:
                 self.store.kv_set(key, cursor)
         return out
+
+    # ------------------------------------------------------------ agent chat
+    def chat_from_person(self, attendee: dict, text: str) -> int:
+        """The person messages their own agent in the app. It reaches the agent
+        as an event (the day pass worker, or a Connect agent's watcher, starts on
+        it at once) and in my_inbox."""
+        text = text.strip()
+        if not text:
+            raise HallwayError("Write something for your agent.")
+        if len(text) > CHAT_MAX:
+            raise HallwayError(f"Keep it under {CHAT_MAX} characters.")
+        mid = self.store.chat_add(attendee["id"], "you", text)
+        first = attendee["name"].split()[0]
+        self.store.notice(
+            attendee["id"], "chat", f"{first} (in the app): {text}", actor=Actor.person(attendee), audience="agent"
+        )
+        return mid
+
+    def chat_from_agent(self, attendee: dict, text: str) -> None:
+        if text := text.strip():
+            self.store.chat_add(attendee["id"], "agent", text[:4000])
+
+    def chat_step(self, attendee: dict, text: str) -> None:
+        self.store.chat_add(attendee["id"], "step", text[:300])
+
+    def set_agent_busy(self, attendee: dict, busy: bool) -> None:
+        if busy:
+            self.store.kv_set(f"agentbusy:{attendee['id']}", time.time())
+        else:
+            self.store.kv_pop(f"agentbusy:{attendee['id']}")
+
+    def agent_busy(self, attendee: dict) -> bool:
+        since = self.store.kv_get(f"agentbusy:{attendee['id']}")
+        return bool(since) and time.time() - float(since) < BUSY_S
 
     def record_run(
         self, attendee_id: str, engine: str, cost_usd: float, tool_calls: int, summary: str, ok: bool
@@ -1423,6 +1465,7 @@ class Hallway:
                 ts = int(m["timestamp"])
                 if since is not None and ts > since:
                     self.activity.append({**m, "room_id": room["id"], "room": room["name"], "room_kind": room["kind"]})
+                    self.poke()
                 latest = max(latest, ts)
             self._tail_since[room["id"]] = latest
 
@@ -1486,14 +1529,31 @@ class Hallway:
             )
         return events, {"n": n, "t": t}
 
+    def poke(self) -> None:
+        """Something landed (a notice, a room message): wake every feed waiter."""
+        pulse, self._pulse = self._pulse, asyncio.Event()
+        pulse.set()
+
+    async def until_poked(self, deadline: float) -> None:
+        """Wait for the next poke, at most a second (timed day passes come due on
+        their own) and never past `deadline`."""
+        await self._until(self._pulse, deadline)
+
+    @staticmethod
+    async def _until(pulse: asyncio.Event, deadline: float) -> None:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(pulse.wait(), max(0.0, min(1.0, deadline - time.time())))
+
     async def wait_events(self, attendee: dict, cursor: dict | None, wait_s: float) -> tuple[list[dict], dict]:
         """events_for, held open up to `wait_s` until there is something."""
         deadline = time.time() + wait_s
+        first = cursor is None  # no cursor yet: answer at once with one
         while True:
+            pulse = self._pulse  # taken before reading, so nothing lands unseen in between
             events, cursor = await self.events_for(attendee, cursor)
-            if events or time.time() >= deadline:
+            if events or first or time.time() >= deadline:
                 return events, cursor
-            await asyncio.sleep(1)
+            await self._until(pulse, deadline)
 
     async def inbox(self, attendee: dict) -> dict:
         """What changed since the agent last checked: messages that mention it or

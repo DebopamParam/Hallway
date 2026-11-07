@@ -313,9 +313,8 @@ def _setup_prompt(agent: str, key: str) -> str:
     watch = (
         "mkdir -p ~/.hallway-agent && "
         f"curl -fsSL {settings.public_url}/watch.mjs -o ~/.hallway-agent/hallway-watch.mjs && "
-        "(pkill -f hallway-watch.mjs; "
-        f"HALLWAY_KEY={key} nohup node ~/.hallway-agent/hallway-watch.mjs {'claude' if agent == 'cc' else 'codex'} "
-        "> ~/.hallway-agent/watch.log 2>&1 &)"
+        f"(HALLWAY_KEY={key} nohup node ~/.hallway-agent/hallway-watch.mjs {'claude' if agent == 'cc' else 'codex'} "
+        "> ~/.hallway-agent/watch.log 2>&1 < /dev/null &)"
     )
     if agent == "cc":
         add = (
@@ -338,11 +337,14 @@ def _setup_prompt(agent: str, key: str) -> str:
     return (
         "Set up Hallway for me. You'll set things up; a watcher then runs my agent whenever something happens "
         f"at {settings.event_name}, so nobody has to poll.\n\n{add}\n"
-        "2. Start the Hallway watcher in the background (Node 18+). It waits on Hallway's event feed without an "
-        "LLM and runs a headless agent with only the hallway tools when there's news:\n"
+        "2. Start the Hallway watcher in the background (Node 18+) by running this command exactly as written, "
+        "with no added flags. It waits on Hallway's event feed without an LLM, runs a headless agent with only the "
+        "hallway tools the moment something arrives (and a short proactive round every 20 minutes), and replaces "
+        "any watcher already running:\n"
         f"   {watch}\n"
-        "3. Check ~/.hallway-agent/watch.log says it is watching, then tell me it's running and that I can follow "
-        f"it with: tail -f ~/.hallway-agent/watch.log. {restart}\n\n"
+        "3. Check ~/.hallway-agent/watch.log says it is watching, then tell me it's running: I can talk to my agent "
+        "and watch what it does in the Hallway app's Agent tab, or follow it with tail -f ~/.hallway-agent/watch.log. "
+        f"{restart}\n\n"
         "If you test the endpoint by hand, use curl, Python httpx or requests, or Node fetch. Don't use Python's "
         "urllib: Cloudflare, in front of public Hallway deployments, refuses its default user agent (HTTP 403)."
     )
@@ -706,6 +708,37 @@ async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)) -> di
     return _me_view(a)
 
 
+class ChatIn(BaseModel):
+    text: str
+
+
+@app.get("/api/me/chat")
+async def my_chat(after: int = 0, hw_session: str | None = Cookie(None)) -> dict:
+    """Your conversation with your agent: what you asked, its replies, and the
+    steps it is taking (every Hallway tool it calls). `busy` while it works."""
+    a = _me(hw_session)
+    msgs = [
+        {"id": m["id"], "role": m["role"], "text": m["text"], "at": m["created_at"]}
+        for m in hallway.store.chat(a["id"], after)
+    ]
+    return {"messages": msgs, "busy": hallway.agent_busy(a)}
+
+
+@app.post("/api/me/chat")
+async def chat_to_agent(body: ChatIn, hw_session: str | None = Cookie(None)) -> dict:
+    """Message your own agent. It starts on it right away (a day pass agent
+    within a second or two; your own agent through its watcher)."""
+    a = _me(hw_session)
+    if wait_s := limiter.hit("mcp_call", a["id"]):
+        raise HallwayError(f"Slow down a little: try again in {wait_s} s.")
+    return {"id": hallway.chat_from_person(a, body.text)}
+
+
+class AgentSays(BaseModel):
+    text: str = ""
+    busy: bool | None = None
+
+
 class ModeChange(BaseModel):
     mode: str
 
@@ -718,17 +751,24 @@ async def change_mode(body: ModeChange, hw_session: str | None = Cookie(None)) -
     return _me_view(a)
 
 
+@app.post("/agent/chat")
+async def agent_chat(body: AgentSays, request: Request) -> dict:
+    """The agent's side of the app chat, for the watcher and the day pass
+    worker: `busy` while a run works, then `text`, its reply to its person."""
+    a = _agent(request)
+    if body.busy is not None:
+        hallway.set_agent_busy(a, body.busy)
+    hallway.chat_from_agent(a, body.text)
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------- event feed
 EVENTS_WAIT_MAX_S = 25  # under Cloudflare's 100 s, and short enough to notice a dead watcher
 
 
-@app.get("/agent/events")
-async def agent_events(request: Request, after: str = "", wait: float = 0) -> dict:
-    """The agent's event feed, for a watcher script or the day pass worker: no
-    LLM, no tokens. Holds the request up to `wait` seconds until something is
-    new for the agent (a mention, a message in one of its small rooms, a
-    meeting request, a decision), then returns it with the next `after`.
-    Authenticated like /mcp (the agent's key). Reading it marks nothing read."""
+def _agent(request: Request) -> dict:
+    """The attendee whose agent key (or day pass run token) came with the
+    request: as a Bearer header like /mcp, x-hallway-key, or ?key=."""
     token = ""
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
@@ -741,6 +781,17 @@ async def agent_events(request: Request, after: str = "", wait: float = 0) -> di
         raise HTTPException(403, "This day pass is paused or out of budget.")
     if wait_s := limiter.hit("mcp_call", a["id"]):
         raise HTTPException(429, f"Too many requests: wait {wait_s} s.")
+    return a
+
+
+@app.get("/agent/events")
+async def agent_events(request: Request, after: str = "", wait: float = 0) -> dict:
+    """The agent's event feed, for a watcher script or the day pass worker: no
+    LLM, no tokens. Holds the request up to `wait` seconds until something is
+    new for the agent (a mention, a message in one of its small rooms, a
+    meeting request, a decision), then returns it with the next `after`.
+    Authenticated like /mcp (the agent's key). Reading it marks nothing read."""
+    a = _agent(request)
     cursor = None
     if after:
         try:
@@ -1331,13 +1382,18 @@ def _worker(request: Request) -> None:
 
 
 @app.get("/internal/daypass/due")
-async def daypass_due(request: Request, every_s: int | None = None) -> list[dict]:
+async def daypass_due(request: Request, every_s: int | None = None, busy: str = "", wait: float = 0) -> list[dict]:
     """Passes whose agent should run now, with what the worker needs to run them.
     `token` is a fresh MCP token for this run only (the attendee's own key is
     stored hashed): it expires within the hour and is revoked when the run reports."""
     _worker(request)
     out = []
-    for p in await hallway.woken_passes(settings.daypass_every_s if every_s is None else every_s):
+    running = frozenset(x for x in busy.split(",") if x)  # the worker's agents mid-run
+    period = settings.daypass_every_s if every_s is None else every_s
+    deadline = time.time() + max(0.0, min(wait, EVENTS_WAIT_MAX_S))  # long-poll, like /agent/events
+    while not (woken := await hallway.woken_passes(period, running)) and time.time() < deadline:
+        await hallway.until_poked(deadline)
+    for p in woken:
         out.append(
             {
                 "attendee_id": p["attendee_id"],

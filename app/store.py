@@ -521,6 +521,22 @@ def _m9_cards(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS cards_attendee ON cards (attendee_id, created_at)")
 
 
+def _m10_agent_chat(db: sqlite3.Connection) -> None:
+    """9 -> 10: agent_chat, each person's conversation with their own agent in
+    the app: what they asked (you), the agent's replies (agent) and the tool
+    steps it took on the way (step)."""
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS agent_chat (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attendee_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  text TEXT NOT NULL,
+  created_at REAL NOT NULL
+)"""
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS agent_chat_attendee ON agent_chat (attendee_id, id)")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m1_base_schema,
     _m2_hash_tokens,
@@ -531,6 +547,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m7_pass_note,
     _m8_visibility,
     _m9_cards,
+    _m10_agent_chat,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -575,6 +592,7 @@ class Store:
         # Autocommit (isolation_level=None): every statement commits on its own,
         # and multi-statement writes that must land together use transaction().
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        self.on_notice: Callable[[], None] = lambda: None  # Hallway wakes its event feed waiters
         self.db.row_factory = sqlite3.Row
         configure(self.db)
         self.db.create_function("sha256_hex", 1, lambda t: token_hash(t) if t is not None else None, deterministic=True)
@@ -702,6 +720,29 @@ class Store:
             aid for aid, vals in (self._private or {}).items() if any(v.lower() in t for v in vals for t in found)
         )
 
+    def chat_add(self, attendee_id: str, role: str, text: str) -> int:
+        cur = self.db.execute(
+            "INSERT INTO agent_chat (attendee_id, role, text, created_at) VALUES (?, ?, ?, ?)",
+            (attendee_id, role, text, time.time()),
+        )
+        return int(cur.lastrowid or 0)
+
+    def chat(self, attendee_id: str, after: int = 0, limit: int = 60) -> list[dict]:
+        """Messages after id `after`, oldest first; with no `after`, the latest `limit`."""
+        if after:
+            return self.all(
+                "SELECT id, role, text, created_at FROM agent_chat WHERE attendee_id = ? AND id > ? ORDER BY id LIMIT ?",
+                attendee_id,
+                after,
+                limit,
+            )
+        rows = self.all(
+            "SELECT id, role, text, created_at FROM agent_chat WHERE attendee_id = ? ORDER BY id DESC LIMIT ?",
+            attendee_id,
+            limit,
+        )
+        return rows[::-1]
+
     def kv_get(self, key: str) -> Any:
         row = self.db.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
         return json.loads(row[0]) if row else None
@@ -771,6 +812,7 @@ class Store:
             structured=1,
             created_at=time.time(),
         )
+        self.on_notice()
 
     def notices(self, attendee_id: str, where: str = "", *args: Any, limit: int | None = None) -> list[dict]:
         """An attendee's notices, oldest first unless `where` orders them, in the
