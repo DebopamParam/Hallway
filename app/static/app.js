@@ -1568,7 +1568,7 @@ function bindChat(me) {
       c.busy = r.busy;
       // With the composer on screen when a reply lands, keep the newest message above the tab bar.
       const form = document.getElementById("chat-form");
-      const near = form.getBoundingClientRect().top < innerHeight;
+      const near = form.getBoundingClientRect().top < window.innerHeight;
       paint();
       if (near && fresh.some((m) => m.role !== "you")) form.scrollIntoView({ block: "nearest" });
     } catch { /* keep what's shown */ }
