@@ -29,7 +29,25 @@ CSP = "; ".join(
         "object-src 'none'",
         "base-uri 'none'",
         "form-action 'self'",
+        "frame-src 'self'",
         "frame-ancestors 'none'",
+    ]
+)
+# An agent-made card (main.card): the agent's own inline style and script, in a
+# sandbox (an opaque origin: no cookies, no storage, no Hallway API), with no
+# network beyond images and Google Fonts, framed only by the app itself.
+CARD_CSP = "; ".join(
+    [
+        "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox",
+        "default-src 'none'",
+        "script-src 'unsafe-inline'",
+        "style-src 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src https://fonts.gstatic.com data:",
+        "img-src https: data:",
+        "media-src https: data:",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "frame-ancestors 'self'",
     ]
 )
 PERMISSIONS_POLICY = (

@@ -189,6 +189,7 @@ def _overlap_keys(profile: dict) -> dict[str, str]:
 TEXT_LIMITS = {"title": 80, "time": 40, "place": 120, "why": 300, "goal": 200, "pitch": 200}
 RESEARCH_MAX = 10  # people research_people returns, and candidates on one shortlist
 RESEARCH_LOOKUPS = 15  # uncached web lookups one research_people call may make
+CARD_HTML_MAX = 100_000  # one agent-made card, in characters
 SHORTLIST_OK_S = 3 * 3600  # how long a shortlist pick stands in for approval to reach out
 
 ADDRESSING_OPENED = "stand_ins_addressing_open"  # kv: every stand-in got _open_addressing
@@ -775,6 +776,7 @@ class Hallway:
                 ("worker_tokens", "attendee_id"),
                 ("notices", "attendee_id"),
                 ("approvals", "attendee_id"),
+                ("cards", "attendee_id"),
                 ("passes", "attendee_id"),
                 ("pass_runs", "attendee_id"),
             ):
@@ -1466,7 +1468,34 @@ class Hallway:
             "line each on why; they pick in the Hallway app.",
         }
 
-    def propose_shortlist(self, me: dict, goal: str, candidates: list[dict], pick: int = 3) -> dict:
+    def make_card(self, me: dict, title: str, html: str, approval_id: str | None = None) -> str:
+        """Keep a page the agent made for its human. It is served only to them, in
+        a sandboxed frame (main.card), so its script can't reach Hallway; and
+        what the privacy guard would redact in a message is redacted here too."""
+        title = self.clean_text(title, "title") or "From your agent"
+        html = str(html or "")
+        if not html.strip():
+            raise HallwayError("The card needs some HTML.")
+        if len(html) > CARD_HTML_MAX:
+            raise HallwayError(f"The card is too big: at most {CARD_HTML_MAX} characters of HTML.")
+        outcome, findings = guard.scan(html, self.private_matcher())
+        if outcome == "redacted":
+            html = guard.redact(html, findings)
+        cid = new_id()
+        self.store.insert(
+            "cards",
+            id=cid,
+            attendee_id=me["id"],
+            title=title,
+            html=html,
+            approval_id=approval_id,
+            created_at=time.time(),
+        )
+        return cid
+
+    def propose_shortlist(
+        self, me: dict, goal: str, candidates: list[dict], pick: int = 3, html: str | None = None
+    ) -> dict:
         """Put candidates in front of the human as one interactive card: they tick
         up to `pick`, and the agent then reaches out to exactly those."""
         goal = self.clean_text(goal, "goal")
@@ -1500,12 +1529,13 @@ class Hallway:
         if len(rows) < 2:
             raise HallwayError("A shortlist needs at least 2 other attendees.")
         pick = max(1, min(int(pick), len(rows)))
-        return self.ask(
-            me,
-            "shortlist",
-            f"Pick up to {pick} of {len(rows)}: {goal}",
-            {"goal": goal, "pick": pick, "candidates": rows},
-        )
+        payload: dict[str, Any] = {"goal": goal, "pick": pick, "candidates": rows}
+        if html:
+            payload["card"] = self.make_card(me, goal, html)
+        res = self.ask(me, "shortlist", f"Pick up to {pick} of {len(rows)}: {goal}", payload)
+        if html:
+            self.store.update("cards", payload["card"], approval_id=res["approval_id"])
+        return res
 
     @staticmethod
     def _check_picks(p: dict, selected: list[str] | None) -> list[str]:

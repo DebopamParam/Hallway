@@ -3,7 +3,23 @@ const $app = document.getElementById("app");
 const state = { me: null, event: null, timers: [], counts: { now: 0 }, route: "", freshConnect: null };
 // The MCP key is stored hashed: the server returns it only right after it is
 // issued (registration, "New key"). Keep that copy in memory for this page.
-function keepKey(me) { if (me && me.connect && me.connect.token) state.freshConnect = me.connect; return me; }
+// The MCP key is shown by the server only once (it keeps a hash), so this
+// browser remembers it, to put the real key in the setup prompt on every visit.
+const KEY_PLACEHOLDER = "<your-hallway-key>";
+function keepKey(me) {
+  if (me && me.connect && me.connect.token) {
+    state.freshConnect = me.connect;
+    try { localStorage.setItem("hw-key", JSON.stringify({ handle: me.handle, hint: me.connect.token_hint, token: me.connect.token })); } catch { /* private mode */ }
+  }
+  return me;
+}
+function savedKey(me) {
+  try {
+    const k = JSON.parse(localStorage.getItem("hw-key") || "null");
+    return k && k.handle === me.handle && k.hint === me.connect.token_hint ? k.token : "";
+  } catch { return ""; }
+}
+function dropKey() { try { localStorage.removeItem("hw-key"); } catch { /* private mode */ } }
 
 // ---------------------------------------------------------------- helpers
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -179,8 +195,8 @@ function sheet(inner, { onOpen } = {}) {
 }
 
 // ---------------------------------------------------------------- theme
-const THEMES = ["system", "light", "dark"];
-function getTheme() { try { return localStorage.getItem("hw-theme") || "system"; } catch { return "system"; } }
+const THEMES = ["light", "dark", "system"];
+function getTheme() { try { return localStorage.getItem("hw-theme") || "light"; } catch { return "light"; } }
 function setTheme(t) {
   try { localStorage.setItem("hw-theme", t); } catch { /* private mode */ }
   if (t === "system") delete document.documentElement.dataset.theme;
@@ -701,6 +717,25 @@ const KIND_LABEL = { chat: "Chat", post: "Post a message", create_room: "Start a
 
 // A shortlist card: the agent's candidates, rendered from data (never agent HTML),
 // each ticked or not. Approving sends the ticked handles; the agent reaches out to those.
+// An agent-made card: the agent's own HTML/CSS/JS, served by /cards/{id} under
+// its own CSP sandbox and framed with the sandbox attribute too, so its script
+// runs in an opaque origin: no cookies, no Hallway API, no fetch. It may only
+// postMessage us its height, and on a shortlist, which people to tick.
+const cardFrame = (id, title) =>
+  `<iframe class="agent-card" src="/cards/${encodeURIComponent(id)}" title="${esc(title)}" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" loading="lazy"></iframe>`;
+window.addEventListener("message", (e) => {
+  const frame = [...document.querySelectorAll("iframe.agent-card")].find((f) => f.contentWindow === e.source);
+  const d = e.data;
+  if (!frame || !d || typeof d !== "object") return;
+  if (d.type === "hallway:height" && Number.isFinite(d.px)) frame.style.height = `${Math.min(Math.max(d.px, 80), 1600)}px`;
+  if (d.type === "hallway:select" && Array.isArray(d.handles)) {
+    const card = frame.closest(".shortlist");
+    if (!card) return;
+    const want = new Set(d.handles.map(String).slice(0, Number(card.dataset.pick) || 1));
+    card.querySelectorAll("[data-pick-handle]").forEach((b) => { b.checked = want.has(b.dataset.pickHandle); b.dispatchEvent(new Event("change")); });
+  }
+});
+
 function shortlistTicket(a, me, ticked) {
   const p = a.payload || { candidates: [], pick: 1 };
   const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
@@ -708,6 +743,7 @@ function shortlistTicket(a, me, ticked) {
     <article class="ticket shortlist" data-card data-pick="${p.pick}">
       <div class="ticket-top">${av(me.name, "agent")}<div class="grow"><div class="ticket-kicker">Your agent found · Shortlist</div><div class="ticket-sum">${esc(p.goal || a.summary)}</div></div></div>
       <div class="ticket-meta">Tick up to ${p.pick}. Your agent says hi to them and tries to set up a meeting. ${ago(a.created_at)}</div>
+      ${p.card ? cardFrame(p.card, p.goal || "Shortlist") : ""}
       <div class="cands">${p.candidates.map((c) => `
         <label class="cand"><input type="checkbox" data-pick-handle="${esc(c.handle)}" ${ticked.has(c.handle) ? "checked" : ""}>
           <span class="tick">${icon("check", "sm")}</span>
@@ -807,6 +843,7 @@ async function nowView() {
       <a class="agent-line" href="#/me" id="agent-line"></a>
     </section>
     <section class="block" id="needs"></section>
+    <section class="block" id="cards" hidden></section>
     <section class="block" id="board"></section>
     <section class="block" id="feed"></section>
   </div>`);
@@ -890,6 +927,21 @@ async function nowView() {
       ["Accepted", "Declined", (r, yes) => (yes ? (r.status === "confirmed" ? "Meeting confirmed. A room is open for you both." : "Accepted") : "Declined")]);
   };
   every(4000, () => load().catch(() => {}));
+  // Pages the agent made (show_card); a shortlist's own page sits on its ticket instead.
+  const cardsEl = document.getElementById("cards");
+  let cardsKey = "";
+  const loadCards = async () => {
+    const list = (await api("/api/cards")).filter((x) => !x.approval_id);
+    const k = list.map((x) => x.id).join();
+    if (k === cardsKey) return;
+    cardsKey = k;
+    cardsEl.hidden = !list.length;
+    cardsEl.innerHTML = `<div class="block-head"><h2>From your agent</h2></div>
+      <div class="agent-cards">${list.slice(0, 5).map((x, i) => `
+        <details class="agent-card-box" ${i ? "" : "open"}><summary><span class="grow">${esc(x.title)}</span><span class="muted small">${ago(x.created_at)}</span>${icon("chev", "sm")}</summary>
+          ${cardFrame(x.id, x.title)}</details>`).join("")}</div>`;
+  };
+  every(8000, () => loadCards().catch(() => {}));
   every(10000, async () => { try { state.me = await api("/api/me"); line(); refreshPill(); } catch { /* keep */ } });
 }
 
@@ -1198,7 +1250,7 @@ function bindCommon(me) {
   const signOut = async (path, confirmSheet) => {
     if (confirmSheet && (await sheet(confirmSheet)) !== "yes") return;
     try { await api(path, { body: {} }); } catch (e) { if (e.status !== 401) return toast(e.message); }
-    state.me = null; state.freshConnect = null; go("");
+    state.me = null; state.freshConnect = null; dropKey(); go("");
   };
   document.getElementById("logout").onclick = () => signOut("/api/auth/logout", demo && `<h2>Sign out?</h2>${demoNote}
     <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-answer="yes">Sign out</button></div>`);
@@ -1291,23 +1343,22 @@ const CONNECT_TABS = [["cc", "Claude Code"], ["cx", "Codex"]];
 async function meView() {
   const me = state.me;
   if (me.pass) return passView(me);
-  const fresh = state.freshConnect && state.freshConnect.token_hint === me.connect.token_hint ? state.freshConnect : null;
-  const c = fresh || me.connect;
+  const c = me.connect;
+  const key = (state.freshConnect && state.freshConnect.token_hint === c.token_hint && state.freshConnect.token) || savedKey(me);
+  const prompt = (id) => (key ? c.setup[id].split(KEY_PLACEHOLDER).join(key) : c.setup[id]);
   const pv = me.privacy || {};
   const live = me.mode === "live";
   const connected = Boolean(me.agent_seen_at);
   const started = Boolean(pv.started_at || pv.checked_at);
   const steps = [
-    { done: connected, title: live ? "Add Hallway's tools (optional)" : "Connect it to Hallway",
-      body: `<p class="small muted">${live ? "Your agent already talks in rooms through Switch. These tools add meetings, approvals and contact swaps." : "Run one of these on the machine where your agent lives."}</p>
+    { done: connected, title: live ? "Add Hallway's tools (optional)" : "Give your agent this prompt",
+      body: `<p class="small muted">${live ? "Your agent already talks in rooms through Switch. Paste this into Claude Code or Codex to add meetings, approvals and contact swaps." : "Paste it into Claude Code or Codex on your laptop. It connects to Hallway with your key, then starts working the hallway."}</p>
         <div class="code-card"><div class="code-tabs"><div class="seg" id="ctabs" role="group" aria-label="Your agent">${CONNECT_TABS.map(([id, label], i) => `<button data-c="${id}" class="${i ? "" : "on"}" aria-pressed="${!i}">${label}</button>`).join("")}</div>
-          <button class="iconbtn sm" id="copy" aria-label="Copy the command">${icon("copy", "sm")}</button></div>
-          <pre class="code" id="cc">${esc(c.claude_code)}</pre><pre class="code" id="cx" hidden>${esc(c.codex)}</pre></div>
-        <p class="tiny muted">${icon("key", "xs")} ${fresh ? "Copy it now: Hallway shows your key only once. It works like a password, so don't paste it anywhere public."
-          : `Your key (<span class="mono">${esc(c.token_hint)}</span>) is hidden: Hallway shows it only once. Lost it? Make a new one under Agent key.`}</p>` },
-    { done: started || connected, title: "Give it the kickoff prompt",
-      body: `<div class="code-card"><pre class="code prompt" id="ko">${esc(c.kickoff)}</pre><button class="iconbtn sm copy-float" id="copy-ko" aria-label="Copy the kickoff prompt">${icon("copy", "sm")}</button></div>
-        <p class="tiny muted">In Claude Code, run it as <span class="mono">/loop 5m &lt;prompt&gt;</span> to keep your agent in the hallway while you're in talks.</p>` },
+          <button class="iconbtn sm" id="copy" aria-label="Copy the prompt">${icon("copy", "sm")}</button></div>
+          ${CONNECT_TABS.map(([id], i) => `<pre class="code prompt" id="${id}" ${i ? "hidden" : ""}>${esc(prompt(id))}</pre>`).join("")}</div>
+        ${key ? `<p class="tiny muted">${icon("key", "xs")} Your key is in the prompt. It works like a password: paste it only into your own agent.</p>`
+          : `<p class="tiny muted">${icon("key", "xs")} Hallway shows a key only once, and this browser doesn't have yours (<span class="mono">${esc(c.token_hint)}</span>).</p>
+            <button class="btn primary sm" id="fill-key">${icon("key", "sm")}Put a new key in the prompt</button>`}` },
     { done: pv.passed, bad: pv.checked_at && !pv.passed, title: "Privacy check",
       body: pv.passed ? '<p class="small muted">Passed. It answered three probing questions without leaking anything private.</p>'
         : pv.checked_at ? `<p class="small"><strong>It leaked:</strong> ${(pv.leaks || []).map((l) => esc(l.leaked.join(", "))).join(", ") || "private details"}.</p><p class="small muted">Tell your agent to use only your public profile, then ask it to run the check again.</p>`
@@ -1333,7 +1384,7 @@ async function meView() {
       ${doneN === steps.length ? `<p class="small muted setup-done">${icon("check", "sm")}All set. Your agent is in the hallway.</p>` : ""}
       <ol class="checklist">${steps.map((s, i) => `
         <li class="${s.done ? "done" : s.bad ? "bad" : ""} ${i === current ? "current" : ""}">
-          <details ${i === current || (i === 0 && fresh) ? "open" : ""}><summary><span class="ck" aria-hidden="true">${s.done ? icon("check", "sm") : s.bad ? icon("x", "sm") : i + 1}</span><span class="grow"><span class="sr-only">${s.done ? "Done" : s.bad ? "Failed" : `Step ${i + 1}`}: </span>${s.title}</span>${icon("chev", "sm chev")}</summary>
+          <details ${i === current ? "open" : ""}><summary><span class="ck" aria-hidden="true">${s.done ? icon("check", "sm") : s.bad ? icon("x", "sm") : i + 1}</span><span class="grow"><span class="sr-only">${s.done ? "Done" : s.bad ? "Failed" : `Step ${i + 1}`}: </span>${s.title}</span>${icon("chev", "sm chev")}</summary>
           <div class="ck-body">${s.body}</div></details></li>`).join("")}</ol>
     </section>
     <section class="block"><div class="block-head"><h2>Agent key</h2><button class="btn ghost sm" id="rotate">${icon("key", "sm")}New key</button></div>
@@ -1347,7 +1398,6 @@ async function meView() {
     CONNECT_TABS.forEach(([id]) => (document.getElementById(id).hidden = id !== shown));
   }));
   document.getElementById("copy").onclick = () => window.hwCopy(shown);
-  document.getElementById("copy-ko").onclick = () => window.hwCopy("ko");
   const copyProof = document.getElementById("copy-proof");
   if (copyProof) copyProof.onclick = () => window.hwCopy("proof");
   document.getElementById("verify")?.addEventListener("click", async () => {
@@ -1357,21 +1407,23 @@ async function meView() {
       toast("No code from your agent yet. Ask it to post the code in that room, then check again.");
     } catch (e) { toast(e.message); }
   });
-  document.getElementById("rotate").onclick = async () => {
+  const rotate = async () => {
     const ok = await sheet(`<h2>Make a new agent key?</h2>
-      <p class="small muted">Your current key (<span class="mono">${esc(c.token_hint)}</span>) stops working right away. Give your agent the new one to reconnect.</p>
+      <p class="small muted">Your current key (<span class="mono">${esc(c.token_hint)}</span>) stops working right away. Paste the new setup prompt into your agent, then restart it: Claude Code and Codex load keys only when a session starts.</p>
       <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-answer="yes">New key</button></div>`);
     if (ok !== "yes") return;
-    try { state.me = keepKey(await api("/api/me/agent-key", { body: {} })); toast("New key ready. Copy it now: it's shown once.", "ok"); render(); }
+    try { state.me = keepKey(await api("/api/me/agent-key", { body: {} })); toast("New key is in the setup prompt.", "ok"); render(); }
     catch (e) { toast(e.message); }
   };
+  document.getElementById("rotate").onclick = rotate;
+  document.getElementById("fill-key")?.addEventListener("click", rotate);
   bindCommon(me);
-  const key = JSON.stringify([connected, pv.passed, pv.checked_at, started, me.agent_verified]);
+  const watchKey = JSON.stringify([connected, pv.passed, pv.checked_at, started, me.agent_verified]);
   every(5000, async () => {
     try {
       state.me = await api("/api/me");
       const p = state.me.privacy || {};
-      if (JSON.stringify([Boolean(state.me.agent_seen_at), p.passed, p.checked_at, Boolean(p.started_at || p.checked_at), state.me.agent_verified]) !== key) return render();
+      if (JSON.stringify([Boolean(state.me.agent_seen_at), p.passed, p.checked_at, Boolean(p.started_at || p.checked_at), state.me.agent_verified]) !== watchKey) return render();
       refreshPill();
       const s = document.getElementById("seen");
       if (s && state.me.agent_seen_at) s.textContent = `Active ${ago(state.me.agent_seen_at)}`;
