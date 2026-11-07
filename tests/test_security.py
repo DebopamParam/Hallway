@@ -39,6 +39,14 @@ async def test_security_headers_everywhere(client, path):
     assert "camera=()" in r.headers["permissions-policy"]
     assert r.headers["x-frame-options"] == "DENY"
     assert "strict-transport-security" not in r.headers  # public URL is http in tests
+    assert r.headers["cache-control"] == "no-cache"  # a deploy isn't hidden behind Cloudflare's cache
+
+
+async def test_static_revalidates_with_304(client):
+    r = await client.get("/static/app.js")
+    etag = r.headers["etag"]
+    r = await client.get("/static/app.js", headers={"if-none-match": etag})
+    assert r.status_code == 304
 
 
 async def test_headers_on_mcp_and_csrf_refusals(client, signup):
