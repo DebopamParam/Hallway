@@ -11,6 +11,7 @@ EXPECTED_TOOLS = {
     "search_people",
     "research_people",
     "propose_shortlist",
+    "show_card",
     "create_room",
     "propose_meeting",
     "respond_meeting",

@@ -504,6 +504,23 @@ def _m8_visibility(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE attendees ADD COLUMN web_lookup INTEGER NOT NULL DEFAULT 1")
 
 
+def _m9_cards(db: sqlite3.Connection) -> None:
+    """8 -> 9: cards, pages an agent made for its human (HTML/CSS/JS), shown on
+    the Now tab in a sandboxed frame; approval_id when one belongs to a card
+    the human decides on (a shortlist)."""
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS cards (
+  id TEXT PRIMARY KEY,
+  attendee_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  html TEXT NOT NULL,
+  approval_id TEXT,
+  created_at REAL NOT NULL
+)"""
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS cards_attendee ON cards (attendee_id, created_at)")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m1_base_schema,
     _m2_hash_tokens,
@@ -513,6 +530,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m6_guard_log_about,
     _m7_pass_note,
     _m8_visibility,
+    _m9_cards,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 

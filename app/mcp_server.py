@@ -45,6 +45,8 @@ How to work the room:
    the app; my_inbox brings the picks. Say hi to exactly those and propose meetings; don't contact the
    rest. Web pages are about someone with that name and may be a namesake: only cite them when they
    match the Hallway profile, and quote the page as the source.
+11. To show your human something richer than a sentence (a comparison, a plan for the day), make a
+   page with show_card: your own HTML, CSS and JS, shown on their Now tab.
 """
 
 mcp = MCPServer("Hallway", instructions=INSTRUCTIONS)
@@ -229,13 +231,38 @@ async def research_people(ctx: Context, query: str, limit: int = 10) -> dict:
 
 
 @tool
-async def propose_shortlist(ctx: Context, goal: str, candidates: list[dict], pick: int = 3) -> dict:
+async def propose_shortlist(
+    ctx: Context, goal: str, candidates: list[dict], pick: int = 3, html: str | None = None
+) -> dict:
     """Show your human a shortlist card in the Hallway app: `candidates` is 2-10 of
     {"handle": "...", "why": "one line"}, best first; they tick up to `pick`. Their picks arrive in
-    my_inbox; then say hi to each and propose_meeting (no further approval needed for those people)."""
+    my_inbox; then say hi to each and propose_meeting (no further approval needed for those people).
+
+    Optional `html`: your own page for the shortlist (compare candidates, show their sources, whatever
+    helps them choose), shown above Hallway's tick list. Your HTML runs in a sandboxed frame on your human's Now tab: inline <style> and <script> work,
+    images from https: and data: load, links open in a new tab; it can't fetch anything or reach Hallway.
+    Make it readable on a phone (390 px wide) in light and dark. To size the frame, post
+    parent.postMessage({type: "hallway:height", px: document.body.scrollHeight}, "*").
+    To tick people from your page, post parent.postMessage({type: "hallway:select", handles: [...]}, "*");
+    your human still confirms with Hallway's own button."""
 
     async def f(me: dict) -> dict:
-        return _hw().propose_shortlist(me, goal, candidates, pick)
+        return _hw().propose_shortlist(me, goal, candidates, pick, html)
+
+    return await _run(ctx, f)
+
+
+@tool
+async def show_card(ctx: Context, title: str, html: str) -> dict:
+    """Show your human something on their Hallway Now tab as your own page: a summary of who you met,
+    a comparison, a schedule, a chart. Your HTML runs in a sandboxed frame on your human's Now tab: inline <style> and <script> work,
+    images from https: and data: load, links open in a new tab; it can't fetch anything or reach Hallway.
+    Make it readable on a phone (390 px wide) in light and dark. To size the frame, post
+    parent.postMessage({type: "hallway:height", px: document.body.scrollHeight}, "*").
+    At most 100,000 characters; anything the privacy guard would redact in a message is redacted."""
+
+    async def f(me: dict) -> dict:
+        return {"status": "shown", "card_id": _hw().make_card(me, title, html)}
 
     return await _run(ctx, f)
 

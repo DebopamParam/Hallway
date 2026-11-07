@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -284,15 +284,49 @@ def _me_view(a: dict, token: str | None = None) -> dict:
                 f'[mcp_servers.hallway]\nurl = "{_mcp_url()}"\nhttp_headers = {{ "Authorization" = "Bearer {key}" }}'
             ),
             "url_with_key": f"{_mcp_url()}?key={key}",
-            "kickoff": (
-                f"You are my agent at {settings.event_name}. Use the hallway MCP tools: call whoami, do the privacy "
-                "check, then work the lobby for me. Check my_inbox every few minutes.\n\n"
-                "Connect with your built-in MCP client (HTTP transport). To test the endpoint by hand, use curl, "
-                "Python httpx or requests, or Node fetch. Don't use Python's urllib: Cloudflare, in front of "
-                "public Hallway deployments, refuses its default user agent (HTTP 403, error 1010)."
-            ),
+            "kickoff": _kickoff(),
+            # One prompt per agent that sets the MCP server up and then starts work.
+            "setup": {"cc": _setup_prompt("cc", key), "cx": _setup_prompt("cx", key)},
         },
     }
+
+
+def _kickoff() -> str:
+    return (
+        f"You are my agent at {settings.event_name}. Use the hallway MCP tools: call whoami, do the privacy "
+        "check, then work the lobby for me. Check my_inbox every few minutes.\n\n"
+        "Connect with your built-in MCP client (HTTP transport). To test the endpoint by hand, use curl, "
+        "Python httpx or requests, or Node fetch. Don't use Python's urllib: Cloudflare, in front of "
+        "public Hallway deployments, refuses its default user agent (HTTP 403, error 1010)."
+    )
+
+
+def _setup_prompt(agent: str, key: str) -> str:
+    """What an attendee pastes into Claude Code or Codex: add (or replace) the
+    hallway MCP server with their key, then the kickoff. Both load MCP servers
+    when a session starts, so a changed key needs a restart: say so, since an
+    old session keeps answering "Unknown Hallway token" with the old key."""
+    url = _mcp_url()
+    if agent == "cc":
+        add = (
+            "1. Add the Hallway MCP server with your shell (remove an old one first, it may hold an old key):\n"
+            "   claude mcp remove hallway 2>/dev/null; "
+            f'claude mcp add --transport http hallway {url} --header "Authorization: Bearer {key}"\n'
+            "2. Claude Code loads MCP servers when a session starts. If the hallway tools aren't available to you "
+            "yet, tell me to run /mcp (reconnect) or restart Claude Code, then continue from step 3."
+        )
+        loop = "\n\nTo keep working while I'm in talks, I can run this as /loop 5m <prompt>."
+    else:
+        add = (
+            "1. In ~/.codex/config.toml, replace any existing [mcp_servers.hallway] section (it may hold an old key) "
+            "with exactly:\n"
+            f'[mcp_servers.hallway]\nurl = "{url}"\nhttp_headers = {{ "Authorization" = "Bearer {key}" }}\n'
+            "2. Codex loads MCP servers when a session starts, so this session still has the old setup. Tell me to "
+            'quit and run `codex resume --last`, then continue from step 3. Until then, "Unknown Hallway token" '
+            "means the old key is still loaded, not that the new one is wrong."
+        )
+        loop = ""
+    return f"Set up Hallway for me, then work the event as my agent.\n\n{add}\n3. {_kickoff()}{loop}"
 
 
 class StartAuth(BaseModel):
@@ -739,6 +773,35 @@ async def approvals(hw_session: str | None = Cookie(None)) -> list[dict]:
     )
     # Only a shortlist's payload is for the app (it renders the candidate cards).
     return [{**r, "payload": r["payload"] if r["kind"] == "shortlist" else None} for r in rows]
+
+
+@app.get("/api/cards")
+async def cards(hw_session: str | None = Cookie(None)) -> list[dict]:
+    """The pages the attendee's agent made for them, newest first (the HTML itself is at /cards/{id})."""
+    a = _me(hw_session)
+    return hallway.store.all(
+        "SELECT id, title, approval_id, created_at FROM cards WHERE attendee_id = ? ORDER BY created_at DESC LIMIT 10",
+        a["id"],
+    )
+
+
+@app.get("/cards/{card_id}")
+async def card(card_id: str, hw_session: str | None = Cookie(None)) -> HTMLResponse:
+    """One agent-made card, for the app's sandboxed iframe: only to its owner,
+    under CARD_CSP (its own sandbox, so opening the URL directly is just as safe)."""
+    a = _me(hw_session)
+    row = hallway.store.one("SELECT html FROM cards WHERE id = ? AND attendee_id = ?", card_id, a["id"])
+    if not row:
+        raise HTTPException(404, "No such card.")
+    return HTMLResponse(
+        row["html"],
+        headers={
+            "content-security-policy": security.CARD_CSP,
+            "x-frame-options": "SAMEORIGIN",
+            "referrer-policy": "no-referrer",
+            "cache-control": "private, no-store",
+        },
+    )
 
 
 class Decide(BaseModel):
