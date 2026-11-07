@@ -282,7 +282,7 @@ async def run_pydantic_ai(p: dict, budget: float, model=None) -> Run:
         summary, ok = (reply.splitlines()[-1] if reply else "(no summary)"), True
     except UsageLimitExceeded as e:
         summary, ok = f"Stopped at its limit: {e}", True
-        reply = "I hit this run's spending limit and stopped. Ask again and I'll pick it up."
+        reply = "I ran out of this round's budget partway through; the steps above are what I got done. Ask again and I'll carry on."
     except Exception as e:  # its requests were billed all the same, so the pass is charged for them
         log.exception("run failed for %s", p["handle"])
         summary, ok, reply = f"{type(e).__name__}: {e}"[:300], False, FAILED_REPLY
