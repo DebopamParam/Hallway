@@ -313,8 +313,8 @@ def _setup_prompt(agent: str, key: str) -> str:
     watch = (
         "mkdir -p ~/.hallway-agent && "
         f"curl -fsSL {settings.public_url}/watch.mjs -o ~/.hallway-agent/hallway-watch.mjs && "
-        f"(HALLWAY_KEY={key} nohup node ~/.hallway-agent/hallway-watch.mjs {'claude' if agent == 'cc' else 'codex'} "
-        "> ~/.hallway-agent/watch.log 2>&1 < /dev/null &)"
+        f"HALLWAY_KEY={key} node ~/.hallway-agent/hallway-watch.mjs {'claude' if agent == 'cc' else 'codex'} "
+        "--background"
     )
     if agent == "cc":
         add = (
