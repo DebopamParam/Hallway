@@ -1,6 +1,6 @@
 // Hallway attendee app. No build step: one module, hash routes, polling.
 const $app = document.getElementById("app");
-const state = { me: null, event: null, timers: [], counts: { now: 0 }, route: "", freshConnect: null };
+const state = { me: null, event: null, timers: [], polls: [], counts: { now: 0 }, route: "", freshConnect: null };
 // The MCP key is stored hashed: the server returns it only right after it is
 // issued (registration, "New key"). Keep that copy in memory for this page.
 // The MCP key is shown by the server only once (it keeps a hash), so this
@@ -139,14 +139,25 @@ function toast(msg, tone = "") {
   toast.t = setTimeout(() => (el.hidden = true), 2800);
 }
 
+// Polls stop while the tab is hidden and catch up the moment it's back (then
+// tick on from there, so the catch-up isn't followed by a second fetch at once).
 function every(ms, fn) {
-  fn();
-  state.timers.push(setInterval(fn, ms));
+  const p = { ms, fn };
+  state.polls.push(p);
+  runPoll(p);
+}
+function runPoll(p) {
+  clearInterval(p.id);
+  p.id = setInterval(() => { if (!document.hidden) p.fn(); }, p.ms);
+  p.fn();
 }
 function clearTimers() {
   state.timers.forEach(clearInterval);
   state.timers = [];
+  state.polls.forEach((p) => clearInterval(p.id));
+  state.polls = [];
 }
+document.addEventListener("visibilitychange", () => state.polls.forEach((p) => (document.hidden ? clearInterval(p.id) : runPoll(p))));
 
 async function copy(text) {
   try { await navigator.clipboard.writeText(text); toast("Copied", "ok"); }
