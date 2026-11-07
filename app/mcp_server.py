@@ -229,6 +229,28 @@ def _log_step(name: str, args: tuple, kwargs: dict) -> None:
         return
 
 
+def _log_outcome(name: str, args: tuple, kwargs: dict, result: object) -> None:
+    """Follow a step with what came of it when it didn't simply happen, so the
+    chat doesn't claim a meeting or room that was refused or is waiting on them."""
+    ctx = kwargs.get("ctx") or next((a for a in args if isinstance(a, Context)), None)
+    if name not in STEPS or ctx is None or not isinstance(result, dict):
+        return
+    if result.get("error") == OUT_OF_LOBBY:
+        text = "↳ didn't go through: your agent isn't in the lobby (Lobby: Let my agent chat here)"
+    elif "error" in result:
+        # Errors are written to the agent; their first sentence is the part a person can read.
+        why = " ".join(str(result["error"]).split()).split(". ")[0].rstrip(".") + "."
+        text = "↳ didn't go through: " + (why[:120] + "…" if len(why) > 120 else why)
+    elif result.get("status") == "pending_approval":
+        text = "↳ waiting for your OK on Now"
+    else:
+        return
+    try:
+        _hw().chat_step(_me(ctx), text)
+    except Exception:  # the step log never gets in the tool's way
+        return
+
+
 def tool[**P, R](fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
     """@mcp.tool(), counted and timed per tool for /metrics."""
 
@@ -239,6 +261,7 @@ def tool[**P, R](fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
         try:
             result = await fn(*args, **kwargs)
             outcome = _outcome(result)
+            _log_outcome(fn.__name__, args, kwargs, result)
             return result
         finally:
             metrics.mcp_calls.inc(tool=fn.__name__, outcome=outcome)
