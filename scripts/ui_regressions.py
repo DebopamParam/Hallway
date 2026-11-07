@@ -17,6 +17,8 @@ from the environment or ./.env, like signup.py), then at 390x844 and 320x568:
 - QA #37: a short room title and the Lobby header are readable at 390 and 320.
 - QA #45 (with --invite CODE, against a server with that INVITE_CODE): a wrong
   invite code says so at the field; the right one goes on to the sign-in link.
+  Opening the invite link, then the bare site in a new tab, signs up without
+  asking for the code again.
 - QA #47: reloading mid-onboarding keeps the step and what was typed, and
   browser Back goes to the previous step.
 
@@ -261,6 +263,20 @@ with sync_playwright() as p:
                 if not page.get_by_text("Your link is ready").count():
                     problems.append(f"#45 {tag}: the right invite code didn't lead to the sign-in link")
                 page.screenshot(path=str(out / f"45-gate-right-code-{tag}.png"))
+            ctx.close()
+            # The invite link, then the bare URL in a new tab: no second ask for the code.
+            ctx = browser.new_context(viewport={"width": w, "height": h}, device_scale_factor=2, color_scheme=theme)
+            ctx.new_page().goto(base + f"/?invite={opts.invite}")
+            page = ctx.new_page()
+            page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
+            page.goto(base + "/")
+            page.wait_for_selector("#email")
+            page.locator("#email").press_sequentially(f"qafix.tab{stamp}{w}@example.com")
+            page.click("#send")
+            page.wait_for_timeout(1500)
+            if page.locator("#invite-code").count() or not page.get_by_text("Your link is ready").count():
+                problems.append(f"#45 {tag}: a new tab after the invite link asked for the code again")
+            page.screenshot(path=str(out / f"45-gate-new-tab-{tag}.png"))
             ctx.close()
     browser.close()
 

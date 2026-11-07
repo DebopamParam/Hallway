@@ -188,10 +188,19 @@ function setTheme(t) {
 }
 
 // ---------------------------------------------------------------- invite
-// An invite arrives as /?invite=<code>. Keep it for this tab (it survives the
-// sign-in link's redirect) and take it out of the address bar.
-function getInvite() { try { return sessionStorage.getItem("hw-invite") || ""; } catch { return ""; } }
-function setInvite(code) { try { sessionStorage.setItem("hw-invite", code); } catch { /* private mode */ } }
+// An invite arrives as /?invite=<code>. Keep it in this browser, not just this
+// tab, and take it out of the address bar: reopening the bare URL (a new tab,
+// address-bar autocomplete, a chat app handing the link to the browser) must
+// not ask for the code again. It only lets a new email start sign-in.
+function getInvite() {
+  try { return localStorage.getItem("hw-invite") || sessionStorage.getItem("hw-invite") || ""; } catch { return ""; }
+}
+function setInvite(code) {
+  try {
+    if (code) localStorage.setItem("hw-invite", code); else localStorage.removeItem("hw-invite");
+    sessionStorage.removeItem("hw-invite");
+  } catch { /* private mode */ }
+}
 (() => {
   const url = new URL(location.href);
   const code = url.searchParams.get("invite");
