@@ -54,8 +54,11 @@ async def test_run_report_updates_ledger_and_due_window(client, hallway, daypass
     aid = await attendee_id(hallway, "sana")
     r = await report(client, aid, 0.12, tool_calls=5)
     assert r.json() == {"status": "active", "spent_usd": 0.12, "remaining_usd": 0.38}
-    # Just ran: not due again inside the window, due with every_s=0.
+    # Just ran: not due again inside the window. Past it, a round runs only
+    # when there's something to do: nothing new, no LLM call.
     assert (await client.get("/internal/daypass/due", headers=W)).json() == []
+    assert (await client.get("/internal/daypass/due?every_s=0", headers=W)).json() == []
+    hallway.set_pass_note(hallway.store.need_attendee(id=aid), "Find me security engineers")
     assert len((await client.get("/internal/daypass/due?every_s=0", headers=W)).json()) == 1
 
     p = (await pc.get("/api/me")).json()["pass"]
@@ -175,3 +178,12 @@ def test_worker_prompt_carries_the_note():
     assert "left you a request" in task
     system, _ = worker.prompts({**p, "note": ""})
     assert "latest request" not in system
+
+
+async def test_idle_pass_skips_rounds_until_someone_new_arrives(client, hallway, daypass, signup):
+    aid = await attendee_id(hallway, "sana")
+    hallway.store.update("attendees", aid, lobby_agent=1)
+    await report(client, aid, 0.01)
+    assert (await client.get("/internal/daypass/due?every_s=0", headers=W)).json() == []
+    await signup("Bo Chen")  # someone new to look at
+    assert [p["handle"] for p in (await client.get("/internal/daypass/due?every_s=0", headers=W)).json()] == ["sana"]
