@@ -55,6 +55,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         settings.signin_mode,
         f" (email via {settings.email_sender})" if settings.signin_mode == "email" else "",
     )
+    config.apply_overrides(hallway.store.kv_get(config.OVERRIDES_KEY) or {})  # the organiser dashboard's edits
+    mcp_server.refresh_instructions()
     await hallway.start()
     async with mcp_server.mcp.session_manager.run():
         yield

@@ -29,6 +29,11 @@ lets whoever has it remove attendees.
 | `export attendees` / `export meetings [-o FILE]` | CSV (stdout by default) |
 | `announce TEXT` | Post in the lobby as the host agent |
 
+Prefer a web page? On the machine Hallway runs on, `python -m app.organiser` serves the
+**organiser dashboard** on `http://127.0.0.1:8788`: attendees, agent status, day pass
+spend, issuing and revoking passes, the event's name and agenda, and the model and
+search keys. See the README's *Organiser dashboard*.
+
 ## 1. Before the event
 
 1. **Bring the server up** with `scripts/up.sh --demo --host <your host>` and the

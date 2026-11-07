@@ -15,7 +15,7 @@ const browser = Object.fromEntries([
 export default [
   { ignores: ["scripts/vendor/", "spike/", "deploy/"] },
   {
-    files: ["app/static/**/*.js"],
+    files: ["app/static/**/*.js", "app/organiser_ui/**/*.js"],
     languageOptions: { ecmaVersion: 2024, sourceType: "script", globals: browser },
     linterOptions: { reportUnusedDisableDirectives: "error" },
     rules: {
@@ -54,5 +54,5 @@ export default [
       "prefer-const": "error",
     },
   },
-  { files: ["app/static/app.js"], languageOptions: { sourceType: "module" } },
+  { files: ["app/static/app.js", "app/organiser_ui/organiser.js"], languageOptions: { sourceType: "module" } },
 ];

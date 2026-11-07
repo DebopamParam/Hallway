@@ -111,6 +111,25 @@ AGENDA = [
 ]
 
 
+# What the organiser dashboard (app/organiser.py) may change while Hallway runs.
+# Saved in the database under OVERRIDES_KEY and applied at startup, so they win
+# over .env until the data is reset.
+OVERRIDES_KEY = "organiser:event"
+EDITABLE = ("event_name", "daypass_enabled", "daypass_cap_usd")
+
+
+def apply_overrides(values: dict) -> None:
+    """Apply saved event settings to the running process. `settings` is frozen
+    so nothing else changes it by accident; this is the one sanctioned writer,
+    and it changes the shared instance every module imported. The agenda is
+    replaced in place for the same reason."""
+    for name in EDITABLE:
+        if name in values:
+            object.__setattr__(settings, name, values[name])
+    if "agenda" in values:
+        AGENDA[:] = values["agenda"]
+
+
 def is_dev_env(s: "Settings") -> bool:
     """Local development: a localhost public URL, or HALLWAY_ENV=dev said out loud."""
     host = urlparse(s.public_url).hostname or ""
