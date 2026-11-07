@@ -87,3 +87,16 @@ async def test_settings_on_the_persons_word_or_approval(signup, client, hallway)
     assert "Unknown rule" in (await mcp_call(client, tok, "change_settings", {"rules": {"pay": "auto"}}))["error"]
     assert "Not a badge field" in (await mcp_call(client, tok, "change_settings", {"badge": {"phone": "1"}}))["error"]
     assert (await mcp_call(client, tok, "change_settings", {"public": True}))["status"] == "unchanged"
+
+
+async def test_day_pass_agent_proposes_meetings_only_when_asked(signup, client, hallway):
+    pc, sana = await signup("Sana Qureshi", mode="daypass", autonomy=AUTO)
+    await signup("Bo Chen")
+    tok = sana["connect"]["token"]
+    args = {"with_who": "bo", "time": "15:00", "place": "Atrium", "why": "payments"}
+    res = await mcp_call(client, tok, "propose_meeting", args)
+    assert "only when Sana asks" in res["error"]
+    assert hallway.store.all("SELECT id FROM meetings") == []
+
+    assert (await pc.post("/api/me/chat", json={"text": "Set up a meeting with Bo at 3"})).status_code == 200
+    assert (await mcp_call(client, tok, "propose_meeting", args))["status"] == "proposed"
