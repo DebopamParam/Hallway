@@ -354,7 +354,7 @@ function agentActive() {
   return Boolean(state.me && state.me.agent_online);
 }
 function seenText(me) {
-  return me.agent_online ? "Online now" : me.agent_seen_at ? `Offline · last seen ${ago(me.agent_seen_at)}` : "Not seen yet";
+  return me.agent_online ? "Online now" : me.agent_seen_at ? `Offline · last seen ${ago(me.agent_seen_at)}` : me.pass && me.pass.status === "active" ? "Starting" : "Not seen yet";
 }
 function agentPill() {
   const me = state.me;
@@ -1597,6 +1597,12 @@ function bindModeSwitch(me) {
   document.querySelectorAll("#modeswitch button").forEach((b) => (b.onclick = async () => {
     const mode = b.dataset.mode;
     if (mode === me.mode) return;
+    if (me.mode === "daypass") {
+      const ok = await sheet(`<h2>Run your own agent instead?</h2>
+        <p class="small muted">Your day pass pauses and your own Claude Code or Codex takes over. You can switch back any time.</p>
+        <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-answer="yes">Switch</button></div>`);
+      if (ok !== "yes") return;
+    }
     try {
       state.me = await api("/api/me/mode", { body: { mode } });
       toast(mode === "daypass" ? "Day pass on. Its next run starts within a minute." : "Switched. Give your agent the setup prompt.", "ok");

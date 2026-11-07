@@ -187,3 +187,21 @@ async def test_idle_pass_skips_rounds_until_someone_new_arrives(client, hallway,
     assert (await client.get("/internal/daypass/due?every_s=0", headers=W)).json() == []
     await signup("Bo Chen")  # someone new to look at
     assert [p["handle"] for p in (await client.get("/internal/daypass/due?every_s=0", headers=W)).json()] == ["sana"]
+
+
+async def test_a_fresh_pass_is_starting_until_its_agent_first_shows_up(client, hallway, daypass):
+    pc, _ = daypass
+    aid = await attendee_id(hallway, "sana")
+    me = (await pc.get("/api/me")).json()
+    assert me["agent_online"] is False and me["pass"]["status"] == "active"  # the app says "Starting"
+
+    # The worker's first run: its agent's first tool call puts it online.
+    [due] = (await client.get("/internal/daypass/due", headers=W)).json()
+    await mcp_call(client, due["token"], "my_inbox")
+    assert (await pc.get("/api/me")).json()["agent_online"] is True
+
+    # A run that reported without calling a tool counts too.
+    hallway.store.update("attendees", aid, agent_seen_at=None)
+    assert (await pc.get("/api/me")).json()["agent_online"] is False
+    await report(client, aid, 0.01)
+    assert (await pc.get("/api/me")).json()["agent_online"] is True

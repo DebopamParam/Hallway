@@ -230,12 +230,13 @@ def _agent_active(a: dict) -> bool:
 
 
 def _agent_online(a: dict) -> bool:
-    """Is their agent there right now? A day pass is while the pass runs; a Live
+    """Is their agent there right now? A day pass is while the pass runs, once
+    it has run or called a tool (before that it's still starting); a Live
     stand-in while its Switch socket is up; an agent they connect while its
     watcher polls (or it is mid-run, or calling Hallway's tools)."""
     if a["mode"] == "daypass":
         p = hallway.day_pass(a)
-        return bool(p and p["status"] == "active")
+        return bool(p and p["status"] == "active" and (p["runs"] or a.get("agent_seen_at")))
     if a["mode"] == "live":
         return a["id"] in hallway.presence.connected
     quiet = time.time() - (a.get("agent_seen_at") or 0)
