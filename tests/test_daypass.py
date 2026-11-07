@@ -305,6 +305,12 @@ async def test_priced_run_gives_each_reply_what_the_budget_has_room_for(priced_w
     run = await priced_worker.run_pydantic_ai(p, 0.0051, model=FunctionModel(model))
     assert run.reply == "Your shortlist is in the app."
     assert sent[0] >= 1024 and 4000 * 0.30e-6 + sent[0] * 1.20e-6 <= 0.0051
+    # An operator can enter a free output price; then only the prompt counts.
+    for price in ("0.30,0", "0,0"):
+        priced_worker.PRICE_PER_MTOK = price
+        sent.clear()
+        run = await priced_worker.run_pydantic_ai(p, 0.0051, model=FunctionModel(model))
+        assert run.reply == "Your shortlist is in the app." and sent == [8192]
 
 
 async def test_failed_run_still_charges_the_pass_for_its_requests(hallway, daypass, make_client, priced_worker):

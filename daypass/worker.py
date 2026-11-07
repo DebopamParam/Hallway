@@ -248,7 +248,9 @@ def priced_model(model, budget: float, price_in: float, price_out: float):
         last_in = 0
 
         async def request(self, messages, model_settings, params):
-            room = (budget - self.spent - max(self.last_in * 1.25, 4000) * price_in) / price_out
+            left = budget - self.spent - max(self.last_in * 1.25, 4000) * price_in
+            # A free output price leaves only the prompt to pay for.
+            room = left / price_out if price_out else (MAX_OUT_TOKENS if left >= 0 else 0)
             if room < MIN_OUT_TOKENS:
                 raise UsageLimitExceeded(f"next request could pass the ${budget:.4f} budget (${self.spent:.4f} spent)")
             settings = {**(model_settings or {}), "max_tokens": int(min(room, MAX_OUT_TOKENS))}
