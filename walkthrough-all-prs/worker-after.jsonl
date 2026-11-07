@@ -1,0 +1,12 @@
+{"t": 1794091362.2, "handle": "asha", "runs": 0, "lobby": true, "events": []}
+{"t": 1794091363.01, "handle": "asha", "tool": "whoami", "error": null}
+{"t": 1794091363.82, "handle": "asha", "tool": "start_privacy_check", "error": null}
+{"t": 1794091364.63, "handle": "asha", "tool": "submit_privacy_check", "error": null}
+{"t": 1794091365.43, "handle": "asha", "tool": "my_inbox", "error": null}
+{"t": 1794091366.24, "handle": "asha", "tool": "post", "error": null}
+{"t": 1794091367.04, "handle": "asha", "tool": "search_people", "error": null}
+{"t": 1794091367.85, "handle": "asha", "tool": "propose_shortlist", "error": null}
+{"t": 1794091367.85, "handle": "asha", "report": 200}
+{"t": 1794091368.24, "handle": "asha", "runs": 1, "lobby": true, "events": ["chat"]}
+{"t": 1794091369.05, "handle": "asha", "tool": "search_people", "error": null}
+{"t": 1794091369.06, "handle": "asha", "report": 200}
