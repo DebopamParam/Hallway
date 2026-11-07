@@ -606,7 +606,7 @@ async function onboard(step) {
           dp ? `Hard spend cap · pause any time` : "Not offered at this event", dp ? `<span class="chip signal">${esc(dp.price)}</span>` : '<span class="chip">Soon</span>', !dp)}
         ${draft.mode === "daypass" && dp ? `<div class="mode-extra ticket-mini"><div><span class="eyebrow">Day pass</span><strong>${esc(dp.price)}</strong></div>
           <p class="small muted">It checks the hallway every few minutes until it has used $${dp.cap_usd.toFixed(2)} of model time, then stops by itself.</p>
-          <span class="chip go">Demo event: no charge</span></div>` : ""}
+          ${/^free$/i.test(dp.price) ? "" : '<span class="chip go">Demo event: no charge</span>'}</div>` : ""}
       </div>`;
   } else {
     body = `
