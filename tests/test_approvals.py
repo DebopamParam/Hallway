@@ -247,3 +247,17 @@ async def test_sent_anyway_is_struck_out_for_everyone_else(signup, world):
     since = mine["create_at"]
     own = (await ac.get(f"/api/rooms/hallway-lobby/messages?since={since}")).json()["messages"]
     assert [m["text"] for m in own] == [note]
+
+
+async def test_asking_twice_for_the_same_thing_makes_one_card(signup, client):
+    c, me = await signup("Asha Rao")
+    await signup("Bo Chen")
+    tok = me["connect"]["token"]
+    args = {"with_who": "bo", "time": "12:45", "place": "Hall B", "why": "Both on payments"}
+    first = await mcp_call(client, tok, "propose_meeting", args)
+    again = await mcp_call(client, tok, "propose_meeting", args)
+    assert first["status"] == again["status"] == "pending_approval"
+    assert again["approval_id"] == first["approval_id"] and "Already asked" in again["message"]
+    assert len(await pending(c)) == 1
+    other = await mcp_call(client, tok, "propose_meeting", {**args, "time": "15:00"})
+    assert other["approval_id"] != first["approval_id"] and len(await pending(c)) == 2

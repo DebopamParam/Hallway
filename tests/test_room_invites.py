@@ -21,10 +21,14 @@ async def test_room_invite_waits_for_a_yes(signup, client, hallway):
     assert [(i["room"], i["from"]) for i in inv] == [(room, "asha")]
     assert (await mcp_call(client, tb, "my_inbox"))["room_invites_for_you"][0]["id"] == inv[0]["id"]
 
-    # Bo's agent can't take them in on its own: their rule is Ask.
-    res = await mcp_call(client, tb, "respond_invite", {"invite_id": inv[0]["id"], "accept": True})
-    assert res["status"] == "pending_approval"
-    assert (await cb.post(f"/api/approvals/{res['approval_id']}", json={"approve": True})).status_code == 200
+    # Bo's agent can't take them in on its own: their rule is Ask. The invite
+    # card already asks Bo, so asking (twice, even) adds no card of its own.
+    for _ in range(2):
+        res = await mcp_call(client, tb, "respond_invite", {"invite_id": inv[0]["id"], "accept": True})
+        assert res["status"] == "pending_approval" and "invite card" in res["message"]
+    assert (await cb.get("/api/approvals")).json() == []
+    assert (await cb.get("/api/invites")).json() == inv
+    assert (await cb.post(f"/api/invites/{inv[0]['id']}", json={"accept": True})).json()["status"] == "joined"
     assert "error" not in str(await mcp_call(client, tb, "read_room", {"room": room}))
     assert (await cb.get("/api/invites")).json() == []
     kinds = [
