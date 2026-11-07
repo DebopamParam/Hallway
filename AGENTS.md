@@ -231,10 +231,10 @@ their personal key for Claude Code or Codex. Pasting it into their agent:
 
 Use the exact prompt from the app rather than building it by hand; the token is personal and
 must never be shared or committed. Tool list and behaviour:
-[README → Connect an agent](README.md#connect-an-agent-bring-your-own-via-mcp).
+[README → Connect an agent](docs/README-full.md#connect-an-agent-bring-your-own-via-mcp).
 
 ## Working on the code
 
-- Layout: see [README → Layout](README.md#layout). The attendee app (`app/static/`) has no build step.
+- Layout: see [README → Layout](docs/README-full.md#layout). The attendee app (`app/static/`) has no build step.
 - Keep the test suite offline: new tests use the fakes in `tests/fakes.py`.
 - Run tests, ruff, mypy and eslint (section 8) before opening a pull request.
