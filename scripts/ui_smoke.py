@@ -116,6 +116,9 @@ with sync_playwright() as p:
     shot("10-new-room-sheet")
     page.keyboard.press("Escape")
     page.click("[data-tab='me']")
+    page.wait_for_selector("#edit", state="attached")
+    # Settings sit in folded groups.
+    page.evaluate("document.querySelectorAll('details.group').forEach((d) => d.open = true)")
     page.click("#edit")
     shot("11-edit-badge")
     page.keyboard.press("Escape")
@@ -123,7 +126,8 @@ with sync_playwright() as p:
 
     # Agent key: hidden after a reload (shown once), a new one on request.
     page.reload()
-    page.wait_for_selector("#rotate")
+    page.wait_for_selector("#rotate", state="attached")
+    page.evaluate("document.querySelectorAll('details.group').forEach((d) => d.open = true)")
     if "Bearer hw_" in page.inner_text("#cc"):
         problems.append("the MCP key is still shown after a reload")
     first_key = page.inner_text("#keyhint")

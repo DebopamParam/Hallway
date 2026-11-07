@@ -346,14 +346,19 @@ function offline() {
 }
 window.addEventListener("online", () => { if (state.route === "offline") render(); });
 
-function agentActive(seen = state.me && state.me.agent_seen_at) {
-  return Boolean(seen && Date.now() / 1000 - seen < 900);
+// Online comes from the server: an agent you connect is online while its watcher
+// polls (or it's mid-run); a day pass while it runs; Live while its socket is up.
+function agentActive() {
+  return Boolean(state.me && state.me.agent_online);
+}
+function seenText(me) {
+  return me.agent_online ? "Online now" : me.agent_seen_at ? `Offline · last seen ${ago(me.agent_seen_at)}` : "Not seen yet";
 }
 function agentPill() {
   const me = state.me;
   const paused = me.pass && me.pass.status !== "active";
   const on = agentActive() && !paused;
-  const label = me.pass && me.pass.status === "spent" ? "Budget used" : paused ? "Paused" : on ? "Agent on" : me.agent_seen_at ? "Agent idle" : me.pass ? "Starting" : "Not connected";
+  const label = me.pass && me.pass.status === "spent" ? "Budget used" : paused ? "Paused" : on ? "Agent online" : me.agent_seen_at ? "Agent offline" : me.pass ? "Starting" : "Not connected";
   return `<span class="pulse ${on ? "on" : ""}"></span>${icon("agent", "sm pill-ic")}<span class="pill-label">${label}</span>`;
 }
 
@@ -398,6 +403,16 @@ function refreshPill() {
   const s = document.getElementById("agent-status");
   if (s) s.innerHTML = agentPill();
 }
+
+// The header pill follows the agent going offline and coming back on any tab
+// (Now and Agent also refresh it with their own polls).
+setInterval(async () => {
+  if (!state.me || state.me.onboarding || document.hidden || !navigator.onLine) return;
+  try {
+    const me = await api("/api/me");
+    if (state.me && me.handle === state.me.handle) { state.me = { ...state.me, agent_online: me.agent_online, agent_seen_at: me.agent_seen_at, pass: me.pass }; refreshPill(); }
+  } catch { /* keep the last status */ }
+}, 15000);
 
 // ---------------------------------------------------------------- landing
 async function landing(prefill = "") {
@@ -713,7 +728,7 @@ function bindPresets(target, onChange) {
 }
 
 // ---------------------------------------------------------------- now (home)
-const KIND_LABEL = { chat: "Chat", post: "Post a message", create_room: "Start a room", rooms: "Start a room", propose_meeting: "Propose a meeting", accept_meeting: "Accept a meeting", share_contact: "Swap contacts", shortlist: "Shortlist" };
+const KIND_LABEL = { chat: "Chat", post: "Post a message", create_room: "Start a room", rooms: "Start a room", propose_meeting: "Propose a meeting", accept_meeting: "Accept a meeting", share_contact: "Swap contacts", shortlist: "Shortlist", settings: "Change your settings" };
 
 // A shortlist card: the agent's candidates, rendered from data (never agent HTML),
 // each ticked or not. Approving sends the ticked handles; the agent reaches out to those.
@@ -782,7 +797,7 @@ function bindShortlist(card, onDone) {
     } catch (e) { toast(e.message); card.querySelectorAll("button, input").forEach((x) => (x.disabled = false)); sync(); }
   }));
 }
-const NOTICE_ICON = { agent_verified: "check", mention: "at", meeting_proposed: "calendar", meeting_confirmed: "check", meeting_declined: "x", contact_exchanged: "swap", approval: "bolt" };
+const NOTICE_ICON = { agent_verified: "check", mention: "at", meeting_proposed: "calendar", meeting_confirmed: "check", meeting_declined: "x", meeting_cancelled: "x", contact_exchanged: "swap", approval: "bolt" };
 
 function greeting() {
   const h = new Date().getHours();
@@ -791,7 +806,7 @@ function greeting() {
 
 function boardRows(meetings) {
   const order = (m) => (m.status === "confirmed" ? 0 : 1);
-  return meetings.filter((m) => m.status !== "declined")
+  return meetings.filter((m) => !["declined", "cancelled"].includes(m.status))
     .sort((a, b) => a.time.localeCompare(b.time) || order(a) - order(b))
     .map((m) => {
       const [cls, label] = m.status === "confirmed" ? ["go", "Confirmed"] : m.you_proposed ? ["wait", "Waiting"] : ["you", "Needs you"];
@@ -818,6 +833,7 @@ const NOTICE_LINE = {
   room: (n, a, p, mine) => has(a.name, p.title) && `${esc(a.name)} started a room with you: ${rich(p.title, mine)}`,
   meeting_proposed: (n, a, p, mine) => has(a.name, p.time, p.place) && `${esc(a.name)} would like to meet you at ${esc(p.time)}, ${esc(p.place)}: ${rich(p.why, mine)}`,
   meeting_declined: (n, a, p) => has(a.name, p.time) && `${esc(a.name)} can't make ${esc(p.time)}.`,
+  meeting_cancelled: (n, a, p) => has(a.name, p.time) && `${esc(a.name)} called off ${esc(p.time)}.`,
   meeting_confirmed: (n, a, p) => has(p.proposer_name, p.invitee_name, p.time, p.place) && `Meeting confirmed: ${esc(p.proposer_name)} + ${esc(p.invitee_name)} at ${esc(p.time)}, ${esc(p.place)}`,
   contact_exchanged: (n, a) => has(a.name) && `Contact details swapped with ${esc(a.name)}. They're in the app (People → Contacts).`,
   privacy_check: (n, a, p) => has(p.passed) && (p.passed ? "Privacy check passed: your agent kept your private details private. It can now talk in the lobby."
@@ -850,8 +866,8 @@ async function nowView() {
   const line = () => {
     const on = agentActive() && !(me.pass && me.pass.status !== "active");
     const status = me.pass && me.pass.status === "paused" ? "Your agent is paused" : me.pass && me.pass.status === "spent" ? "Your day pass budget is used up"
-      : on ? "Your agent is working the room" : me.agent_seen_at ? "Your agent is taking a break" : "Your agent hasn't checked in yet";
-    const detail = me.agent_seen_at ? `Last active ${ago(me.agent_seen_at)}` : me.pass ? "First run within a minute" : "Connect it from the Agent tab";
+      : on ? (me.lobby_agent ? "Your agent is working the room" : "Your agent is online") : me.agent_seen_at ? "Your agent is offline" : "Your agent hasn't checked in yet";
+    const detail = on ? (me.lobby_agent ? "Online now" : "Online now · it stays out of the lobby until you let it in") : me.agent_seen_at ? `Last seen ${ago(me.agent_seen_at)}${me.pass ? "" : " · is its watcher still running?"}` : me.pass ? "First run within a minute" : "Connect it from the Agent tab";
     document.getElementById("agent-line").innerHTML = `${av(me.name, "agent", on ? "live" : "")}<span class="grow"><strong>${status}</strong><span>${detail}</span></span>${icon("chev", "sm")}`;
   };
   line();
@@ -898,7 +914,7 @@ async function nowView() {
             <span class="stamp" aria-hidden="true"></span>
           </article>`).join("")}
       </div>` : `<div class="clear">${MARK("clear-mark")}<div><strong>All clear.</strong><p class="small muted">Anything you set to "Ask me" lands here as a card.</p></div></div>`}`;
-    const live = meetings.filter((m) => m.status !== "declined");
+    const live = meetings.filter((m) => !["declined", "cancelled"].includes(m.status));
     const seenText = new Set();
     const feed = notices.filter((n) => !seenText.has(n.text) && seenText.add(n.text));
     boardEl.innerHTML = `
@@ -927,7 +943,7 @@ async function nowView() {
       ["Accepted", "Declined", (r, yes) => (yes ? (r.status === "confirmed" ? "Meeting confirmed. A room is open for you both." : "Accepted") : "Declined")]);
   };
   every(4000, () => load().catch(() => {}));
-  // Pages the agent made (show_card); a shortlist's own page sits on its ticket instead.
+  // The Notice Board: pages the agent pinned (show_card); a shortlist's own page sits on its ticket instead.
   const cardsEl = document.getElementById("cards");
   let cardsKey = "";
   const loadCards = async () => {
@@ -935,8 +951,9 @@ async function nowView() {
     const k = list.map((x) => x.id).join();
     if (k === cardsKey) return;
     cardsKey = k;
-    cardsEl.hidden = !list.length;
-    cardsEl.innerHTML = `<div class="block-head"><h2>From your agent</h2></div>
+    cardsEl.hidden = false;
+    cardsEl.innerHTML = `<div class="block-head"><h2>Notice Board</h2></div>
+      ${list.length ? "" : '<p class="small muted">Your agent pins things here when they\'re worth a second look: who to meet and why, a meeting recap, a plan for the afternoon.</p>'}
       <div class="agent-cards">${list.slice(0, 5).map((x, i) => `
         <details class="agent-card-box" ${i ? "" : "open"}><summary><span class="grow">${esc(x.title)}</span><span class="muted small">${ago(x.created_at)}</span>${icon("chev", "sm")}</summary>
           ${cardFrame(x.id, x.title)}</details>`).join("")}</div>`;
@@ -975,11 +992,19 @@ async function roomView(name, tab) {
   const stack = `<span class="stack-av" aria-hidden="true">${members.slice(0, 3).map((p) => av(p.name, "person", "xs")).join("")}</span>`;
   shell(tab, `<div class="chat" id="chat" role="log" aria-label="Messages" aria-live="off"></div>
     <button class="newpill" id="newpill" hidden>${icon("send", "xs")}New messages</button>
-    <div class="composer"><div class="composer-inner">
+    <div class="composer">${lobby && state.me.mode !== "live" ? `<label class="lobby-switch"><input type="checkbox" role="switch" id="lobby_agent" ${state.me.lobby_agent ? "checked" : ""}>
+        <span>Let my agent chat here, browse public profiles and reach out</span></label>` : ""}<div class="composer-inner">
       <input id="say" placeholder="${lobby ? "Message the lobby" : "Message " + esc(r.title)}" autocomplete="off" aria-label="Message" enterkeyhint="send">
       <button class="sendbtn" id="send" aria-label="Send">${icon("send")}</button></div>
       <p class="composer-note">${icon("shield", "xs")}Private details are struck out before anyone sees them</p></div>`,
   { title: lobby ? "Lobby" : r.title.replace(/^Meet: /, ""), sub, back: tab === "rooms", right: stack, chat: true });
+  document.getElementById("lobby_agent")?.addEventListener("change", async (e) => {
+    const on = e.target.checked;
+    try {
+      state.me = await api("/api/me", { method: "PUT", body: { lobby_agent: on } });
+      toast(on ? "Your agent can work the lobby now" : "Your agent stays out of the lobby", "ok");
+    } catch (err) { e.target.checked = !on; toast(err.message); }
+  });
   const mine = [state.me.handle, state.me.agent].map((h) => h.toLowerCase());
   let last = 0;
   let prev = null;
@@ -1118,7 +1143,7 @@ function personCard(p) {
   return `<article class="pcard">
     <div class="person-top">${pair(p.name, p.agent_active, "lg")}
       <div class="grow"><h3>${esc(p.name)}</h3><p class="person-role">${esc([p.role, p.company].filter(Boolean).join(" · "))}</p></div>
-      ${p.agent_active ? '<span class="agent-on" title="Their agent is active">Agent on</span>' : ""}</div>
+      ${p.agent_active ? '<span class="agent-on" title="Their agent is online">Agent online</span>' : ""}</div>
     ${p.here_for ? `<p class="person-quote">${esc(p.here_for)}</p>` : p.bio ? `<p class="person-quote">${esc(p.bio)}</p>` : ""}
     ${p.shared && p.shared.length ? `<div class="common"><span class="common-k">In common</span>${p.shared.map((s) => `<span class="chip signal">${esc(s)}</span>`).join("")}</div>` : ""}
     ${relation}
@@ -1196,36 +1221,61 @@ function agentHero(me, sub, statusChip) {
     <div class="agent-face ${on ? "live" : ""}"><span>${esc(initials(me.name))}</span><i></i><i></i></div>
     <div class="grow"><p class="eyebrow on-dark">Your agent</p><h1 class="agent-name">${esc(first(me.name))}'s agent</h1>
       <p class="agent-handle">@${esc(me.agent)} · ${sub}</p></div>
-    <div class="agent-status">${statusChip}<span id="seen">${me.agent_seen_at ? `Active ${ago(me.agent_seen_at)}` : "Not seen yet"}</span></div>
+    <div class="agent-status">${statusChip}<span id="seen">${seenText(me)}</span></div>
   </section>`;
 }
 
-function commonSections(me) {
+// The Agent tab keeps the agent and its chat up top; everything else folds into
+// groups, and which ones are open survives re-renders.
+function group(id, title, summary, body) {
+  const open = (state.openGroups || {})[id];
+  return `<details class="group" data-group="${id}" ${open ? "open" : ""}><summary><span class="grow"><span class="group-title">${title}</span>${summary ? `<span class="group-sum">${summary}</span>` : ""}</span>${icon("chev", "sm chev")}</summary>
+    <div class="group-body">${body}</div></details>`;
+}
+
+function bindGroups() {
+  document.querySelectorAll("details.group").forEach((d) => d.addEventListener("toggle", () => {
+    state.openGroups = { ...(state.openGroups || {}), [d.dataset.group]: d.open };
+  }));
+}
+
+const MODE_LABEL = { connect: "Your own agent", daypass: "Day pass", live: "Live on Switch" };
+
+// `extra`: more for Agent settings (the key, for an agent you connect yourself).
+function commonSections(me, extra = "") {
   const nContact = Object.values(me.contact || {}).filter(Boolean).length;
   const theme = getTheme();
-  return `
-    <section class="block"><div class="block-head"><h2>What it may do alone</h2></div>
+  const settings = `${modeSwitch(me)}
+    <div class="sub"><h3>What it may do alone</h3>
       ${presetsRow(me.autonomy)}
-      <div class="rules">${autonomyRows(me.autonomy, me.locked)}</div></section>
-    <section class="block"><div class="block-head"><h2>Your badge</h2><button class="btn ghost sm" id="edit">${icon("edit", "sm")}Edit</button></div>
+      <div class="rules">${autonomyRows(me.autonomy, me.locked)}</div></div>
+    ${extra}`;
+  const profile = `<div class="sub"><div class="sub-head"><h3>Your badge</h3><button class="btn ghost sm" id="edit">${icon("edit", "sm")}Edit</button></div>
       ${badgeCard(me)}
       ${(me.talks || []).length ? `<div class="talks-mini">${me.talks.map((t) => `<span><b>${esc(t.slice(0, 5))}</b>${esc(t.slice(6))}</span>`).join("")}</div>` : ""}
-      <p class="vault-note">${icon("lock", "xs")}${plural(nContact, "private detail")} in your vault. No agent can see ${nContact === 1 ? "it" : "them"}.</p></section>
-    <section class="block"><div class="block-head"><h2>Who can see you</h2></div>
+      <p class="vault-note">${icon("lock", "xs")}${plural(nContact, "private detail")} in your vault. No agent can see ${nContact === 1 ? "it" : "them"}.</p></div>
+    <div class="sub"><h3>Who can see you</h3>
       <div class="seg wide" id="listed" data-v="${me.listed ? "public" : "private"}" role="group" aria-label="Profile visibility">
         <button data-v="public" class="${me.listed ? "on" : ""}" aria-pressed="${me.listed}">Public</button>
         <button data-v="private" class="${me.listed ? "" : "on"}" aria-pressed="${!me.listed}">Private</button></div>
       <p class="small muted">${me.listed ? "Everyone at the event, and their agents, can find your badge and suggest meeting you."
         : "Hidden from People and from other agents' searches. You and your agent can still reach out; people you meet see your name and badge."}</p>
       <label class="check-row"><input type="checkbox" id="web_lookup" ${me.web_lookup ? "checked" : ""} ${me.listed ? "" : "disabled"}>
-        <span>Let agents read public web pages about me (via Exa) when they research who to meet</span></label></section>
-    <section class="block"><div class="block-head"><h2>Appearance</h2></div>
-      <div class="seg wide" id="theme" data-v="${theme}" role="group" aria-label="Theme">${THEMES.map((t) => `<button data-t="${t}" class="${theme === t ? "on" : ""}" aria-pressed="${theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div></section>
+        <span>Let agents read public web pages about me when they research who to meet</span></label></div>`;
+  const account = `<div class="sub"><h3>Appearance</h3>
+      <div class="seg wide" id="theme" data-v="${theme}" role="group" aria-label="Theme">${THEMES.map((t) => `<button data-t="${t}" class="${theme === t ? "on" : ""}" aria-pressed="${theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div></div>
     <button class="btn ghost block signout" id="logout">Sign out</button>
     <button class="btn ghost block signout-all" id="logout-all">Sign out everywhere</button>`;
+  const settingsSum = MODE_LABEL[me.mode];
+  return `<div class="groups">
+    ${group("settings", "Agent settings", esc(settingsSum), settings)}
+    ${group("profile", "Profile & privacy", `${me.listed ? "Public" : "Private"} · ${plural(nContact, "private detail")}`, profile)}
+    ${group("account", "Account", `${theme[0].toUpperCase() + theme.slice(1)} theme`, account)}
+  </div>`;
 }
 
 function bindCommon(me) {
+  bindGroups();
   const saveAutonomy = async (changes) => {
     try { state.me = await api("/api/me", { method: "PUT", body: { autonomy: changes } }); toast("Saved", "ok"); } catch (e) { toast(e.message); }
   };
@@ -1304,11 +1354,10 @@ function passView(me) {
       <p class="tiny muted">The organiser runs it with Hallway's tools only, and it stops by itself at the cap. ${me.privacy && me.privacy.passed ? "It passed the privacy check." : ""}</p>
     </section>
     ${p.status === "spent" ? "" : chatSection(me, false)}
-    <section class="block"><div class="block-head"><h2>What it did</h2></div>
-      ${p.recent.length ? `<ul class="feed">${p.recent.map((r) => `<li class="feed-item"><span class="feed-ic ${r.ok ? "" : "k-bad"}">${icon(r.ok ? "bolt" : "x", "sm")}</span>
+    <div class="groups">${group("activity", "Activity", `${plural(p.runs, "check")} · ${usd(p.spent_usd)} spent`,
+      p.recent.length ? `<ul class="feed">${p.recent.map((r) => `<li class="feed-item"><span class="feed-ic ${r.ok ? "" : "k-bad"}">${icon(r.ok ? "bolt" : "x", "sm")}</span>
         <div class="grow"><div class="feed-text">${esc(r.summary)}</div><time>${ago(r.created_at)} · ${usd(r.cost_usd)}</time></div></li>`).join("")}</ul>`
-        : '<p class="small muted">Nothing yet. Its first run starts within a minute.</p>'}</section>
-    ${modeSwitch(me)}
+        : '<p class="small muted">Nothing yet. Its first run starts within a minute.</p>')}</div>
     ${commonSections(me)}
   </div>`, { title: "" });
   document.getElementById("pause")?.addEventListener("click", async () => {
@@ -1403,9 +1452,9 @@ const CONNECT_TABS = [["cc", "Claude Code"], ["cx", "Codex"]];
 function modeSwitch(me) {
   if (!(state.event || {}).daypass_enabled || me.mode === "live") return "";
   const opts = [["connect", "My own agent"], ["daypass", "Day pass"]];
-  return `<section class="block"><div class="block-head"><h2>Who runs your agent</h2></div>
+  return `<div class="sub"><h3>Who runs your agent</h3>
     <div class="seg" id="modeswitch" role="group" aria-label="Who runs your agent">${opts.map(([id, label]) => `<button data-mode="${id}" class="${me.mode === id ? "on" : ""}" aria-pressed="${me.mode === id}">${label}</button>`).join("")}</div>
-    <p class="small muted">${me.mode === "daypass" ? "The organiser runs it for you, within the day pass budget. Switch to your own Claude Code or Codex any time; what the pass spent stays spent." : "Your own Claude Code or Codex runs it. Or let the organiser run it with a day pass; your rooms, meetings and contacts stay as they are."}</p></section>`;
+    <p class="small muted">${me.mode === "daypass" ? "The organiser runs it for you, within the day pass budget. Switch to your own Claude Code or Codex any time; what the pass spent stays spent." : "Your own Claude Code or Codex runs it. Or let the organiser run it with a day pass; your rooms, meetings and contacts stay as they are."}</p></div>`;
 }
 
 function bindModeSwitch(me) {
@@ -1457,21 +1506,22 @@ async function meView() {
   const doneN = steps.filter((s) => s.done).length;
   const current = steps.findIndex((s) => !s.done);
   const check = pv.passed ? '<span class="chip go">Privacy check passed</span>' : pv.checked_at ? '<span class="chip stop">Privacy check failed</span>' : '<span class="chip wait">Privacy check pending</span>';
-  shell("me", `<div class="page">
-    ${agentHero(me, live ? "Live on Switch" : "Connected over MCP", check)}
-    <section class="block setup ${doneN === steps.length ? "complete" : ""}">
-      <div class="block-head"><h2>Setup</h2><span class="count ${doneN === steps.length ? "go" : ""}">${doneN}/${steps.length}</span></div>
-      ${doneN === steps.length ? `<p class="small muted setup-done">${icon("check", "sm")}All set. Your agent is in the hallway.</p>` : ""}
+  const done = doneN === steps.length;
+  const setup = `<section class="block setup ${done ? "complete" : ""}">
+      ${done ? "" : `<div class="block-head"><h2>Setup</h2><span class="count">${doneN}/${steps.length}</span></div>`}
       <ol class="checklist">${steps.map((s, i) => `
         <li class="${s.done ? "done" : s.bad ? "bad" : ""} ${i === current ? "current" : ""}">
           <details ${i === current ? "open" : ""}><summary><span class="ck" aria-hidden="true">${s.done ? icon("check", "sm") : s.bad ? icon("x", "sm") : i + 1}</span><span class="grow"><span class="sr-only">${s.done ? "Done" : s.bad ? "Failed" : `Step ${i + 1}`}: </span>${s.title}</span>${icon("chev", "sm chev")}</summary>
           <div class="ck-body">${s.body}</div></details></li>`).join("")}</ol>
-    </section>
+    </section>`;
+  const key_ = `<div class="sub"><div class="sub-head"><h3>Agent key</h3><button class="btn ghost sm" id="rotate">${icon("key", "sm")}New key</button></div>
+      <p class="small muted"><span class="mono" id="keyhint">${esc(c.token_hint)}</span> · A new key replaces this one at once. Your agent needs the new key to keep working.</p></div>`;
+  shell("me", `<div class="page">
+    ${agentHero(me, live ? "Live on Switch" : "Connected over MCP", check)}
+    ${doneN === steps.length ? "" : setup}
     ${connected ? chatSection(me, true) : ""}
-    <section class="block"><div class="block-head"><h2>Agent key</h2><button class="btn ghost sm" id="rotate">${icon("key", "sm")}New key</button></div>
-      <p class="small muted"><span class="mono" id="keyhint">${esc(c.token_hint)}</span> · A new key replaces this one at once. Your agent needs the new key to keep working.</p></section>
-    ${modeSwitch(me)}
-    ${commonSections(me)}
+    ${doneN === steps.length ? `<div class="groups">${group("setup", "Setup", "All set · your agent is in the hallway", setup)}</div>` : ""}
+    ${commonSections(me, key_)}
   </div>`, { title: "" });
   let shown = "cc";
   document.querySelectorAll("#ctabs button").forEach((b) => (b.onclick = () => {
@@ -1507,10 +1557,11 @@ async function meView() {
     try {
       state.me = await api("/api/me");
       const p = state.me.privacy || {};
+      if (state.me.agent_online !== me.agent_online) return render();
       if (JSON.stringify([Boolean(state.me.agent_seen_at), p.passed, p.checked_at, Boolean(p.started_at || p.checked_at), state.me.agent_verified]) !== watchKey) return render();
       refreshPill();
       const s = document.getElementById("seen");
-      if (s && state.me.agent_seen_at) s.textContent = `Active ${ago(state.me.agent_seen_at)}`;
+      if (s) s.textContent = seenText(state.me);
     } catch { /* keep the last status */ }
   });
 }

@@ -173,9 +173,11 @@ async def register(
     contact: dict | None = None,
     autonomy: dict | None = None,
     mode: str = "connect",
+    lobby: bool = True,
     **extra,
 ) -> dict:
-    """Sign in a new person and finish onboarding. Returns /api/register's body."""
+    """Sign in a new person and finish onboarding. Returns /api/register's body.
+    `lobby`: let their agent work the lobby, as most tests need (people start with it off)."""
     email = email or f"{name.split()[0].lower()}.{next(_emails)}@example.com"
     await sign_in(client, email)
     r = await client.post(
@@ -190,7 +192,11 @@ async def register(
         },
     )
     assert r.status_code == 200, r.text
-    return r.json()
+    me = r.json()
+    if lobby:
+        assert (await client.put("/api/me", json={"lobby_agent": True})).status_code == 200
+        me["lobby_agent"] = True
+    return me
 
 
 @pytest.fixture

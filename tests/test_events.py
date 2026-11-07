@@ -290,3 +290,75 @@ async def test_agents_answering_each_other_cannot_loop(signup, client, hallway, 
     await hallway.tail_once()
     got = await feed(client, tok, after)
     assert [e["text"].split()[-1] for e in got["events"]] == ["more", "himself"]
+
+
+async def test_agent_kept_out_of_the_lobby(signup, client, hallway, world):
+    c, asha = await signup("Asha Rao", lobby=False)
+    await signup("Bo Chen")
+    tok = asha["connect"]["token"]
+    assert (await c.get("/api/me")).json()["lobby_agent"] is False  # off until they turn it on
+    assert "let you into the lobby" in (await mcp_call(client, tok, "whoami"))["lobby"]
+
+    for tool, args in [
+        ("post", {"room": "lobby", "text": "Hi all"}),
+        ("search_people", {"query": "GTM"}),
+        ("research_people", {"query": "GTM"}),
+        ("propose_meeting", {"with_who": "bo", "time": "15:00", "place": "Atrium", "why": "hi"}),
+        ("create_room", {"title": "Chat", "invite": ["bo"]}),
+        ("request_contact", {"with_who": "bo"}),
+    ]:
+        res = await mcp_call(client, tok, tool, args)
+        assert "let you into the lobby" in res["error"], tool
+    assert "error" not in await mcp_call(client, tok, "my_inbox")  # its own work still works
+
+    # Lobby mentions don't wake it either.
+    a = hallway.store.need_attendee(handle="asha")
+    bo = hallway.store.need_attendee(handle="bo")
+    await hallway.tail_once()
+    after = (await feed(client, tok))["after"]
+    world.add_post(lobby_channel(hallway, world), bo["mm_user_id"], f"@{a['agent_name']} hi")
+    await hallway.tail_once()
+    assert (await feed(client, tok, after))["events"] == []
+
+    await c.put("/api/me", json={"lobby_agent": True})
+    assert "error" not in str(await mcp_call(client, tok, "search_people", {"query": "GTM"}))
+
+
+def test_worker_prompt_knows_the_notice_board_and_the_lobby_switch():
+    worker = load_worker()
+    p = {"name": "Sana Qureshi", "here_for": "payments", "runs": 0, "note": "", "lobby": False}
+    system, task = worker.prompts(p)
+    assert "Notice Board" in system and "let you into the lobby" in system
+    assert "don't introduce them there" in task
+    system, task = worker.prompts({**p, "lobby": True})
+    assert "let you into" not in system and "Introduce" in task
+
+
+async def test_connected_agent_goes_offline_and_comes_back(signup, client, hallway):
+    c, asha = await signup("Asha Rao")
+    tok = asha["connect"]["token"]
+    me = (await c.get("/api/me")).json()
+    assert me["agent_online"] is False and me["agent_seen_at"] is None  # never connected
+
+    await feed(client, tok)  # the watcher's first poll
+    assert (await c.get("/api/me")).json()["agent_online"] is True
+    a = hallway.store.need_attendee(handle="asha")
+
+    # The watcher dies: no poll for over a minute.
+    hallway.store.update("attendees", a["id"], agent_seen_at=time.time() - 46)
+    me = (await c.get("/api/me")).json()
+    assert me["agent_online"] is False and me["agent_seen_at"]
+    assert (await client.get("/api/event")).json()["agents_active"] == 0
+
+    # Mid-run (busy) counts as online even between polls.
+    r = await client.post("/agent/chat", json={"busy": True}, headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200, r.text
+    assert (await c.get("/api/me")).json()["agent_online"] is True
+    hallway.store.update("attendees", a["id"], agent_seen_at=time.time() - 301)
+    assert (await c.get("/api/me")).json()["agent_online"] is False  # a run gone quiet died with its watcher
+    await client.post("/agent/chat", json={"busy": False}, headers={"Authorization": f"Bearer {tok}"})
+
+    # It comes back: the next poll puts it online again.
+    await feed(client, tok)
+    assert (await c.get("/api/me")).json()["agent_online"] is True
+    assert (await client.get("/api/event")).json()["agents_active"] == 1

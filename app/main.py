@@ -219,8 +219,25 @@ def _me(hw_session: str | None) -> dict:
 AGENT_ACTIVE_S = 900  # an agent seen in the last 15 minutes counts as active
 
 
+AGENT_ONLINE_S = 45  # a watcher starts a poll at least every 25 s, so 45 s of silence means it's gone
+AGENT_RUN_QUIET_S = 300  # mid-run, its tool calls keep it seen; a run quiet this long died with its watcher
+
+
 def _agent_active(a: dict) -> bool:
     return bool(a.get("agent_seen_at") and time.time() - a["agent_seen_at"] < AGENT_ACTIVE_S)
+
+
+def _agent_online(a: dict) -> bool:
+    """Is their agent there right now? A day pass is while the pass runs; a Live
+    stand-in while its Switch socket is up; an agent they connect while its
+    watcher polls (or it is mid-run, or calling Hallway's tools)."""
+    if a["mode"] == "daypass":
+        p = hallway.day_pass(a)
+        return bool(p and p["status"] == "active")
+    if a["mode"] == "live":
+        return a["id"] in hallway.presence.connected
+    quiet = time.time() - (a.get("agent_seen_at") or 0)
+    return quiet < AGENT_ONLINE_S or (quiet < AGENT_RUN_QUIET_S and hallway.agent_busy(a))
 
 
 def _mcp_url() -> str:
@@ -273,7 +290,9 @@ def _me_view(a: dict, token: str | None = None) -> dict:
         "privacy": a["privacy"],
         "listed": bool(a["listed"]),
         "web_lookup": bool(a["web_lookup"]),
+        "lobby_agent": bool(a["lobby_agent"]),
         "agent_seen_at": a["agent_seen_at"],
+        "agent_online": _agent_online(a),
         "agent_verified": bool(a["agent_verified"]),
         "live_proof": hallway.live_proof(a),
         "pass": _pass_view(a),
@@ -451,7 +470,7 @@ async def event() -> dict:
         "max_attendees": settings.max_attendees,
         "lobby": settings.lobby_room_name,
         "attendees": len(people),
-        "agents_active": sum(_agent_active(a) for a in people),
+        "agents_active": sum(_agent_online(a) for a in people),
         "agenda": AGENDA,
         "invite_only": bool(_invite_code()),
         "invite_limit": settings.invite_limit or None,
@@ -693,6 +712,7 @@ class UpdateMe(BaseModel):
     autonomy: dict | None = None
     listed: bool | None = None
     web_lookup: bool | None = None
+    lobby_agent: bool | None = None
 
 
 @app.put("/api/me")
@@ -704,6 +724,7 @@ async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)) -> di
         autonomy=body.autonomy,
         listed=body.listed,
         web_lookup=body.web_lookup,
+        lobby_agent=body.lobby_agent,
     )
     return _me_view(a)
 
@@ -799,8 +820,10 @@ async def agent_events(request: Request, after: str = "", wait: float = 0) -> di
             cursor = {"n": int(n), "t": int(t)}
         except ValueError:
             raise HTTPException(400, "Bad 'after': pass back the value from the last answer.") from None
+    # A watcher counts as the agent online. Marked as the poll starts, not when it
+    # ends: a poll a dead watcher left behind still runs out its wait.
+    hallway.store.update("attendees", a["id"], agent_seen_at=time.time())
     events, cursor = await hallway.wait_events(a, cursor, max(0.0, min(wait, EVENTS_WAIT_MAX_S)))
-    hallway.store.update("attendees", a["id"], agent_seen_at=time.time())  # a watcher counts as the agent online
     return {"events": events, "after": f"{cursor['n']}.{cursor['t']}"}
 
 
@@ -959,7 +982,7 @@ async def people(q: str = "", hw_session: str | None = Cookie(None)) -> list[dic
     a = _me(hw_session)
     found = hallway.search_people(a, q, limit=100)
     by_handle = {x["handle"]: x for x in hallway.store.attendees()}
-    meetings = {m["with"]: m for m in reversed(hallway.meetings(a)) if m["status"] != "declined"}
+    meetings = {m["with"]: m for m in reversed(hallway.meetings(a)) if m["status"] not in ("declined", "cancelled")}
     contacts = {}
     for c in hallway.store.all("SELECT * FROM contacts WHERE requester_id = ? OR target_id = ?", a["id"], a["id"]):
         other = c["target_id"] if c["requester_id"] == a["id"] else c["requester_id"]
@@ -967,7 +990,7 @@ async def people(q: str = "", hw_session: str | None = Cookie(None)) -> list[dic
     for p in found:
         other = by_handle.get(p["handle"]) or {}
         m = meetings.get(p["handle"])
-        p["agent_active"] = _agent_active(other)
+        p["agent_active"] = bool(other) and _agent_online(other)
         p["meeting"] = {k: m[k] for k in ("time", "place", "status", "room")} if m else None
         p["contact"] = contacts.get(other.get("id"))
     return found
@@ -1405,6 +1428,7 @@ async def daypass_due(request: Request, every_s: int | None = None, busy: str = 
                 "remaining_usd": _remaining_usd(p),
                 "here_for": p["profile"].get("here_for", ""),
                 "note": p["note"],
+                "lobby": bool(hallway.store.need_attendee(id=p["attendee_id"])["lobby_agent"]),
                 "events": p.get("events", []),  # what woke it, if anything did
             }
         )
