@@ -280,3 +280,14 @@ async def test_chat_steps_say_when_an_action_is_waiting_or_refused(signup, clien
     assert steps[1] == "↳ waiting for your OK on Now"
     assert steps[2:4] == ["Proposing a meeting with @asha at 13:00", "↳ didn't go through: You can't meet yourself."]
     assert steps[4:] == ["Checking what's new"]  # a call that simply worked gets no follow-up
+
+
+async def test_a_refused_step_reads_to_the_person_not_the_agent(signup, client, hallway):
+    _, asha = await signup("Asha Rao", lobby=False)
+    ta = asha["connect"]["token"]
+    assert "error" in await mcp_call(client, ta, "search_people", {"query": "payments"})
+    assert "error" in await mcp_call(client, ta, "read_room", {"room": "no-such-room"})
+
+    steps = [s["text"] for s in hallway.store.all("SELECT text FROM agent_chat WHERE role = 'step' ORDER BY rowid")]
+    assert steps[1] == "↳ didn't go through: your agent isn't in the lobby (Lobby: Let my agent chat here)"
+    assert steps[3].startswith("↳ didn't go through: ") and ". " not in steps[3]
