@@ -390,8 +390,8 @@ const badgeHTML = (n, cls = "") => `<span class="badge ${cls}">${n}<span class="
 
 async function refreshCounts() {
   try {
-    const [list, meetings] = await Promise.all([api("/api/approvals"), api("/api/meetings")]);
-    const n = list.filter((a) => a.status === "pending").length + meetings.filter((m) => m.status === "proposed" && !m.you_proposed).length;
+    const [list, meetings, invites] = await Promise.all([api("/api/approvals"), api("/api/meetings"), api("/api/invites")]);
+    const n = list.filter((a) => a.status === "pending").length + meetings.filter((m) => m.status === "proposed" && !m.you_proposed).length + invites.length;
     if (n === state.counts.now) return;
     state.counts.now = n;
     const tab = document.querySelector('[data-tab="now"] .tab-ic');
@@ -766,7 +766,7 @@ function shortlistTicket(a, me, ticked) {
   return `
     <article class="ticket shortlist" data-card data-pick="${p.pick}">
       <div class="ticket-top">${av(me.name, "agent")}<div class="grow"><div class="ticket-kicker">Your agent found · Shortlist</div><div class="ticket-sum">${esc(p.goal || a.summary)}</div></div></div>
-      <div class="ticket-meta">Tick up to ${p.pick}. Your agent says hi to them and tries to set up a meeting. ${ago(a.created_at)}</div>
+      <div class="ticket-meta">Tick up to ${p.pick}. Your agent says hi to each in a private room. Want a meeting? Ask it. ${ago(a.created_at)}</div>
       ${p.card ? cardFrame(p.card, p.goal || "Shortlist") : ""}
       <div class="cands">${p.candidates.map((c) => `
         <label class="cand"><input type="checkbox" data-pick-handle="${esc(c.handle)}" ${ticked.has(c.handle) ? "checked" : ""}>
@@ -922,6 +922,7 @@ async function nowView() {
     needsEl.innerHTML = `
       <div class="block-head"><h2>Needs you</h2>${needs ? `<span class="count">${needs}</span>` : ""}</div>
       ${needs ? `<div class="tickets">
+        ${pending.filter((a) => a.kind === "shortlist").map((a) => shortlistTicket(a, me, ticked)).join("")}
         ${incoming.map((m) => `
           <article class="ticket" data-card>
             <div class="ticket-top">${pair(m.with_name)}<div class="grow"><div class="ticket-kicker">Meeting request</div><div class="ticket-who"><button class="name-btn" data-profile="${esc(m.with)}">${esc(m.with_name)}</button> wants to meet</div></div></div>
@@ -940,7 +941,7 @@ async function nowView() {
             <div class="ticket-actions"><button class="btn ghost" data-invite="${i.id}" data-v="0">Not now</button><button class="btn primary" data-invite="${i.id}" data-v="1">${icon("check", "sm")}Join</button></div>
             <span class="stamp" aria-hidden="true"></span>
           </article>`).join("")}
-        ${pending.map((a) => a.kind === "shortlist" ? shortlistTicket(a, me, ticked) : `
+        ${pending.filter((a) => a.kind !== "shortlist").map((a) => `
           <article class="ticket" data-card>
             <div class="ticket-top">${av(me.name, "agent")}<div class="grow"><div class="ticket-kicker">Your agent asks · ${esc(KIND_LABEL[a.kind] || a.kind)}</div><div class="ticket-sum">${esc(a.summary)}</div></div></div>
             <div class="ticket-meta">${ago(a.created_at)}</div>
@@ -948,14 +949,17 @@ async function nowView() {
             <div class="ticket-actions"><button class="btn ghost" data-decide="${a.id}" data-v="0">Not now</button><button class="btn primary" data-decide="${a.id}" data-v="1">${icon("check", "sm")}Approve</button></div>
             <span class="stamp" aria-hidden="true"></span>
           </article>`).join("")}
-      </div>` : `<div class="clear">${MARK("clear-mark")}<div><strong>All clear.</strong><p class="small muted">Anything you set to "Ask me" lands here as a card.</p></div></div>`}`;
+      </div>` : `<div class="clear">${MARK("clear-mark")}<div><strong>All clear.</strong><p class="small muted">Anything you set to "Ask me" lands here as a card.</p>
+        <button class="btn signal sm" id="ask-agent">Tell your agent who to meet</button></div></div>`}`;
+    const askBtn = document.getElementById("ask-agent");
+    if (askBtn) askBtn.onclick = () => { state.chatFocus = true; go("me"); };
     const live = meetings.filter((m) => !["declined", "cancelled"].includes(m.status));
     const seenText = new Set();
     const feed = notices.filter((n) => !seenText.has(n.text) && seenText.add(n.text));
     boardEl.innerHTML = `
       <div class="block-head"><h2>Up next</h2><span class="muted small">${plural(live.filter((m) => m.status === "confirmed").length, "meeting")} confirmed</span></div>
       ${live.length ? `<div class="board"><div class="board-head"><span>Time</span><span>With · Where</span><span>Status</span></div>${boardRows(meetings)}</div>`
-        : `<div class="board empty-board"><span class="b-time">--:--</span><span class="small">No meetings yet. Your agent proposes them when it finds a good match.</span></div>`}`;
+        : `<div class="board empty-board"><span class="b-time">--:--</span><span class="small">No meetings yet. Ask your agent to set one up, or accept a request here.</span></div>`}`;
     feedEl.innerHTML = `
       <div class="block-head"><h2>What your agent heard</h2></div>
       ${feed.length ? `<ul class="feed">${feed.slice(0, 6).map(noticeItem).join("")}</ul>${feed.length > 6 ? `<details class="more"><summary>Show ${feed.length - 6} more</summary><ul class="feed">${feed.slice(6).map(noticeItem).join("")}</ul></details>` : ""}`
@@ -1129,7 +1133,7 @@ async function roomView(name, tab) {
 }
 
 async function roomsView() {
-  const rooms = await api("/api/rooms");
+  const [rooms, invites] = await Promise.all([api("/api/rooms"), api("/api/invites")]);
   const others = (r) => r.people.filter((p) => p.handle !== state.me.handle);
   const lobby = rooms.find((r) => r.kind === "lobby");
   const meets = rooms.filter((r) => r.kind === "meet");
@@ -1145,6 +1149,8 @@ async function roomsView() {
         <span class="grow"><strong>${esc(others(r).map((p) => p.name).join(", ") || r.title)}</strong><span>${esc(r.meeting ? r.meeting.place : r.title)}</span></span>${icon("chev", "sm")}</a>`).join("")}</div>`
       : '<p class="small muted">When both people accept a meeting, Hallway opens a room for the two of you and your agents.</p>'}
     <div class="block-head"><h2>Your rooms</h2></div>
+    ${invites.length ? `<a class="room-row invites-row" href="#/now"><span class="room-ic">${icon("mail", "sm")}</span>
+      <span class="grow"><strong>${plural(invites.length, "room invite")} waiting</strong><span>From ${esc([...new Set(invites.map((i) => first(i.from_name)))].join(", "))} · answer on Now</span></span>${icon("chev", "sm")}</a>` : ""}
     ${rest.length ? `<div class="list">${rest.map((r) => `
       <a class="room-row" href="${href(r)}"><span class="room-ic">${icon("rooms", "sm")}</span>
         <span class="grow"><strong>${esc(r.title)}</strong><span>With ${esc(others(r).map((p) => first(p.name)).join(", ") || "just you")}, plus agents${(r.waiting_for || []).length ? ` · waiting for ${esc(r.waiting_for.map((p) => first(p.name)).join(", "))}` : ""}</span></span>${icon("chev", "sm")}</a>`).join("")}</div>`
@@ -1513,11 +1519,15 @@ function chatSection(me, connect) {
   const c = chatState(me);
   return `<section class="block agent-chat"><div class="block-head"><h2>Talk to your agent</h2><span class="chat-state small" id="chat-state"></span></div>
     <div class="chat-log" id="chat-log" role="log" aria-live="polite" aria-label="Your conversation with your agent">${chatLog(c)}</div>
+    ${c.msgs.length || c.busy ? "" : `<div class="chat-suggest" id="chat-suggest">${CHAT_SUGGEST.map((q) => `<button type="button" class="chip" data-ask>${esc(q)}</button>`).join("")}</div>`}
     <form class="chat-compose" id="chat-form"><label class="sr-only" for="chat-in">Message your agent</label>
-      <textarea id="chat-in" rows="1" maxlength="1000" placeholder="Find me GTM people to hire">${esc(c.draft)}</textarea>
+      <textarea id="chat-in" rows="1" maxlength="1000" placeholder="Who should I meet today?">${esc(c.draft)}</textarea>
       <button class="iconbtn chat-send" id="chat-send" aria-label="Send">${icon("arrow", "sm")}</button></form>
     <p class="tiny muted">${connect ? "Reaches your agent through its watcher in a second or two." : me.pass && me.pass.status === "paused" ? "Your day pass is paused: your agent answers when you resume it." : me.pass && me.pass.status !== "active" ? "Your day pass has used its budget, so your agent can't answer here any more." : "It starts the moment you send."} Others never see this chat; your agent may quote it, so keep private details out.</p></section>`;
 }
+
+// One-tap first questions, shown while the chat is still empty.
+const CHAT_SUGGEST = ["Who should I meet here?", "What's happening in the lobby?", "Find people building with agents"];
 
 function chatState(me) {
   if (!state.chat || state.chat.who !== me.handle) state.chat = { who: me.handle, msgs: [], last: 0, busy: false, draft: "" };
@@ -1542,6 +1552,7 @@ function bindChat(me) {
     const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
     log.innerHTML = chatLog(c);
     if (atEnd) log.scrollTop = log.scrollHeight;
+    if (c.msgs.length || c.busy) document.getElementById("chat-suggest")?.remove();
   };
   log.scrollTop = log.scrollHeight;
   const fit = () => { input.style.height = "auto"; input.style.height = `${input.scrollHeight}px`; };
@@ -1555,6 +1566,10 @@ function bindChat(me) {
     });
   }
   input.addEventListener("input", () => { c.draft = input.value; fit(); });
+  document.querySelectorAll("[data-ask]").forEach((b) => (b.onclick = () => {
+    input.value = c.draft = b.textContent;
+    document.getElementById("chat-form").requestSubmit();
+  }));
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("chat-form").requestSubmit(); }
   });
