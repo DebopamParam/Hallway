@@ -49,6 +49,10 @@ def security_headers(s: "config.Settings") -> list[tuple[bytes, bytes]]:
         "referrer-policy": "strict-origin-when-cross-origin",
         "permissions-policy": PERMISSIONS_POLICY,
         "cross-origin-opener-policy": "same-origin",
+        # Revalidate every time (a 304 when the ETag still matches). Without it
+        # Cloudflare caches /static/app.js for hours by default, and a deploy
+        # reaches visitors only when that copy expires.
+        "cache-control": "no-cache",
     }
     if _https(s):
         headers["strict-transport-security"] = HSTS
