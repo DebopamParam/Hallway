@@ -1,0 +1,24 @@
+== port 8840
+HTTP/1.1 404 Not Found
+server: uvicorn
+content-length: 9
+content-type: text/plain; charset=utf-8
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: strict-origin-when-cross-origin
+cross-origin-opener-policy: same-origin
+cache-control: no-cache
+x-request-id: 6d242015f3264a3c
+
+== port 8839
+HTTP/1.1 200 OK
+server: uvicorn
+content-length: 1981
+content-type: text/html; charset=utf-8
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: strict-origin-when-cross-origin
+cross-origin-opener-policy: same-origin
+cache-control: no-cache
+x-request-id: a8b417f9b8b74a88
+

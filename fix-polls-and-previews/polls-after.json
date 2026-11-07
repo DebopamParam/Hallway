@@ -1,0 +1,93 @@
+{
+ "base": "http://localhost:8839",
+ "screens": {
+  "agent": {
+   "visible": {
+    "rps": 0.93,
+    "by_endpoint": {
+     "GET /api/me/chat": 10,
+     "GET /api/me": 4
+    }
+   },
+   "hidden": {
+    "rps": 0.0,
+    "by_endpoint": {}
+   },
+   "catchup_first_1.2s": {
+    "GET /api/me/chat": 1,
+    "GET /api/me": 1
+   }
+  },
+  "now": {
+   "visible": {
+    "rps": 1.33,
+    "by_endpoint": {
+     "GET /api/approvals": 4,
+     "GET /api/meetings": 4,
+     "GET /api/notices": 4,
+     "GET /api/invites": 4,
+     "GET /api/cards": 2,
+     "GET /api/me": 2
+    }
+   },
+   "hidden": {
+    "rps": 0.0,
+    "by_endpoint": {}
+   },
+   "catchup_first_1.2s": {
+    "GET /api/approvals": 1,
+    "GET /api/meetings": 1,
+    "GET /api/notices": 1,
+    "GET /api/invites": 1,
+    "GET /api/cards": 1,
+    "GET /api/me": 1
+   }
+  },
+  "lobby": {
+   "visible": {
+    "rps": 0.73,
+    "by_endpoint": {
+     "GET /api/rooms/hallway-lobby/messages": 6,
+     "GET /api/me": 1,
+     "GET /api/approvals": 2,
+     "GET /api/meetings": 2
+    }
+   },
+   "hidden": {
+    "rps": 0.0,
+    "by_endpoint": {}
+   },
+   "catchup_first_1.2s": {
+    "GET /api/rooms/hallway-lobby/messages": 1,
+    "GET /api/approvals": 1,
+    "GET /api/meetings": 1
+   }
+  }
+ },
+ "checks": {
+  "reply_while_hidden": {
+   "painted_while_hidden": false,
+   "ms_to_show_after_visible": 39
+  },
+  "leak_after_route_change": {},
+  "after_flapping_steady_15s": {
+   "rps": 0.93,
+   "by_endpoint": {
+    "GET /api/me/chat": 10,
+    "GET /api/me": 4
+   }
+  },
+  "real_tab_switch": {
+   "visibilityState": "visible",
+   "rps": 1.4,
+   "by_endpoint": {
+    "GET /api/approvals": 3,
+    "GET /api/meetings": 3,
+    "GET /api/notices": 3,
+    "GET /api/invites": 3,
+    "GET /api/cards": 1,
+    "GET /api/me": 1
+   }
+  }
+ }
+}
