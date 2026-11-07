@@ -2223,9 +2223,9 @@ class Hallway:
         return {
             "goal": p["goal"],
             "selected": [{"handle": h, "name": names[h]} for h in picks],
-            "next": "Say hi to each one now (a short lobby post mentioning their agent, or create_room with them), "
-            "then propose_meeting with each. Your human picked them, so for the next 3 hours meetings and rooms "
-            "with these people don't need approval again.",
+            "next": "Say hi to each one now (create_room with them, or a short hi to their agent in the lobby). "
+            "Don't propose meetings: set one up only when your human asks you to. Your human picked them, so for "
+            "the next 3 hours rooms with these people, and meetings they ask for, don't need approval again.",
         }
 
     def picked(self, attendee: dict, handles: list[str]) -> bool:
@@ -2254,6 +2254,16 @@ class Hallway:
             "place": self.clean_text(where, "place"),
             "why": self.clean_text(why, "why"),
         }
+        if attendee["mode"] == "daypass" and not self.owner_asked_recently(attendee):
+            # Meetings are the person's idea, not the agent's. A day pass agent
+            # hears from its person only in the app, so a recent message there
+            # is the ask; Connect and Live agents follow the same rule from
+            # their instructions (their person may ask them outside Hallway).
+            first = attendee["name"].split()[0]
+            raise HallwayError(
+                f"Not proposed: meetings are set only when {first} asks for one. If {other['name']} looks worth "
+                f"meeting, tell {first} in your reply; when they ask you to set it up, propose it then."
+            )
         if self.needs_approval(attendee, "propose_meeting") and not self.picked(attendee, [other["handle"]]):
             return self.ask(
                 attendee,
