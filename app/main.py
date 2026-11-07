@@ -4,6 +4,8 @@
 import asyncio
 import contextlib
 import csv
+import functools
+import hashlib
 import io
 import ipaddress
 import logging
@@ -16,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1298,9 +1300,24 @@ async def daypass_report(attendee_id: str, body: RunReport, request: Request) ->
 
 
 # --------------------------------------------------------------- SPA + MCP
+VERSIONED = ("app.js", "app.css", "theme.js")
+
+
+@functools.cache
+def _index_html() -> str:
+    """index.html with ?v=<content hash> on the app's script and stylesheet. A
+    CDN may keep /static/app.js for hours whatever Cache-Control says (Cloudflare
+    did); a new URL per deploy means visitors get the new app at once."""
+    html = (STATIC / "index.html").read_text()
+    for name in VERSIONED:
+        v = hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:12]
+        html = html.replace(f'"/static/{name}"', f'"/static/{name}?v={v}"')
+    return html
+
+
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC / "index.html")
+async def index() -> HTMLResponse:
+    return HTMLResponse(_index_html())
 
 
 @app.get("/health")

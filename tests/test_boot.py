@@ -47,3 +47,17 @@ async def test_sync_repairs_attendee_missing_from_lobby(hallway, world, signup):
     assert r.status_code == 200
     ch = world.channels[world.rooms[hallway.lobby["id"]]]
     assert {"u_asha", "u_asha.agent"} <= ch["members"]
+
+
+async def test_index_versions_the_app_assets(client):
+    """A CDN can't hand out yesterday's app.js: each deploy's index points at new URLs."""
+    import hashlib
+    import re
+
+    from app.main import STATIC
+
+    html = (await client.get("/")).text
+    for name in ("app.js", "app.css", "theme.js"):
+        v = re.search(rf'"/static/{re.escape(name)}\?v=([0-9a-f]+)"', html)
+        assert v and v.group(1) == hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:12]
+        assert (await client.get(f"/static/{name}?v={v.group(1)}")).status_code == 200
