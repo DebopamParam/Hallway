@@ -95,6 +95,8 @@ PROFILE_TEXT = {"role": 80, "company": 80, "bio": 300, "here_for": 300}
 PROFILE_LISTS = {"interests": (20, 40), "talks": (30, 160)}
 PROFILE_LINKS = ("github", "linkedin")
 FIELD_MAX = 200  # a link or contact value
+PASS_NOTE_MAX = 280  # a day pass holder's request to their agent
+PASS_NOTE_NUDGE_S = 120  # a new request runs the agent early at most this often
 
 
 def _bad(strict: bool, msg: str) -> None:
@@ -662,6 +664,25 @@ class Hallway:
         if p["status"] == "spent":
             raise HallwayError("This pass has used its whole budget.")
         self.store.update("passes", p["id"], status="paused" if paused else "active")
+        return self.store.need("SELECT * FROM passes WHERE id = ?", p["id"])
+
+    def set_pass_note(self, attendee: dict, note: str) -> dict:
+        """What the holder wants their agent to do next. The worker hands it to
+        the agent with every run. A new request moves the next run forward, so
+        it's picked up within a minute, but at most once per PASS_NOTE_NUDGE_S:
+        the cap holds either way, this just keeps edits from buying runs."""
+        p = self.day_pass(attendee)
+        if not p:
+            raise HallwayError("You don't have a day pass.")
+        note = " ".join(note.split())
+        if len(note) > PASS_NOTE_MAX:
+            raise HallwayError(f"Keep it under {PASS_NOTE_MAX} characters.")
+        now = time.time()
+        fields: dict[str, Any] = {"note": note, "note_at": now}
+        last = p["last_run_at"]
+        if note and last is not None and now - last >= PASS_NOTE_NUDGE_S:
+            fields["last_run_at"] = now - settings.daypass_every_s - 1  # due on the worker's next poll
+        self.store.update("passes", p["id"], **fields)
         return self.store.need("SELECT * FROM passes WHERE id = ?", p["id"])
 
     def admin_set_pass(self, attendee: dict, *, paused: bool | None = None, cap_usd: float | None = None) -> dict:

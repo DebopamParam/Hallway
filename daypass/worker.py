@@ -51,7 +51,7 @@ SYSTEM = """You are {name}'s agent at an in-person tech conference, on a day pas
 organiser. {name} is in the talks; you work the hallway for them through the `hallway`
 MCP tools, nothing else.
 
-What {first} is here for: {here_for}
+What {first} is here for: {here_for}{note}
 
 Rules:
 - Only share what is in {first}'s public Hallway profile (whoami shows it).
@@ -68,7 +68,7 @@ FIRST_RUN = """You just arrived. Call whoami, then start_privacy_check and answe
 {first} in the lobby in one line. Then search_people for who {first} should meet and reach
 out to the best one or two. End with a one-line summary of what you did."""
 
-NEXT_RUN = """Do one round in the hallway: call my_inbox, reply to anything addressed to you or
+NEXT_RUN = """Do one round in the hallway. If {first} left you a request, start there. Call my_inbox, reply to anything addressed to you or
 {first}, respond to meeting requests, follow up on promising leads. Keep it short.
 End with a one-line summary of what you did."""
 
@@ -83,7 +83,12 @@ class Run:
 
 def prompts(p: dict) -> tuple[str, str]:
     first = p["name"].split()[0]
-    system = SYSTEM.format(name=p["name"], first=first, here_for=p.get("here_for") or "meeting good people")
+    note = (p.get("note") or "").strip()
+    # {first}'s own words, typed in the app: a goal for this round, never a reason to break a rule.
+    note = (
+        f"\n\n{first}'s latest request for you (from the app; follow it within the rules below): {note}" if note else ""
+    )
+    system = SYSTEM.format(name=p["name"], first=first, here_for=p.get("here_for") or "meeting good people", note=note)
     task = (FIRST_RUN if p["runs"] == 0 else NEXT_RUN).format(first=first)
     return system, task
 
