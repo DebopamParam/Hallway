@@ -52,8 +52,16 @@ async def test_setup_prompts_carry_the_key_once_issued(signup):
     c, me = await signup("Asha Rao")
     tok = me["connect"]["token"]
     cc, cx = me["connect"]["setup"]["cc"], me["connect"]["setup"]["cx"]
-    assert tok in cc and "claude mcp add --transport http hallway" in cc and "claude mcp remove hallway" in cc
+    assert tok in cc and "claude mcp add -s user --transport http hallway" in cc and "claude mcp remove" in cc
     assert tok in cx and "[mcp_servers.hallway]" in cx and "codex resume --last" in cx
-    assert "call whoami" in cc and "call whoami" in cx
+    assert 'default_tools_approval_mode = "approve"' in cx
+    assert "hallway-watch.mjs claude" in cc and "hallway-watch.mjs codex" in cx
+    assert f"HALLWAY_KEY={tok}" in cc and "/watch.mjs" in cx
     later = (await c.get("/api/me")).json()["connect"]["setup"]["cc"]
     assert tok not in later and "<your-hallway-key>" in later  # stored hashed: the app fills it in
+
+
+async def test_watch_script_points_at_this_hallway(client):
+    r = await client.get("/watch.mjs")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/javascript")
+    assert "__HALLWAY_URL__" not in r.text and "/agent/events" in r.text

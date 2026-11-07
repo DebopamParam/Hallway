@@ -13,6 +13,7 @@ Vocabulary
 """
 
 import asyncio
+import collections
 import contextlib
 import logging
 import re
@@ -191,6 +192,12 @@ RESEARCH_MAX = 10  # people research_people returns, and candidates on one short
 RESEARCH_LOOKUPS = 15  # uncached web lookups one research_people call may make
 CARD_HTML_MAX = 100_000  # one agent-made card, in characters
 SHORTLIST_OK_S = 3 * 3600  # how long a shortlist pick stands in for approval to reach out
+# The event feed (events_for / wait_events): what an agent's watcher or the day
+# pass worker waits on instead of an LLM checking my_inbox on a timer.
+TAIL_S = 2  # how often every room's new messages are read
+TAIL_KEEP = 2000  # recent messages kept in memory for the feed
+FEED_MAX = 20  # events in one answer
+PASS_WAKE_GAP_S = 20  # a day pass agent woken by events runs at most this often
 
 ADDRESSING_OPENED = "stand_ins_addressing_open"  # kv: every stand-in got _open_addressing
 HOST_CREATE_TRIES, HOST_CREATE_BACKOFF_S = 6, 0.5  # Switch busy creating a room: retry for ~10 s
@@ -263,6 +270,11 @@ class Hallway:
         # are still creating).
         self._creating_rooms: set[str] = set()
         self._reserved_names: set[str] = set()
+        # Every room's recent messages (see _tail_loop), oldest first, for the event feed.
+        self.activity: collections.deque[dict] = collections.deque(maxlen=TAIL_KEEP)
+        self._tail_since: dict[str, int] = {}  # room id -> last message ms
+        self._tail_task: asyncio.Task[None] | None = None
+        self._members: dict[str, tuple[float, set[str]]] = {}
 
     # ------------------------------------------------------------------ setup
     async def start(self) -> None:
@@ -313,6 +325,7 @@ class Hallway:
         if not self.store.kv_get(ADDRESSING_OPENED):
             await self._open_all_stand_ins()
         self._sync_task = asyncio.create_task(self._sync_loop())
+        self._tail_task = asyncio.create_task(self._tail_loop())
         self.presence.ensure_all()
 
     async def _open_addressing(self, agent_name: str, agent_id: str) -> bool:
@@ -357,6 +370,8 @@ class Hallway:
     async def stop(self) -> None:
         if self._sync_task:
             self._sync_task.cancel()
+        if self._tail_task:
+            self._tail_task.cancel()
         self.presence.stop()
         await self.switch.close()
         await self.mm.close()
@@ -666,7 +681,41 @@ class Hallway:
 
     # ------------------------------------------------------------ day pass
     def day_pass(self, attendee: dict) -> dict | None:
+        """The attendee's pass while they're in day pass mode. Switching to Connect
+        keeps the row (and what it spent): switching back picks it up again."""
+        if attendee["mode"] != "daypass":
+            return None
         return self.store.one("SELECT * FROM passes WHERE attendee_id = ?", attendee["id"])
+
+    def switch_mode(self, attendee: dict, mode: str) -> dict:
+        """Change who drives the agent: their own (Connect) or the organiser's (day
+        pass). The stand-in, rooms, meetings and contacts stay as they are. Live
+        agents are registered in Switch Console, so Live is not a switch here."""
+        if mode not in STAND_IN_MODES:
+            raise HallwayError("Switch between your own agent (connect) and a day pass (daypass).")
+        if attendee["mode"] not in STAND_IN_MODES:
+            raise HallwayError("A Live agent runs in Switch; ask the organiser to move you.")
+        if mode == attendee["mode"]:
+            return attendee
+        with self.store.transaction():
+            if mode == "daypass":
+                if not settings.daypass_enabled:
+                    raise HallwayError("Day passes aren't available at this event.")
+                if not self.store.one("SELECT 1 FROM passes WHERE attendee_id = ?", attendee["id"]):
+                    self.store.insert(
+                        "passes",
+                        id=new_id(),
+                        attendee_id=attendee["id"],
+                        cap_usd=settings.daypass_cap_usd,
+                        created_at=time.time(),
+                    )
+                # Due on the worker's next poll; a paused or spent pass stays so.
+                self.store.db.execute(
+                    "UPDATE passes SET last_run_at = NULL WHERE attendee_id = ? AND status = 'active'",
+                    (attendee["id"],),
+                )
+            self.store.update("attendees", attendee["id"], mode=mode)
+        return self.store.need_attendee(id=attendee["id"])
 
     def pass_usable(self, attendee: dict) -> bool:
         p = self.day_pass(attendee)
@@ -843,9 +892,39 @@ class Hallway:
         cutoff = time.time() - every_s
         return self.store.all(
             "SELECT p.*, a.name, a.handle, a.profile FROM passes p JOIN attendees a ON a.id = p.attendee_id "
-            "WHERE p.status = 'active' AND (p.last_run_at IS NULL OR p.last_run_at < ?) ORDER BY p.last_run_at",
+            "WHERE p.status = 'active' AND a.mode = 'daypass' AND (p.last_run_at IS NULL OR p.last_run_at < ?) "
+            "ORDER BY p.last_run_at",
             cutoff,
         )
+
+    async def woken_passes(self, every_s: float) -> list[dict]:
+        """due_passes, plus active passes with something new for their agent (a
+        mention, a meeting request, a decision), each with `events`: so a day
+        pass answers within seconds, not at its next timed run."""
+        due = self.due_passes(every_s)
+        seen = {p["attendee_id"] for p in due}
+        rows = due + [  # timed ones first, in due_passes' order
+            p
+            for p in self.store.all(
+                "SELECT p.*, a.name, a.handle, a.profile FROM passes p JOIN attendees a ON a.id = p.attendee_id "
+                "WHERE p.status = 'active' AND a.mode = 'daypass'"
+            )
+            if p["attendee_id"] not in seen
+        ]
+        now = time.time()
+        out = []
+        for p in rows:
+            a = self.store.need_attendee(id=p["attendee_id"])
+            key = f"passfeed:{a['id']}"
+            events, cursor = await self.events_for(a, self.store.kv_get(key))
+            timed = p["attendee_id"] in seen
+            gap_ok = p["last_run_at"] is None or now - p["last_run_at"] >= PASS_WAKE_GAP_S
+            if timed or (events and gap_ok):
+                self.store.kv_set(key, cursor)  # this run will see them (my_inbox)
+                out.append({**p, "events": events})
+            elif not events:
+                self.store.kv_set(key, cursor)
+        return out
 
     def record_run(
         self, attendee_id: str, engine: str, cost_usd: float, tool_calls: int, summary: str, ok: bool
@@ -1319,6 +1398,102 @@ class Hallway:
 
     def _touch(self, attendee: dict) -> None:
         self.store.update("attendees", attendee["id"], agent_seen_at=time.time())
+
+    # -------------------------------------------------------------- event feed
+    async def _tail_loop(self) -> None:
+        while True:
+            try:
+                await self.tail_once()
+            except Exception as e:  # keep the loop alive
+                log.warning("tail: %s", e)
+            await asyncio.sleep(TAIL_S)
+
+    async def tail_once(self) -> None:
+        """Read every room's messages since the last look into `activity`. The
+        host is in every room. A room seen for the first time starts from now:
+        the feed is about what happens next, not history."""
+        host = self._host()
+        for room in self.store.all("SELECT * FROM rooms ORDER BY created_at"):
+            since = self._tail_since.get(room["id"])
+            msgs = await self.switch.read_context(
+                host, room["id"], since=now_iso(since / 1000) if since else None, limit=50
+            )
+            latest = since or int(time.time() * 1000)
+            for m in msgs:
+                ts = int(m["timestamp"])
+                if since is not None and ts > since:
+                    self.activity.append({**m, "room_id": room["id"], "room": room["name"], "room_kind": room["kind"]})
+                latest = max(latest, ts)
+            self._tail_since[room["id"]] = latest
+
+    async def _members_of(self, room_id: str, room: dict) -> set[str]:
+        hit = self._members.get(room_id)
+        if hit and time.time() - hit[0] < 10:
+            return hit[1]
+        members = await self.room_members(room)
+        self._members[room_id] = (time.time(), members)
+        return members
+
+    async def events_for(self, attendee: dict, cursor: dict | None) -> tuple[list[dict], dict]:
+        """What's new for this attendee's agent after `cursor` ({"n": last notice
+        id, "t": last message ms}), and the cursor after it. Nothing is marked
+        read: my_inbox stays the agent's own record. No cursor: nothing, and a
+        cursor for now. The agent's own messages and doings don't count, or
+        relaying them would wake it in a loop."""
+        if not cursor:
+            last = self.store.one("SELECT max(id) AS n FROM notices WHERE attendee_id = ?", attendee["id"])
+            return [], {"n": (last or {}).get("n") or 0, "t": int(time.time() * 1000)}
+        n, t = int(cursor.get("n") or 0), int(cursor.get("t") or 0)
+        events: list[dict] = []
+        for x in self.store.all(
+            "SELECT id, kind, text, actor_kind, actor_id FROM notices WHERE attendee_id = ? AND id > ? "
+            "AND audience IN ('agent','both') ORDER BY id LIMIT ?",
+            attendee["id"],
+            n,
+            FEED_MAX,
+        ):
+            n = x["id"]
+            if not (x["actor_kind"] == "agent" and x["actor_id"] == attendee["id"]):
+                events.append({"kind": x["kind"], "text": x["text"]})
+        mine = {attendee["agent_name"].lower(), attendee["handle"].lower()}
+        rooms: dict[str, dict] = {}
+        for m in list(self.activity):
+            if m["timestamp"] <= t:
+                continue
+            if len(events) >= FEED_MAX:
+                break  # the rest come in the next answer
+            t = max(t, int(m["timestamp"]))
+            if m["sender_name"].lower() in mine:
+                continue
+            body = m["body"].lower()
+            mentioned = any(f"@{x}" in body for x in mine)
+            if not mentioned and m["room_kind"] == "lobby":
+                continue
+            room = rooms.get(m["room_id"]) or self.store.one("SELECT * FROM rooms WHERE id = ?", m["room_id"])
+            if not room:
+                continue
+            rooms[m["room_id"]] = room
+            if attendee["mm_user_id"] not in await self._members_of(m["room_id"], room):
+                continue
+            events.append(
+                {
+                    "kind": "message",
+                    "room": m["room"],
+                    "from": m["sender_name"],
+                    "text": m["body"][:300],
+                    "mentions_you": mentioned,
+                }
+            )
+        return events, {"n": n, "t": t}
+
+    async def wait_events(self, attendee: dict, cursor: dict | None, wait_s: float) -> tuple[list[dict], dict]:
+        """events_for, held open up to `wait_s` until there is something."""
+        deadline = time.time() + wait_s
+        while True:
+            events, cursor = await self.events_for(attendee, cursor)
+            if events or time.time() >= deadline:
+                return events, cursor
+            await asyncio.sleep(1)
 
     async def inbox(self, attendee: dict) -> dict:
         """What changed since the agent last checked: messages that mention it or
