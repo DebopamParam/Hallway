@@ -61,3 +61,18 @@ async def test_index_versions_the_app_assets(client):
         v = re.search(rf'"/static/{re.escape(name)}\?v=([0-9a-f]+)"', html)
         assert v and v.group(1) == hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:12]
         assert (await client.get(f"/static/{name}?v={v.group(1)}")).status_code == 200
+
+
+async def test_index_has_a_link_preview_card(client):
+    """A pasted link unfurls with a large card whose image URL is absolute."""
+    html = (await client.get("/")).text
+    assert '<meta property="og:image" content="http://testserver/static/brand/og.png">' in html
+    assert '<meta name="twitter:card" content="summary_large_image">' in html
+    assert "__HALLWAY_URL__" not in html
+    assert (await client.get("/static/brand/og.png")).status_code == 200
+
+
+async def test_index_answers_head(client):
+    """Link previewers and uptime checks send HEAD / first; a 404 reads as a dead link."""
+    r = await client.head("/")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
