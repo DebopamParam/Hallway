@@ -508,7 +508,7 @@ async function landing(prefill = "") {
 }
 
 // ---------------------------------------------------------------- onboarding
-const draft = { step: 1, name: "", profile: { interests: [], talks: [], links: {} }, contact: {}, mode: "connect",
+const draft = { step: 1, name: "", profile: { interests: [], talks: [], links: {} }, contact: {}, mode: null,
   live_agent_name: "", lobby_agent: false,
   autonomy: { chat: "auto", rooms: "ask", join_rooms: "ask", propose_meeting: "ask", accept_meeting: "ask", share_contact: "ask" } };
 const STEPS = ["You", "Private", "Agent", "Rules"];
@@ -592,6 +592,8 @@ async function onboard(step) {
       <p class="small muted">If anyone, person or agent, types these into a room, Switch strikes them out like this: <span class="redacted"><span>private</span></span></p>`;
   } else if (s === 3) {
     const dp = state.event.daypass;
+    // Day pass is the default where the organiser offers one: nothing to install.
+    if (!draft.mode) { draft.mode = dp ? "daypass" : "connect"; keepDraft(email); }
     const choice = (id, ic, title, desc, meta, note = "", off = false) => `
       <label class="mode ${draft.mode === id ? "on" : ""} ${off ? "off" : ""}">
         <input type="radio" name="mode" value="${id}" ${draft.mode === id ? "checked" : ""} ${off ? "disabled" : ""}>
@@ -601,14 +603,14 @@ async function onboard(step) {
     body = `
       <div class="step-head"><h1 class="display sm">Bring your agent</h1><p class="muted">Your agent works the hallway for you. Hallway only sees what it says out loud.</p></div>
       <div class="modes">
-        ${choice("connect", "link", "Connect", "Add Hallway as an MCP server in Claude Code, Codex or any MCP client.", "One command · runs on your machine with your keys")}
-        ${choice("live", "bolt", "Live on Switch", "Your agent joins rooms natively through Switch Console and wakes the moment someone tags it.", "For agents already on Switch")}
-        ${draft.mode === "live" ? `<div class="mode-extra">${field("live_name", "Your Switch agent's name", draft.live_agent_name, "steve.claude", { hint: "Register it in Switch Console on this event's server first. Next, it posts a one-time code to prove it's yours." })}</div>` : ""}
-        ${choice("daypass", "key", "Day pass", "No agent? The organiser runs one for you today. Nothing to install.",
-          dp ? `Hard spend cap · pause any time` : "Not offered at this event", dp ? `<span class="chip signal">${esc(dp.price)}</span>` : '<span class="chip">Soon</span>', !dp)}
+        ${choice("daypass", "key", "Day pass", "The organiser runs an agent for you today. Nothing to install, ready in a minute.",
+          dp ? `Easiest start · hard spend cap · pause any time` : "Not offered at this event", dp ? `<span class="chip signal">${esc(dp.price)}</span>` : '<span class="chip">Soon</span>', !dp)}
         ${draft.mode === "daypass" && dp ? `<div class="mode-extra ticket-mini"><div><span class="eyebrow">Day pass</span><strong>${esc(dp.price)}</strong></div>
           <p class="small muted">It checks the hallway every few minutes until it has used $${dp.cap_usd.toFixed(2)} of model time, then stops by itself.</p>
           ${/^free$/i.test(dp.price) ? "" : '<span class="chip go">Demo event: no charge</span>'}</div>` : ""}
+        ${choice("connect", "link", "Connect", "Add Hallway as an MCP server in Claude Code, Codex or any MCP client.", "One command · runs on your machine with your keys")}
+        ${choice("live", "bolt", "Live on Switch", "Your agent joins rooms natively through Switch Console and wakes the moment someone tags it.", "For agents already on Switch")}
+        ${draft.mode === "live" ? `<div class="mode-extra">${field("live_name", "Your Switch agent's name", draft.live_agent_name, "steve.claude", { hint: "Register it in Switch Console on this event's server first. Next, it posts a one-time code to prove it's yours." })}</div>` : ""}
       </div>`;
   } else {
     body = `
@@ -667,7 +669,7 @@ async function onboard(step) {
     btn.disabled = true;
     try {
       state.me = keepKey(await api("/api/register", { body: { name: draft.name, profile: draft.profile, contact: draft.contact,
-        autonomy: draft.autonomy, mode: draft.mode, live_agent_name: draft.live_agent_name || null } }));
+        autonomy: draft.autonomy, mode: draft.mode || "connect", live_agent_name: draft.live_agent_name || null } }));
       if (draft.lobby_agent && draft.mode !== "live") {
         try { state.me = { ...state.me, ...(await api("/api/me", { method: "PUT", body: { lobby_agent: true } })) }; } catch { /* the Lobby page has the switch too */ }
       }
