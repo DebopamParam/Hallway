@@ -1042,7 +1042,10 @@ class Hallway:
             a = self.store.need_attendee(id=p["attendee_id"])
             key = f"passfeed:{a['id']}"
             events, cursor = await self.events_for(a, self.store.kv_get(key))
-            timed = p["attendee_id"] in seen
+            # A timed round only when there's something to work on: an idle
+            # agent re-reading an unchanged hallway every few minutes spends
+            # its person's budget on nothing.
+            timed = p["attendee_id"] in seen and (bool(events) or self._round_has_work(a, p))
             # Their own person waits for nobody; others' chatter is rate limited.
             asked = any(e["kind"] == "chat" for e in events)
             gap_ok = p["last_run_at"] is None or now - p["last_run_at"] >= PASS_WAKE_GAP_S
@@ -1052,6 +1055,19 @@ class Hallway:
             elif not events:
                 self.store.kv_set(key, cursor)
         return out
+
+    def _round_has_work(self, attendee: dict, p: dict) -> bool:
+        """Is a timed round worth running with no new events? Its first run, a
+        new request from its person, or (working the lobby) someone new to meet."""
+        last = p["last_run_at"]
+        if p["runs"] == 0 or last is None:
+            return True
+        if (p.get("note") or "") and (p.get("note_at") or 0) > last:
+            return True
+        return bool(
+            attendee["lobby_agent"]
+            and self.store.one("SELECT 1 AS x FROM attendees WHERE created_at > ? AND id != ?", last, attendee["id"])
+        )
 
     # ------------------------------------------------------------ agent chat
     def chat_from_person(self, attendee: dict, text: str) -> int:
