@@ -133,6 +133,9 @@ NEXT_RUN = """Do one round in the hallway. If {first} left you a request, start 
 Finish with one sentence to {first} on what you did."""
 
 
+FAILED_REPLY = "Something went wrong on my side. Try again in a minute."
+
+
 @dataclass
 class Run:
     cost_usd: float
@@ -224,13 +227,17 @@ def load_providers() -> None:
 
 
 # ---------------------------------------------------------------- engines
-MAX_OUT_TOKENS = 1024  # per request; bounds the worst case PricedModel checks against
+# Per reply, reasoning included. A shortlist with its own html page runs to
+# thousands of tokens, so PricedModel gives each reply what the budget has room
+# for, up to MAX_OUT_TOKENS, and refuses only below MIN_OUT_TOKENS.
+MAX_OUT_TOKENS = 8192
+MIN_OUT_TOKENS = 1024
 
 
 def priced_model(model, budget: float, price_in: float, price_out: float):
     """Wrap a model PydanticAI can't price so the budget is checked before every
-    request, not after: a request is refused when what's spent plus its worst case
-    (the last prompt grown by a quarter, plus a full reply) would pass the budget."""
+    request, not after: its reply may only use what's left once what's spent and its
+    worst-case prompt (the last one grown by a quarter) are paid for."""
     from pydantic_ai.exceptions import UsageLimitExceeded
     from pydantic_ai.models.wrapper import WrapperModel
 
@@ -239,10 +246,10 @@ def priced_model(model, budget: float, price_in: float, price_out: float):
         last_in = 0
 
         async def request(self, messages, model_settings, params):
-            worst = self.spent + max(self.last_in * 1.25, 4000) * price_in + MAX_OUT_TOKENS * price_out
-            if worst > budget:
+            room = (budget - self.spent - max(self.last_in * 1.25, 4000) * price_in) / price_out
+            if room < MIN_OUT_TOKENS:
                 raise UsageLimitExceeded(f"next request could pass the ${budget:.4f} budget (${self.spent:.4f} spent)")
-            settings = {**(model_settings or {}), "max_tokens": MAX_OUT_TOKENS}
+            settings = {**(model_settings or {}), "max_tokens": int(min(room, MAX_OUT_TOKENS))}
             response = await super().request(messages, settings, params)
             self.last_in = response.usage.input_tokens
             self.spent += response.usage.input_tokens * price_in + response.usage.output_tokens * price_out
@@ -276,6 +283,9 @@ async def run_pydantic_ai(p: dict, budget: float, model=None) -> Run:
     except UsageLimitExceeded as e:
         summary, ok = f"Stopped at its limit: {e}", True
         reply = "I hit this run's spending limit and stopped. Ask again and I'll pick it up."
+    except Exception as e:  # its requests were billed all the same, so the pass is charged for them
+        log.exception("run failed for %s", p["handle"])
+        summary, ok, reply = f"{type(e).__name__}: {e}"[:300], False, FAILED_REPLY
     cost = model.spent if PRICE_PER_MTOK else float(usage.cost or 0)
     return Run(cost, usage.tool_calls, summary, ok, reply)
 
@@ -357,7 +367,7 @@ async def run_one(http: httpx.AsyncClient, p: dict, engine: str) -> None:
             0,
             f"{type(e).__name__}: {e}"[:300],
             ok=False,
-            reply="Something went wrong on my side. Try again in a minute.",
+            reply=FAILED_REPLY,
         )
     await say(http, p, text=run.reply, busy=False)  # before the report, which revokes the run token
     r = await http.post(

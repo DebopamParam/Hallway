@@ -1,5 +1,6 @@
 """Day pass ledger: the worker API (/internal/daypass/*), spend cap, pause."""
 
+import functools
 import importlib.util
 import time
 from pathlib import Path
@@ -187,3 +188,80 @@ async def test_idle_pass_skips_rounds_until_someone_new_arrives(client, hallway,
     assert (await client.get("/internal/daypass/due?every_s=0", headers=W)).json() == []
     await signup("Bo Chen")  # someone new to look at
     assert [p["handle"] for p in (await client.get("/internal/daypass/due?every_s=0", headers=W)).json()] == ["sana"]
+
+
+def load_worker():
+    spec = importlib.util.spec_from_file_location(
+        "daypass_worker", Path(__file__).parent.parent / "daypass" / "worker.py"
+    )
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+    return worker
+
+
+@pytest.fixture
+def priced_worker(monkeypatch):
+    """The worker on a model PydanticAI can't price, at the production rates,
+    with Hallway's MCP tools swapped for a local propose_shortlist."""
+    pytest.importorskip("pydantic_ai")  # the worker's dependency, not the app's
+    from pydantic_ai.toolsets import FunctionToolset
+
+    def propose_shortlist(goal: str) -> str:
+        return "Shortlist is in the app."
+
+    worker = load_worker()
+    monkeypatch.setattr(worker, "PRICE_PER_MTOK", "0.30,1.20")
+    monkeypatch.setattr("pydantic_ai.mcp.MCPToolset", lambda *a, **kw: FunctionToolset([propose_shortlist]))
+    return worker
+
+
+async def test_priced_run_gives_each_reply_what_the_budget_has_room_for(priced_worker):
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    sent = []
+
+    def model(messages, info: AgentInfo) -> ModelResponse:
+        sent.append((info.model_settings or {}).get("max_tokens"))
+        return ModelResponse(parts=[TextPart("Your shortlist is in the app.")])
+
+    p = {"name": "Riya Kapoor", "handle": "riya", "runs": 1, "mcp_url": "http://hallway.invalid/mcp", "token": "t"}
+    run = await priced_worker.run_pydantic_ai(p, 0.10, model=FunctionModel(model))
+    assert sent == [8192] and run.reply == "Your shortlist is in the app."
+    # $0.0051 left is just above the $0.005 at which Hallway marks a pass spent:
+    # the run still goes ahead, with a reply that can't pass the budget.
+    sent.clear()
+    run = await priced_worker.run_pydantic_ai(p, 0.0051, model=FunctionModel(model))
+    assert run.reply == "Your shortlist is in the app."
+    assert sent[0] >= 1024 and 4000 * 0.30e-6 + sent[0] * 1.20e-6 <= 0.0051
+
+
+async def test_failed_run_still_charges_the_pass_for_its_requests(hallway, daypass, make_client, priced_worker):
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+    from pydantic_ai.usage import RequestUsage
+
+    calls = 0
+
+    def cut_off(messages, info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        return ModelResponse(
+            parts=[ToolCallPart("propose_shortlist", '{"goal": "Who Riya should')],
+            usage=RequestUsage(input_tokens=5000, output_tokens=2500),
+            finish_reason="length",
+        )
+
+    priced_worker.ENGINES["pydantic-ai"] = functools.partial(
+        priced_worker.run_pydantic_ai, model=FunctionModel(cut_off)
+    )
+    http = make_client()
+    http.headers["x-hallway-worker"] = WORKER_KEY
+    [p] = (await http.get("/internal/daypass/due?wait=0")).json()
+    await priced_worker.run_one(http, p, "pydantic-ai")
+
+    pc, _ = daypass
+    assert (await pc.get("/api/me/chat")).json()["messages"][-1]["text"] == priced_worker.FAILED_REPLY
+    ledger = hallway.store.one("SELECT spent_usd, runs FROM passes WHERE attendee_id = ?", p["attendee_id"])
+    assert calls >= 1 and ledger["runs"] == 1
+    assert ledger["spent_usd"] == pytest.approx(calls * (5000 * 0.30 + 2500 * 1.20) / 1e6, abs=1e-6)
