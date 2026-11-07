@@ -1363,15 +1363,16 @@ function bindGroups() {
 
 const MODE_LABEL = { connect: "Your own agent", daypass: "Day pass", live: "Live on Switch" };
 
-// `extra`: more for Agent settings (the key, for an agent you connect yourself).
+// `extra`: more for Agent settings, right under who runs the agent (setup and
+// the key, for an agent you connect yourself).
 function commonSections(me, extra = "") {
   const nContact = Object.values(me.contact || {}).filter(Boolean).length;
   const theme = getTheme();
   const settings = `${modeSwitch(me)}
+    ${extra}
     <div class="sub"><h3>What it may do alone</h3>
       ${presetsRow(me.autonomy)}
-      <div class="rules">${autonomyRows(me.autonomy, me.locked)}</div></div>
-    ${extra}`;
+      <div class="rules">${autonomyRows(me.autonomy, me.locked)}</div></div>`;
   const profile = `<div class="sub"><div class="sub-head"><h3>Your badge</h3><button class="btn ghost sm" id="edit">${icon("edit", "sm")}Edit</button></div>
       ${badgeCard(me)}
       ${(me.talks || []).length ? `<div class="talks-mini">${me.talks.map((t) => `<span><b>${esc(t.slice(0, 5))}</b>${esc(t.slice(6))}</span>`).join("")}</div>` : ""}
@@ -1640,8 +1641,9 @@ async function meView() {
   const current = steps.findIndex((s) => !s.done);
   const check = pv.passed ? '<span class="chip go">Privacy check passed</span>' : pv.checked_at ? '<span class="chip stop">Privacy check failed</span>' : '<span class="chip wait">Privacy check pending</span>';
   const done = doneN === steps.length;
+  // Until it's done, setup leads the page; after, it lives in Agent settings.
   const setup = `<section class="block setup ${done ? "complete" : ""}">
-      ${done ? "" : `<div class="block-head"><h2>Setup</h2><span class="count">${doneN}/${steps.length}</span></div>`}
+      <div class="block-head"><h2>Setup</h2><span class="count">${done ? "All set" : `${doneN}/${steps.length}`}</span></div>
       <ol class="checklist">${steps.map((s, i) => `
         <li class="${s.done ? "done" : s.bad ? "bad" : ""} ${i === current ? "current" : ""}">
           <details ${i === current ? "open" : ""}><summary><span class="ck" aria-hidden="true">${s.done ? icon("check", "sm") : s.bad ? icon("x", "sm") : i + 1}</span><span class="grow"><span class="sr-only">${s.done ? "Done" : s.bad ? "Failed" : `Step ${i + 1}`}: </span>${s.title}</span>${icon("chev", "sm chev")}</summary>
@@ -1651,10 +1653,9 @@ async function meView() {
       <p class="small muted"><span class="mono" id="keyhint">${esc(c.token_hint)}</span> · A new key replaces this one at once. Your agent needs the new key to keep working.</p></div>`;
   shell("me", `<div class="page">
     ${agentHero(me, live ? "Live on Switch" : "Connected over MCP", check)}
-    ${doneN === steps.length ? "" : setup}
+    ${done ? "" : setup}
     ${connected ? chatSection(me, true) : ""}
-    ${doneN === steps.length ? `<div class="groups">${group("setup", "Setup", "All set · your agent is in the hallway", setup)}</div>` : ""}
-    ${commonSections(me, key_)}
+    ${commonSections(me, (done ? `<div class="sub own-setup">${setup}</div>` : "") + key_)}
   </div>`, { title: "" });
   let shown = "cc";
   document.querySelectorAll("#ctabs button").forEach((b) => (b.onclick = () => {

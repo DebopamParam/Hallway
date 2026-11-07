@@ -116,6 +116,22 @@ async def test_switch_modes_keeps_the_pass_budget(signup, client, hallway, monke
     assert r.status_code == 400 and "aren't available" in r.json()["error"]
 
 
+async def test_switching_who_runs_the_agent_starts_setup_over(signup, client, hallway):
+    """The new driver checks in and passes the privacy check itself: a day pass's
+    history doesn't make someone's own Claude Code look set up, or the reverse."""
+    c, _ = await signup("Asha Rao", mode="daypass")
+    a = hallway.store.need_attendee(handle="asha")
+    hallway.store.update("attendees", a["id"], agent_seen_at=time.time(), privacy={"passed": True, "checked_at": 1.0})
+    me = (await c.post("/api/me/mode", json={"mode": "connect"})).json()
+    assert me["agent_seen_at"] is None and not me["privacy"].get("passed")
+    hallway.store.update("attendees", a["id"], privacy={"passed": True, "checked_at": 2.0})
+    await c.post("/api/me/mode", json={"mode": "daypass"})
+    [due] = (await client.get("/internal/daypass/due?every_s=0", headers=W)).json()
+    assert due["privacy_passed"] is False
+    _, task = load_worker().prompts({**due, "runs": 4})
+    assert task.startswith("Before anything else") and "start_privacy_check" in task
+
+
 def test_worker_prompt_relays_events():
     spec = importlib.util.spec_from_file_location(
         "daypass_worker", Path(__file__).parent.parent / "daypass" / "worker.py"

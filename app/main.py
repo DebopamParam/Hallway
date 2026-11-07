@@ -1471,6 +1471,7 @@ async def daypass_due(request: Request, every_s: int | None = None, busy: str = 
                 "here_for": p["profile"].get("here_for", ""),
                 "note": p["note"],
                 "lobby": bool(hallway.store.need_attendee(id=p["attendee_id"])["lobby_agent"]),
+                "privacy_passed": bool(hallway.store.need_attendee(id=p["attendee_id"])["privacy"].get("passed")),
                 "events": p.get("events", []),  # what woke it, if anything did
             }
         )
