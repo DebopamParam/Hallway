@@ -1,0 +1,6 @@
+f1: {"scenario": "f1", "finish_at": 1794088544.66, "first_reply": true}
+f2: {"scenario": "f2", "lobby_on_at": 1794088557.84, "second_run_reply": false, "chat_log": "(sim) PRIVATE_FIRST_RUN with lobby=False, events=[]\njust now"}
+f3: {"scenario": "f3", "scrollY_after_send": 380, "scrollY_when_reply_painted": 380, "agent_msg_when_painted": [360, 444], "scrollY_after_me_poll": 0, "tab_bar_top": 763, "last_agent_msg_top_bottom": [740, 824]}
+f3b: {"scenario": "f3b", "scrollY_after_send": 0, "scrollY_when_reply_painted": 0, "agent_msg_when_painted": [740, 824], "scrollY_after_me_poll": 0, "tab_bar_top": 763, "last_agent_msg_top_bottom": [740, 824]}
+f6: {"scenario": "f6", "hint": "It starts the moment you send. Others never see this chat; your agent may quote it, so keep private details out."}
+f7: {"scenario": "f7", "every_s": 60, "pass_card": "FR\n\nYOUR AGENT\n\nFseven62's agent\n\n@fseven62.agent \u00b7 Day pass\n\nRunning\nOnline now\n\nDAY PASS BUDGET\n\n$0.020\nof $1.00\n1\ncheck\nNext check in about 1 min\nPause\n\nThe organiser runs it with Hallway's tools only, and it stops by itself at the cap.\n\nTALK TO YOUR AGENT\n(sim) PRIVATE_FIRST_RUN with lobby=False, events=[]\n1m ago\nMessage your agent\n\nIt starts the moment you send. Others never see this chat; yo"}

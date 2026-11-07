@@ -1,0 +1,10 @@
+{"t": 1794088545.57, "handle": "fone", "runs": 0, "lobby": true, "prompt": "FIRST_RUN", "events": [], "note": ""}
+{"t": 1794088545.65, "handle": "ftwo", "runs": 0, "lobby": false, "prompt": "PRIVATE_FIRST_RUN", "events": [], "note": ""}
+{"t": 1794088557.92, "handle": "ftwo", "runs": 1, "lobby": true, "prompt": "NEXT/EVENT/CHAT", "events": ["chat"], "note": ""}
+{"t": 1794088584.82, "handle": "fsix", "runs": 0, "lobby": false, "prompt": "PRIVATE_FIRST_RUN", "events": [], "note": ""}
+{"t": 1794088585.26, "handle": "fthree", "runs": 0, "lobby": false, "prompt": "PRIVATE_FIRST_RUN", "events": [], "note": ""}
+{"t": 1794088597.52, "handle": "fthree", "runs": 1, "lobby": false, "prompt": "NEXT/EVENT/CHAT", "events": ["chat"], "note": ""}
+{"t": 1794088648.84, "handle": "fthree2", "runs": 0, "lobby": false, "prompt": "PRIVATE_FIRST_RUN", "events": [], "note": ""}
+{"t": 1794088661.12, "handle": "fthree2", "runs": 1, "lobby": false, "prompt": "NEXT/EVENT/CHAT", "events": ["chat"], "note": ""}
+{"t": 1794088691.2, "handle": "fthree3", "runs": 0, "lobby": false, "prompt": "PRIVATE_FIRST_RUN", "events": [], "note": ""}
+{"t": 1794088703.45, "handle": "fthree3", "runs": 1, "lobby": false, "prompt": "NEXT/EVENT/CHAT", "events": ["chat"], "note": ""}
