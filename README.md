@@ -365,6 +365,53 @@ proactive round every `DAYPASS_EVERY_S`.
 docker compose --profile daypass up -d --build   # or: cd daypass && python worker.py
 ```
 
+## Organiser dashboard
+
+![The organiser dashboard: attendees, agent status and day pass spend](docs/organiser-dashboard.png)
+
+A web page for the organiser, on your own machine: the attendee list with who's
+online, day pass spend against budget, issuing and revoking passes and setting their
+caps, the event's name, agenda and day pass defaults, and the model keys.
+
+```bash
+echo "ORGANISER_PASSWORD=$(openssl rand -hex 16)" >> .env   # or it signs in with HALLWAY_ADMIN_KEY
+.venv/bin/python -m app.organiser                           # Hallway on :8787, dashboard on http://127.0.0.1:8788
+```
+
+It runs Hallway itself (in place of `uvicorn app.main:app` or `scripts/dev.sh`) with
+the dashboard on a second port in the same process, so it acts on the live event.
+Attendees can't reach it: Hallway's port serves none of it, and the dashboard's port
+only listens on loopback (from another machine, use `ssh -L 8788:127.0.0.1:8788`).
+
+| Variable | Default | |
+|---|---|---|
+| `ORGANISER_PASSWORD` | `HALLWAY_ADMIN_KEY` | Sign-in; at least 12 characters, compared in constant time |
+| `ORGANISER_HOST` / `ORGANISER_PORT` | `127.0.0.1` / `8788` | The dashboard; a non-loopback host is refused |
+| `HALLWAY_HOST` / `HALLWAY_PORT` | `127.0.0.1` / `8787` | Hallway itself |
+| `HALLWAY_PROVIDERS_FILE` | `providers.json` next to `HALLWAY_DB` | Keys and model set from the dashboard |
+
+- **Sign-in**: a random session cookie (HttpOnly, SameSite=Strict, Secure over HTTPS)
+  kept in memory, so a restart signs you out. Writes need the session's CSRF token and
+  the dashboard's own Origin; any other Host header is refused (DNS rebinding); five
+  wrong passwords lock sign-in for a minute.
+- **Keys** (`ANTHROPIC_API_KEY`, `VERCEL_AI_GATEWAY_API_KEY`, `EXA_API_KEY`) and the day
+  pass model and price are write-only: the page shows whether each is set, from the
+  dashboard or `.env`, and its last 4 characters, never the key. They're kept in
+  `HALLWAY_PROVIDERS_FILE` (mode 0600, never committed: it's under `data/`) and win
+  over `.env`; clearing one falls back to `.env`. Research lookups read it per lookup
+  and the day pass worker before each batch of runs, so a new key needs no restart
+  (the worker must be able to read the file: run it on the same machine). **Test**
+  makes a cheap call with the stored key (Exa's is one search, about half a cent).
+- **Event edits** are kept in Hallway's database and apply at once: the attendee app,
+  new passes and newly connecting agents see them. They win over `EVENT_NAME` and
+  `DAYPASS_*` in `.env` until the data is reset.
+- **Revoking** a pass moves the attendee back to Connect (their own agent) and stops a
+  run in progress; the pass and its spend are kept, and issuing it again picks it up.
+
+The CLI in [docs/ORGANISER.md](docs/ORGANISER.md) still covers what the dashboard
+doesn't (removing attendees, rotating the invite, announcements, CSV exports), and
+works against a deployed instance over its admin key.
+
 ## How it uses Switch
 
 - **Agents**: each Connect attendee gets a Switch agent (`steve.agent`, *Steve (agent)*); Hallway holds its `always_on` WebSocket (answers pings, resumes from its cursor) and turns messages addressed to it into a notice for the person (the agent reads them with `my_inbox`). Live attendees bring their own Switch agent.
@@ -530,6 +577,7 @@ app/
   store.py        SQLite: connection settings, numbered migrations, transactions
   switch.py mm.py config.py
   static/         the attendee app (no build step)
+  organiser.py providers.py organiser_ui/  the organiser dashboard (python -m app.organiser) and its key store
 daypass/          day pass worker (PydanticAI or headless Claude Code)
 deploy/switch/    Switch 0.31.0 standalone compose (vendored) + env template
 docs/DEPLOY.md    live demo on a VPS behind a Cloudflare Tunnel

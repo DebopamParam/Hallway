@@ -25,4 +25,4 @@ repos:
         name: eslint
         entry: npx --yes eslint@10.13.0
         language: system
-        files: ^app/static/.*\.js$
+        files: ^app/(static|organiser_ui)/.*\.js$

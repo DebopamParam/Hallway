@@ -19,7 +19,7 @@ from .switch import SwitchError
 
 log = logging.getLogger("hallway")
 
-INSTRUCTIONS = f"""You are attending {settings.event_name} on behalf of your human, through Hallway.
+INSTRUCTIONS_TEMPLATE = """You are attending {event} on behalf of your human, through Hallway.
 Hallway is an event hallway where every attendee is a person plus their agent ("Steve" and "Steve (agent)").
 A profile's `talks` are sessions that person is ATTENDING, not giving; nobody in the hallway is a speaker
 unless their bio says so.
@@ -80,7 +80,13 @@ How to work the room:
    sign out or make a new key: tell them where in the app (Now page, Agent tab).
 """
 
+INSTRUCTIONS = INSTRUCTIONS_TEMPLATE.format(event=settings.event_name)
 mcp = MCPServer("Hallway", instructions=INSTRUCTIONS)
+
+
+def refresh_instructions() -> None:
+    """After the organiser renames the event: agents that connect from now on get the new name."""
+    mcp._lowlevel_server.instructions = INSTRUCTIONS_TEMPLATE.format(event=settings.event_name)
 
 
 def http_app() -> Any:

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Hallway organiser</title>
+  <link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/ui/organiser.css">
+</head>
+<body>
+  <header class="top">
+    <img class="mark" src="/static/brand/mark.svg" alt="" width="28" height="28">
+    <div class="brand"><b>Hallway</b><span>organiser</span></div>
+    <div class="event-name" id="event-name"></div>
+    <button class="btn ghost sm" id="logout" hidden>Sign out</button>
+  </header>
+
+  <main id="login" class="login" hidden>
+    <form id="login-form" class="card narrow">
+      <h1>Organiser sign-in</h1>
+      <p class="muted">The <code>ORGANISER_PASSWORD</code> from <code>.env</code> (or <code>HALLWAY_ADMIN_KEY</code> if that isn't set).</p>
+      <label>Password <input type="password" id="password" autocomplete="current-password" required maxlength="500"></label>
+      <button class="btn primary" type="submit">Sign in</button>
+      <p class="error" id="login-error" role="alert"></p>
+    </form>
+  </main>
+
+  <main id="dash" hidden>
+    <section class="tiles" id="tiles" aria-label="At a glance"></section>
+
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="people" aria-selected="true">Attendees &amp; passes</button>
+      <button role="tab" data-tab="event" aria-selected="false">Event</button>
+      <button role="tab" data-tab="keys" aria-selected="false">Keys &amp; providers</button>
+    </nav>
+
+    <section class="panel" data-panel="people">
+      <div class="card">
+        <div class="row-head">
+          <h2>Attendees</h2>
+          <input type="search" id="filter" placeholder="Filter by name or handle" aria-label="Filter attendees">
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Person</th><th>Mode</th><th>Agent</th><th>Day pass</th><th class="num">Spent / cap</th><th>Actions</th></tr></thead>
+            <tbody id="people"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" data-panel="event" hidden>
+      <form id="event-form" class="card">
+        <h2>Event</h2>
+        <label>Name <input id="ev-name" required maxlength="80"></label>
+        <div class="grid2">
+          <label class="check"><input type="checkbox" id="ev-daypass"> Offer day passes</label>
+          <label>Budget for each new pass (USD) <input id="ev-cap" type="number" min="0" max="1000" step="0.01" required></label>
+        </div>
+        <h3>Agenda</h3>
+        <div id="agenda"></div>
+        <button type="button" class="btn ghost sm" id="agenda-add">Add a session</button>
+        <div class="actions"><button class="btn primary" type="submit">Save event</button></div>
+        <p class="muted small">Takes effect at once and is kept in Hallway's database, so it wins over <code>EVENT_NAME</code> and <code>DAYPASS_*</code> in <code>.env</code>.</p>
+      </form>
+      <div class="card" id="invite"></div>
+    </section>
+
+    <section class="panel" data-panel="keys" hidden>
+      <form id="keys-form" class="card">
+        <h2>Day pass model</h2>
+        <div class="grid2">
+          <label>Model <input id="opt-model" maxlength="120" placeholder="claude-haiku-5-5"></label>
+          <label>Price per million tokens, "in,out" (models PydanticAI can't price) <input id="opt-price" maxlength="40" placeholder="0.10,0.40"></label>
+        </div>
+        <h2>Keys</h2>
+        <p class="muted small">Write-only: a saved key is never shown again, only whether it's set and its last 4 characters. Leave a field empty to keep the key as it is.</p>
+        <div id="keys"></div>
+        <div class="actions"><button class="btn primary" type="submit">Save</button></div>
+        <p class="muted small" id="keys-file"></p>
+      </form>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="/ui/organiser.js"></script>
+</body>
+</html>

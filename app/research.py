@@ -1,5 +1,5 @@
 """Web lookups for research_people: what the public web says about an attendee,
-through Exa (https://exa.ai), paid for by the organiser (EXA_API_KEY).
+through Exa (https://exa.ai), paid for by the organiser (EXA_API_KEY, or the key set in the organiser dashboard).
 
 What an agent gets back is a few public pages per person (title, URL, a short
 summary), never raw page text, and every field has been through the privacy
@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from . import guard
+from . import guard, providers
 from .config import settings
 
 log = logging.getLogger("hallway")
@@ -36,8 +36,13 @@ class LookupError(Exception):
         self.reason = reason
 
 
+def api_key() -> str:
+    """The dashboard's key (app/providers.py), else EXA_API_KEY; read per lookup, so a new key needs no restart."""
+    return providers.saved("EXA_API_KEY") or settings.exa_api_key
+
+
 def enabled() -> bool:
-    return bool(settings.exa_api_key)
+    return bool(api_key())
 
 
 def query_for(a: dict) -> str:
@@ -81,7 +86,7 @@ async def exa_search(query: str) -> list[dict]:
     }
     try:
         async with httpx.AsyncClient(timeout=20) as c:
-            r = await c.post(EXA_URL, json=body, headers={"x-api-key": settings.exa_api_key})
+            r = await c.post(EXA_URL, json=body, headers={"x-api-key": api_key()})
     except httpx.HTTPError as e:
         log.warning("exa: %s", e)
         raise LookupError("The web search provider didn't answer. Try again later.") from e

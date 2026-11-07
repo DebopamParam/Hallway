@@ -25,6 +25,11 @@ Engines
   pass the budget, so the cap still holds.
 - claude-code: headless `claude -p` on the machine's Claude Code login, capped
   with --max-budget-usd. Handy for demos; not how you'd run 1,000 attendees.
+
+The organiser dashboard (app/organiser.py) can set the model, its price and the
+model keys in Hallway's providers file (HALLWAY_PROVIDERS_FILE, default
+data/providers.json). When the worker can read that file it wins over the
+environment, re-read before each batch of runs, so a new key needs no restart.
 """
 
 import argparse
@@ -36,6 +41,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 
 import httpx
 
@@ -53,6 +59,13 @@ PRICE_PER_MTOK = os.environ.get("DAYPASS_PRICE_PER_MTOK")  # "in,out", for model
 POLL_S = float(os.environ.get("DAYPASS_POLL_S", "3"))
 WAIT_S = 25
 PARALLEL = int(os.environ.get("DAYPASS_PARALLEL", "16"))
+PROVIDERS_FILE = Path(
+    os.environ.get("HALLWAY_PROVIDERS_FILE")
+    or Path(os.environ.get("HALLWAY_DB") or Path(__file__).resolve().parent.parent / "data" / "hallway.db").parent
+    / "providers.json"
+)
+PROVIDER_KEYS = ("ANTHROPIC_API_KEY", "VERCEL_AI_GATEWAY_API_KEY")
+ENV_AT_START = {k: os.environ.get(k) for k in PROVIDER_KEYS}  # the fallback when the dashboard clears a key
 
 SYSTEM = """You are {name}'s agent at an in-person tech conference, on a day pass from the
 organiser. {name} is in the talks; you work the hallway for them through the `hallway`
@@ -183,6 +196,31 @@ def _event_line(e: dict) -> str:
     if e.get("kind") == "message":
         return f'{e.get("from")} in #{e.get("room")}: "{str(e.get("text", ""))[:200]}"'
     return str(e.get("text", ""))[:200]
+
+
+def load_providers() -> None:
+    """Apply the dashboard's model, price and keys (see the module docstring).
+    PydanticAI reads the keys from the environment when it builds a model, so
+    they go there; a key the dashboard cleared falls back to the worker's own
+    environment. A missing or unreadable file changes nothing."""
+    global MODEL, PRICE_PER_MTOK
+    try:
+        saved = json.loads(PROVIDERS_FILE.read_text())
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as e:
+        log.warning(
+            "providers file %s unreadable (%s); keeping the environment's settings", PROVIDERS_FILE, type(e).__name__
+        )
+        return
+    for k in PROVIDER_KEYS:
+        value = saved.get(k) or ENV_AT_START[k]
+        if value:
+            os.environ[k] = value
+        else:
+            os.environ.pop(k, None)
+    MODEL = saved.get("DAYPASS_MODEL") or os.environ.get("DAYPASS_MODEL", "claude-haiku-5-5")
+    PRICE_PER_MTOK = saved.get("DAYPASS_PRICE_PER_MTOK") or os.environ.get("DAYPASS_PRICE_PER_MTOK")
 
 
 # ---------------------------------------------------------------- engines
@@ -354,6 +392,7 @@ class Dispatcher:
         self.gate = asyncio.Semaphore(PARALLEL)
 
     async def fetch(self, wait: float) -> list[dict]:
+        load_providers()  # before any run this batch starts
         params: dict[str, str | float] = {"wait": wait, "busy": ",".join(self.running)}
         if EVERY_S:
             params["every_s"] = EVERY_S
