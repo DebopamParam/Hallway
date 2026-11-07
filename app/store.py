@@ -493,6 +493,17 @@ def _m7_pass_note(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE passes ADD COLUMN note_at REAL")
 
 
+def _m8_visibility(db: sqlite3.Connection) -> None:
+    """7 -> 8: attendees.listed, whether others see the profile (People tab,
+    search_people, research_people), and web_lookup, whether research_people
+    may look the person up on the public web. Both on for everyone so far."""
+    cols = {r[1] for r in db.execute("PRAGMA table_info(attendees)")}
+    if "listed" not in cols:
+        db.execute("ALTER TABLE attendees ADD COLUMN listed INTEGER NOT NULL DEFAULT 1")
+    if "web_lookup" not in cols:
+        db.execute("ALTER TABLE attendees ADD COLUMN web_lookup INTEGER NOT NULL DEFAULT 1")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m1_base_schema,
     _m2_hash_tokens,
@@ -501,6 +512,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m5_live_agent_proof,
     _m6_guard_log_about,
     _m7_pass_note,
+    _m8_visibility,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 

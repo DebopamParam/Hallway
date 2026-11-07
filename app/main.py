@@ -269,6 +269,8 @@ def _me_view(a: dict, token: str | None = None) -> dict:
         "autonomy_labels": AUTONOMY_KEYS,
         "locked": sorted(LOCKED_ASK),
         "privacy": a["privacy"],
+        "listed": bool(a["listed"]),
+        "web_lookup": bool(a["web_lookup"]),
         "agent_seen_at": a["agent_seen_at"],
         "agent_verified": bool(a["agent_verified"]),
         "live_proof": hallway.live_proof(a),
@@ -627,11 +629,20 @@ class UpdateMe(BaseModel):
     profile: dict | None = None
     contact: dict | None = None
     autonomy: dict | None = None
+    listed: bool | None = None
+    web_lookup: bool | None = None
 
 
 @app.put("/api/me")
 async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)) -> dict:
-    a = hallway.update_settings(_me(hw_session), profile=body.profile, contact=body.contact, autonomy=body.autonomy)
+    a = hallway.update_settings(
+        _me(hw_session),
+        profile=body.profile,
+        contact=body.contact,
+        autonomy=body.autonomy,
+        listed=body.listed,
+        web_lookup=body.web_lookup,
+    )
     return _me_view(a)
 
 
@@ -721,20 +732,23 @@ async def new_room(body: NewRoom, hw_session: str | None = Cookie(None)) -> dict
 @app.get("/api/approvals")
 async def approvals(hw_session: str | None = Cookie(None)) -> list[dict]:
     a = _me(hw_session)
-    return hallway.store.all(
-        "SELECT id, kind, summary, status, created_at, decided_at FROM approvals WHERE attendee_id = ? "
+    rows = hallway.store.all(
+        "SELECT id, kind, summary, status, created_at, decided_at, payload FROM approvals WHERE attendee_id = ? "
         "ORDER BY status = 'pending' DESC, created_at DESC LIMIT 50",
         a["id"],
     )
+    # Only a shortlist's payload is for the app (it renders the candidate cards).
+    return [{**r, "payload": r["payload"] if r["kind"] == "shortlist" else None} for r in rows]
 
 
 class Decide(BaseModel):
     approve: bool
+    selected: list[str] | None = None  # a shortlist's picks, by handle
 
 
 @app.post("/api/approvals/{approval_id}")
 async def decide(approval_id: str, body: Decide, hw_session: str | None = Cookie(None)) -> dict:
-    return await hallway.decide(_me(hw_session), approval_id, body.approve)
+    return await hallway.decide(_me(hw_session), approval_id, body.approve, body.selected)
 
 
 @app.get("/api/meetings")

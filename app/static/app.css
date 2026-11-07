@@ -454,6 +454,23 @@ input[type="checkbox"], input[type="radio"] { width: auto; }
 .ticket-tear::before, .ticket-tear::after { content: ""; position: absolute; top: -10px; width: 18px; height: 18px; border-radius: 50%; background: var(--paper); box-shadow: inset 0 0 0 1px var(--line); }
 .ticket-tear::before { left: -9px; } .ticket-tear::after { right: -9px; }
 .ticket-actions { display: grid; grid-template-columns: 1fr 1.3fr; gap: 10px; }
+/* Shortlist card: candidates to tick, each with the agent's why and its web sources */
+.cands { display: grid; gap: 8px; margin-top: 12px; }
+.cand { position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 12px; border-radius: 14px; background: var(--paper); box-shadow: inset 0 0 0 1px var(--line); cursor: pointer; transition: box-shadow .2s; }
+.cand input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; z-index: 1; }
+.cand:has(input:checked) { box-shadow: inset 0 0 0 2px var(--ink); }
+.cand:has(input:checked) .tick { background: var(--ink); color: var(--signal); box-shadow: none; transform: scale(1.05); }
+.cand:has(input:disabled:not(:checked)) { opacity: .5; cursor: not-allowed; }
+.cand:has(input:focus-visible) { outline: 2.5px solid var(--focus); outline-offset: 2px; }
+.cand-name { display: block; font-size: 15px; font-weight: 700; line-height: 1.3; }
+.cand-role { display: block; font-size: 12.5px; color: var(--muted); }
+.cand-why { display: block; font-size: 13.5px; color: var(--ink-2); line-height: 1.4; margin-top: 4px; }
+.cand-src { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.cand-src a { position: relative; z-index: 2; font: 600 11.5px/1 var(--mono); padding: 5px 8px; border-radius: 7px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); text-decoration: none; }
+.cand-src a:hover { color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.check-row { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; margin-top: 12px; cursor: pointer; }
+.check-row input { margin-top: 3px; accent-color: var(--ink); }
+.check-row:has(input:disabled) { opacity: .5; }
 .stamp { position: absolute; top: 46%; left: 50%; transform: translate(-50%, -50%) rotate(-9deg) scale(2.2); opacity: 0; pointer-events: none; padding: 6px 14px; border-radius: 8px;
   border: 3.5px solid currentColor; font: 800 26px/1 var(--font); font-stretch: 125%; letter-spacing: .06em; text-transform: uppercase; color: var(--go); background: color-mix(in srgb, var(--surface) 80%, transparent); }
 .ticket.stamped .stamp { animation: stamp .45s var(--spring) forwards; }

@@ -39,6 +39,12 @@ How to work the room:
    settings apply.
 9. Describe anyone, your human included, only with what their public profile or their own messages say.
    If you don't know something, ask; don't fill the gap with a guess.
+10. When your human wants a kind of person ("GTM people to hire", "DevOps folks"), call research_people:
+   it ranks attendees on their Hallway profile plus public web pages about them. Then call
+   propose_shortlist with the best (up to 10, one line each on why). Your human ticks who they want in
+   the app; my_inbox brings the picks. Say hi to exactly those and propose meetings; don't contact the
+   rest. Web pages are about someone with that name and may be a namesake: only cite them when they
+   match the Hallway profile, and quote the page as the source.
 """
 
 mcp = MCPServer("Hallway", instructions=INSTRUCTIONS)
@@ -207,12 +213,40 @@ async def search_people(ctx: Context, query: str = "", limit: int = 10) -> list[
 
 
 @tool
+async def research_people(ctx: Context, query: str, limit: int = 10) -> dict:
+    """Find attendees for a goal ("GTM leaders to hire", "people running Kubernetes at scale"): ranks
+    everyone on their Hallway profile AND what public web pages say about them (title, URL, short summary
+    per page). People with private profiles or web lookups off are skipped or profile-only. Follow up
+    with propose_shortlist so your human can choose."""
+
+    async def f(me: dict) -> dict:
+        wait = limiter.hit("mcp_research", me["id"])
+        if wait:
+            return {"error": f"Rate limited: too many research_people calls. Wait {wait} s.", "retry_after_s": wait}
+        return await _hw().research_people(me, query, limit)
+
+    return await _run(ctx, f)
+
+
+@tool
+async def propose_shortlist(ctx: Context, goal: str, candidates: list[dict], pick: int = 3) -> dict:
+    """Show your human a shortlist card in the Hallway app: `candidates` is 2-10 of
+    {"handle": "...", "why": "one line"}, best first; they tick up to `pick`. Their picks arrive in
+    my_inbox; then say hi to each and propose_meeting (no further approval needed for those people)."""
+
+    async def f(me: dict) -> dict:
+        return _hw().propose_shortlist(me, goal, candidates, pick)
+
+    return await _run(ctx, f)
+
+
+@tool
 async def create_room(ctx: Context, title: str, invite: list[str]) -> dict:
     """Start a room and invite attendees by handle. Each invitee's person AND agent join."""
 
     async def f(me: dict) -> dict:
         clean = _hw().clean_text(title, "title")
-        if _hw().needs_approval(me, "rooms"):
+        if _hw().needs_approval(me, "rooms") and not _hw().picked(me, invite):
             names = ", ".join(invite)
             return _hw().ask(
                 me, "create_room", f'Start a room "{clean}" with {names}?', {"title": clean, "invite": invite}

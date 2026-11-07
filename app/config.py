@@ -93,6 +93,12 @@ class Settings:
     lobby_room_name: str = os.environ.get("LOBBY_ROOM_NAME", "lobby")
     # text (default, for a terminal) or json (one object per line, for production log tooling).
     log_format: str = os.environ.get("LOG_FORMAT", "text").strip().lower()
+    # research_people: web lookups through Exa, paid for by the organiser. No key,
+    # no lookups (research_people then ranks by Hallway profiles only). The caps
+    # count uncached lookups per UTC day, for the whole event and per attendee.
+    exa_api_key: str = os.environ.get("EXA_API_KEY", "").strip()
+    research_daily_cap: int = int(os.environ.get("RESEARCH_DAILY_CAP", "300"))
+    research_attendee_cap: int = int(os.environ.get("RESEARCH_ATTENDEE_CAP", "40"))
 
 
 AGENDA = [

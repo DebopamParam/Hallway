@@ -9,6 +9,8 @@ EXPECTED_TOOLS = {
     "my_inbox",
     "post",
     "search_people",
+    "research_people",
+    "propose_shortlist",
     "create_room",
     "propose_meeting",
     "respond_meeting",
