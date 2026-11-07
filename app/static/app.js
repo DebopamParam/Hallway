@@ -73,14 +73,16 @@ const av = (name, kind = "person", cls = "") =>
 const pair = (name, active = false, cls = "") =>
   `<span class="pair ${cls}" role="img" aria-label="${esc(name)} and their agent${active ? ", agent active" : ""}" title="${esc(name)} and their agent">${av(name)}<span class="buddy ${active ? "on" : ""}"></span></span>`;
 
-function rich(text, mine = []) {
+// `tap`: @mentions open that person's profile (not where the text sits inside
+// another control, like a <summary>).
+function rich(text, mine = [], { tap = true } = {}) {
   let t = esc(text);
   t = t.replace(/\[redacted\]/g, '<span class="redacted" title="Hallway&#39;s privacy guard removed private details here"><span>private</span></span>');
   t = t.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   t = t.replace(/(^|\s)_(.+?)_(?=\s|$|[.,!?])/g, "$1<em>$2</em>");
   t = t.replace(/(^|\s)\*(?!\s)(.+?)\*(?=\s|$|[.,!?])/g, "$1<em>$2</em>");
   t = t.replace(/(^|[\s(])@([a-z0-9][a-z0-9._-]*[a-z0-9])/gi, (_, pre, h) =>
-    `${pre}<span class="mention ${mine.includes(h.toLowerCase()) ? "me" : ""} ${h.endsWith(".agent") ? "bot" : ""}">@${h}</span>`);
+    `${pre}<${tap ? `button type="button" data-profile="${h}"` : "span"} class="mention ${mine.includes(h.toLowerCase()) ? "me" : ""} ${h.endsWith(".agent") ? "bot" : ""}">@${h}</${tap ? "button" : "span"}>`);
   t = t.replace(/\s?:[a-z_]+:/g, "");
   t = t.replace(/^⚠️\s*/g, "");
   t = t.replace(/^- /gm, "· ");
@@ -834,7 +836,7 @@ const dropLeadingTag = (body, tag) => {
   return body.toLowerCase().startsWith(lead) && !/[a-z0-9._-]/i.test(body.charAt(lead.length)) ? body.slice(lead.length).trimStart() : body;
 };
 const NOTICE_LINE = {
-  mention: (n, a, p, mine) => has(a.name, p.body) && `${a.kind === "person" ? `<strong>${esc(a.name)}</strong> to your agent` : `<strong>${esc(a.name)}'s agent</strong> to yours`}: <span class="q">${rich(dropLeadingTag(p.body, state.me.agent), mine)}</span>`,
+  mention: (n, a, p, mine) => has(a.name, p.body) && `${a.handle ? `<button type="button" class="name-btn" data-profile="${esc(ownerHandle(a.handle))}"><strong>${esc(a.name)}${a.kind === "person" ? "" : "'s agent"}</strong></button>` : `<strong>${esc(a.name)}${a.kind === "person" ? "" : "'s agent"}</strong>`} ${a.kind === "person" ? "to your agent" : "to yours"}: <span class="q">${rich(dropLeadingTag(p.body, state.me.agent), mine)}</span>`,
   welcome: (n, a, p) => has(p.event) && `Welcome to ${esc(p.event)}! ${state.me.pass ? "Your day pass agent is on its way: message it from the Agent tab." : "Set up your agent from the Agent tab."}`,
   daypass: () => "Your day pass agent used its whole budget and has stopped.",
   room: (n, a, p, mine) => has(a.name, p.title) && `${esc(a.name)} started a room with you: ${rich(p.title, mine)}`,
@@ -1009,7 +1011,7 @@ function hostCard(m) {
       <div class="ticket-tear"></div><p class="tiny muted">Contact details are swapped only in the Hallway app, when you both say yes.</p></div>`;
   }
   const [head, ...rest] = t.split("\n");
-  return `<details class="house" ${rest.length > 2 ? "" : "open"}><summary><span class="house-k">${MARK()}Hallway</span><span class="house-t">${rich(head)}</span>${icon("chev", "sm")}</summary>
+  return `<details class="house" ${rest.length > 2 ? "" : "open"}><summary><span class="house-k">${MARK()}Hallway</span><span class="house-t">${rich(head, [], { tap: false })}</span>${icon("chev", "sm")}</summary>
     <div class="house-body">${rich(rest.join("\n"))}</div></details>`;
 }
 

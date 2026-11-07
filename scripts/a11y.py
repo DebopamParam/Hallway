@@ -131,6 +131,7 @@ TARGETS_JS = """(min) => {
     if (!r.width || !r.height) continue;
     // Inline links in a sentence are exempt (WCAG 2.5.8's inline exception).
     if (el.tagName === 'A' && cs.display === 'inline' && !el.className) continue;
+    if (el.classList.contains('mention') && cs.display === 'inline') continue;  // an @name in a sentence
     el.scrollIntoView({ block: 'center', inline: 'nearest' });
     r = el.getBoundingClientRect();
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
