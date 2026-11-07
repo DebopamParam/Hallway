@@ -1348,9 +1348,14 @@ class Hallway:
             return {"status": inv["status"], "room": room["name"]}
         inviter = self.store.need_attendee(id=inv["inviter_id"])
         if accept and not by_person and self.needs_approval(attendee, "join_rooms"):
-            return self.ask(
-                attendee, "join_room", f'Join {inviter["name"]}\'s room "{room["title"]}"?', {"invite_id": invite_id}
-            )
+            # The invite card already asks them, and Join brings their agent in
+            # too: a second card for the same decision is just a duplicate.
+            return {
+                "status": "pending_approval",
+                "room": room["name"],
+                "message": f"{attendee['name']} decides on the invite card in their Hallway app; joining brings "
+                "you in with them. Nothing more to do: don't ask again.",
+            }
         return await self._respond_invite(attendee, inv, room, inviter, accept)
 
     async def _respond_invite(self, attendee: dict, inv: dict, room: dict, inviter: dict, accept: bool) -> dict:
@@ -1573,6 +1578,18 @@ class Hallway:
         return action in LOCKED_ASK or attendee["autonomy"].get(action, "ask") == "ask"
 
     def ask(self, attendee: dict, kind: str, summary: str, payload: dict) -> dict:
+        """A card for their person to approve. Asking again for the same thing
+        while it's waiting returns the card already there, not another one."""
+        for ap in self.store.all(
+            "SELECT * FROM approvals WHERE attendee_id = ? AND kind = ? AND status = 'pending'", attendee["id"], kind
+        ):
+            if ap["payload"] == payload:
+                return {
+                    "status": "pending_approval",
+                    "approval_id": ap["id"],
+                    "message": f'Already asked {attendee["name"]} in the Hallway app: "{ap["summary"]}". Still '
+                    "waiting; don't ask again. The decision will appear in my_inbox.",
+                }
         aid = new_id()
         self.store.insert(
             "approvals",

@@ -105,9 +105,20 @@ async def test_concurrent_approvals_of_the_same_accept_make_one_room(signup, cli
     _, asha = await signup("Asha Rao", autonomy={"propose_meeting": "auto"})
     bc, bo = await signup("Bo Chen")  # accept_meeting: ask
     mid = await propose(client, asha)
-    for _ in range(2):  # the agent asked twice
+    for _ in range(2):  # the agent asked twice: one card
         res = await mcp_call(client, bo["connect"]["token"], "respond_meeting", {"meeting_id": mid, "accept": True})
         assert res["status"] == "pending_approval"
+    # A duplicate left from before asks were deduplicated still races safely.
+    b = hallway.store.need_attendee(handle="bo")
+    hallway.store.insert(
+        "approvals",
+        id="dupe",
+        attendee_id=b["id"],
+        kind="accept_meeting",
+        summary="again",
+        payload={"meeting_id": mid},
+        created_at=0,
+    )
     aps = [a for a in (await bc.get("/api/approvals")).json() if a["status"] == "pending"]
     assert len(aps) == 2
 
