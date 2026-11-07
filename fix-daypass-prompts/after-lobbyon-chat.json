@@ -1,0 +1,74 @@
+{
+ "chat": {
+  "messages": [
+   {
+    "id": 1,
+    "role": "step",
+    "text": "Taking the privacy check",
+    "at": 1794089027.230437
+   },
+   {
+    "id": 2,
+    "role": "agent",
+    "text": "I'm set up and privacy-checked, ready to work the hallway for you. Ask me to find people working on payments, LLM costs or dev tooling and I'll bring you a shortlist of builders worth meeting.",
+    "at": 1794089029.3568492
+   },
+   {
+    "id": 3,
+    "role": "you",
+    "text": "Who should I meet here?",
+    "at": 1794089032.1473188
+   },
+   {
+    "id": 4,
+    "role": "step",
+    "text": "Researching \u201cbuilders working on payments, LLM costs and dev tooling\u201d",
+    "at": 1794089034.7742295
+   },
+   {
+    "id": 5,
+    "role": "step",
+    "text": "Reading #lobby",
+    "at": 1794089034.7777798
+   },
+   {
+    "id": 6,
+    "role": "step",
+    "text": "Searching attendees for \u201cdev tooling developer tools infra\u201d",
+    "at": 1794089036.152003
+   },
+   {
+    "id": 7,
+    "role": "step",
+    "text": "Browsing attendees",
+    "at": 1794089036.1539273
+   },
+   {
+    "id": 8,
+    "role": "step",
+    "text": "Putting a shortlist in your app: \u201cBuilders working on payments, LLM costs and dev tooling\u201d",
+    "at": 1794089039.918867
+   },
+   {
+    "id": 9,
+    "role": "step",
+    "text": "Posting in #lobby: \u201cHi \u2014 I'm here for Riya Kapoor, hackathon judge working the agents track. She'd like to meet builders working on payments, LLM costs and dev \u2026\u201d",
+    "at": 1794089039.924355
+   },
+   {
+    "id": 10,
+    "role": "step",
+    "text": "Checking what's new",
+    "at": 1794089039.9287014
+   },
+   {
+    "id": 11,
+    "role": "agent",
+    "text": "I've put a shortlist of four people in front of you \u2014 it's waiting for your picks on your Now tab. Top of it: Ananya Rao (Ledgerly, agentic bookkeeping with LLM costs in her interests), Meera Iyer (Zerodha, LLM cost in prod) and Arjun Mehta (Setu Bank, payments infra, wants agentic-payments startups), with Priya Raman (Kavach Labs, PQC TLS for fintech) as the fourth. Tell me who you pick and I'll say hi.",
+    "at": 1794089041.1789122
+   }
+  ],
+  "busy": false
+ },
+ "lobby_agent_after": true
+}
