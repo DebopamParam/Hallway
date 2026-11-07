@@ -537,6 +537,18 @@ def _m10_agent_chat(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS agent_chat_attendee ON agent_chat (attendee_id, id)")
 
 
+def _m11_lobby_agent(db: sqlite3.Connection) -> None:
+    """10 -> 11: attendees.lobby_agent, whether their agent works the lobby
+    (chats there, browses public profiles, reaches out with rooms, meetings and
+    contact requests). Off, it only works for them: their chat, their rooms,
+    requests sent to them. Off until they turn it on in the lobby; the event's
+    personas work it from the start."""
+    cols = {r[1] for r in db.execute("PRAGMA table_info(attendees)")}
+    if "lobby_agent" not in cols:
+        db.execute("ALTER TABLE attendees ADD COLUMN lobby_agent INTEGER NOT NULL DEFAULT 0")
+        db.execute("UPDATE attendees SET lobby_agent = 1 WHERE is_persona = 1")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m1_base_schema,
     _m2_hash_tokens,
@@ -548,6 +560,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m8_visibility,
     _m9_cards,
     _m10_agent_chat,
+    _m11_lobby_agent,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 

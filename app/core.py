@@ -201,6 +201,7 @@ PASS_WAKE_GAP_S = 5  # a day pass agent woken by others' events runs at most thi
 CHAT_MAX = 1000  # characters in one chat message
 AGENT_WAKES, AGENT_WAKES_S = 3, 600  # runs woken by other agents alone, per 10 minutes (see chatter_held)
 BUSY_S = 600  # a run that said it started but never finished stops showing as working
+OWNER_ASKED_S = 900  # their agent may loosen a setting this long after they last messaged it
 
 ADDRESSING_OPENED = "stand_ins_addressing_open"  # kv: every stand-in got _open_addressing
 HOST_CREATE_TRIES, HOST_CREATE_BACKOFF_S = 6, 0.5  # Switch busy creating a room: retry for ~10 s
@@ -539,6 +540,7 @@ class Hallway:
             mm_user_id=mm_user["id"],
             mm_password=mm_password,
             is_persona=int(is_persona),
+            lobby_agent=int(is_persona),  # people turn it on themselves, in the lobby
             agent_verified=int(mode != "live"),  # a Live agent proves it is theirs first: verify_live_agent
             created_at=time.time(),
         )
@@ -662,8 +664,11 @@ class Hallway:
         autonomy: dict | None = None,
         listed: bool | None = None,
         web_lookup: bool | None = None,
+        lobby_agent: bool | None = None,
     ) -> dict:
         changes: dict[str, Any] = {}
+        if lobby_agent is not None:
+            changes["lobby_agent"] = int(lobby_agent)
         if listed is not None:
             changes["listed"] = int(listed)
         if web_lookup is not None:
@@ -677,6 +682,90 @@ class Hallway:
         if changes:
             self.store.update("attendees", attendee["id"], **changes)
         return self.store.need_attendee(id=attendee["id"])
+
+    def owner_asked_recently(self, attendee: dict) -> bool:
+        """Did the person message their agent in the app lately? Then a change it
+        makes to their settings is taken as theirs; otherwise it asks first."""
+        row = self.store.one(
+            "SELECT MAX(created_at) AS t FROM agent_chat WHERE attendee_id = ? AND role = 'you'", attendee["id"]
+        )
+        return bool(row and row["t"] and time.time() - row["t"] < OWNER_ASKED_S)
+
+    def agent_settings(
+        self,
+        attendee: dict,
+        *,
+        lobby: bool | None = None,
+        listed: bool | None = None,
+        web_lookup: bool | None = None,
+        autonomy: dict | None = None,
+        profile: dict | None = None,
+    ) -> dict:
+        """The agent changes its person's settings or badge for them. Tightening
+        (out of the lobby, private, back to asking) always goes through. Anything
+        that loosens or speaks for them in public goes through only just after
+        they messaged it in the app; otherwise it becomes an approval card, so
+        nobody in a room can talk the agent into it."""
+        changes: dict[str, Any] = {}
+        for key, value in (("lobby_agent", lobby), ("listed", listed), ("web_lookup", web_lookup)):
+            if value is not None and bool(value) != bool(attendee[key]):
+                changes[key] = bool(value)
+        if autonomy:
+            bad = sorted(set(autonomy) - set(AUTONOMY_KEYS))
+            if bad:
+                raise HallwayError(f"Unknown rule {bad[0]!r}: use one of {', '.join(AUTONOMY_KEYS)}.")
+            if any(v not in ("auto", "ask") for v in autonomy.values()):
+                raise HallwayError("Each rule is 'auto' (do it) or 'ask' (ask them first).")
+            if any(k in LOCKED_ASK and v == "auto" for k, v in autonomy.items()):
+                raise HallwayError("Sharing contact details always asks them first; that can't change.")
+            moved = {k: v for k, v in autonomy.items() if attendee["autonomy"].get(k) != v}
+            if moved:
+                changes["autonomy"] = moved
+        if profile:
+            bad = sorted(set(profile) - set(PUBLIC_PROFILE_FIELDS))
+            if bad:
+                raise HallwayError(f"Not a badge field: {bad[0]!r}. Badge fields: {', '.join(PUBLIC_PROFILE_FIELDS)}.")
+            clean_profile({**clean_profile(attendee["profile"], strict=False), **profile})  # refuse bad input now
+            changes["profile"] = profile
+        if not changes:
+            return {"status": "unchanged", "message": "Nothing to change: it's already set that way."}
+        loosens = (
+            changes.get("lobby_agent") is True
+            or changes.get("listed") is True
+            or changes.get("web_lookup") is True
+            or "auto" in (changes.get("autonomy") or {}).values()
+            or "profile" in changes
+        )
+        if loosens and not self.owner_asked_recently(attendee):
+            return self.ask(attendee, "settings", self._settings_summary(changes), changes)
+        return self._apply_settings(attendee, changes)
+
+    @staticmethod
+    def _settings_summary(c: dict) -> str:
+        said = {
+            "lobby_agent": ("Let your agent work the lobby", "Keep your agent out of the lobby"),
+            "listed": ("Make your badge public", "Make your badge private"),
+            "web_lookup": ("Let agents read public web pages about you", "Stop agents reading web pages about you"),
+        }
+        parts = [said[k][0 if c[k] else 1] for k in said if k in c]
+        parts += [
+            f"{AUTONOMY_KEYS[k]}: {'without asking' if v == 'auto' else 'ask you first'}"
+            for k, v in (c.get("autonomy") or {}).items()
+        ]
+        if "profile" in c:
+            parts.append("Update your badge (" + ", ".join(sorted(c["profile"])) + ")")
+        return "; ".join(parts)
+
+    def _apply_settings(self, attendee: dict, c: dict) -> dict:
+        self.update_settings(
+            attendee,
+            lobby_agent=c.get("lobby_agent"),
+            listed=c.get("listed"),
+            web_lookup=c.get("web_lookup"),
+            autonomy=c.get("autonomy"),
+            profile=c.get("profile"),
+        )
+        return {"status": "done", "changed": self._settings_summary(c)}
 
     def stand_in(self, attendee: dict) -> AgentCreds:
         if attendee["mode"] not in STAND_IN_MODES or not attendee["switch_agent_id"]:
@@ -1054,6 +1143,7 @@ class Hallway:
         return True
 
     async def _add_person(self, attendee: dict, room: dict) -> None:
+        self.store.kv_pop(f"left:{attendee['id']}:{room['id']}")  # invited back in
         if await self._switch_add_user(attendee, room):
             return
         # Switch resolves names only among the Mattermost team's members, so make
@@ -1234,6 +1324,30 @@ class Hallway:
         if attendee["mm_user_id"] not in await self.room_members(room):
             raise HallwayError(f"You (and {attendee['name']}) are not in #{room['name']}.")
 
+    async def leave_room(self, attendee: dict, room_ref: str) -> dict:
+        """The person and their agent leave a room. Everyone stays in the lobby
+        (keeping the agent out of it is the lobby switch). The room says so, and
+        the sync loop leaves them out instead of bringing them back."""
+        room = self.room_by_ref(room_ref)
+        if room["kind"] in ("lobby", "verify"):
+            raise HallwayError("Everyone stays in the lobby. To keep the agent out of it, turn its lobby switch off.")
+        await self.require_member(attendee, room)
+        self.store.kv_set(f"left:{attendee['id']}:{room['id']}", time.time())
+        for uid in (await self._agent_mm_user_id(attendee), attendee["mm_user_id"]):
+            if uid:
+                try:
+                    await self.mm.remove_from_channel(room["mm_channel_id"], uid)
+                except MMError as e:
+                    raise HallwayError(f"Switch couldn't take you out of #{room['name']} just now: {e}") from e
+        try:
+            await self.switch.post(self._host(), room["id"], f"{attendee['name']} and their agent left the room.")
+        except SwitchError as e:
+            log.warning("leave %s: could not say so in %s: %s", attendee["handle"], room["name"], e)
+        return {"status": "left", "room": room["name"]}
+
+    def _left(self, attendee: dict, room: dict) -> bool:
+        return bool(self.store.kv_get(f"left:{attendee['id']}:{room['id']}"))
+
     # ------------------------------------------------------------ stickiness
     async def _sync_loop(self) -> None:
         while True:
@@ -1303,6 +1417,8 @@ class Hallway:
             if not members:
                 continue
             for a in attendees:
+                if self._left(a, room):
+                    continue
                 person_in = a["mm_user_id"] in members
                 agent_in = bool(a.get("agent_mm_user_id")) and a["agent_mm_user_id"] in members
                 if person_in and not agent_in:
@@ -1381,6 +1497,8 @@ class Hallway:
             return await self._contact_ok(attendee, p["contact_id"])
         if kind == "shortlist":
             return self._shortlist_picked(attendee, p, selected or [])
+        if kind == "settings":
+            return self._apply_settings(attendee, p)
         raise HallwayError(f"unknown approval kind {kind}")
 
     # --------------------------------------------------------------- messaging
@@ -1422,14 +1540,14 @@ class Hallway:
                 attendee, "post", f"Post in #{room['name']}: {text[:140]}", {"room": room["name"], "text": text}
             )
         res = await self.switch.post(self.stand_in(attendee), room["id"], text)
-        self._touch(attendee)
+        self.touch(attendee)
         return {"status": "posted", "room": room["name"], "event_id": res.get("event_id")}
 
     async def read(self, attendee: dict, room_ref: str, since: str | None = None, limit: int = 30) -> list[dict]:
         room = self.room_by_ref(room_ref)
         await self.require_member(attendee, room)
         msgs = await self.switch.read_context(self.stand_in(attendee), room["id"], since=since, limit=limit)
-        self._touch(attendee)
+        self.touch(attendee)
         return [self._fmt(m) for m in msgs][-limit:]
 
     def _fmt(self, m: dict) -> dict:
@@ -1440,7 +1558,8 @@ class Hallway:
             "thread_id": m["thread_id"],
         }
 
-    def _touch(self, attendee: dict) -> None:
+    def touch(self, attendee: dict) -> None:
+        """The agent is here: every tool call and feed poll keeps it online."""
         self.store.update("attendees", attendee["id"], agent_seen_at=time.time())
 
     # -------------------------------------------------------------- event feed
@@ -1515,8 +1634,8 @@ class Hallway:
                 continue
             body = m["body"].lower()
             mentioned = any(f"@{x}" in body for x in mine)
-            if not mentioned and m["room_kind"] == "lobby":
-                continue
+            if m["room_kind"] == "lobby" and not (mentioned and attendee["lobby_agent"]):
+                continue  # kept out of the lobby: nothing there is for it
             room = rooms.get(m["room_id"]) or self.store.one("SELECT * FROM rooms WHERE id = ?", m["room_id"])
             if not room:
                 continue
@@ -1733,7 +1852,7 @@ class Hallway:
         """Keep a page the agent made for its human. It is served only to them, in
         a sandboxed frame (main.card), so its script can't reach Hallway; and
         what the privacy guard would redact in a message is redacted here too."""
-        title = self.clean_text(title, "title") or "From your agent"
+        title = self.clean_text(title, "title") or "Notice"
         html = str(html or "")
         if not html.strip():
             raise HallwayError("The card needs some HTML.")
@@ -1904,6 +2023,31 @@ class Hallway:
                 {"meeting_id": meeting_id},
             )
         return await self._respond_meeting(attendee, meeting_id, accept)
+
+    async def cancel_meeting(self, attendee: dict, meeting_id: str) -> dict:
+        """Call off a meeting: one they proposed that's still waiting, or a
+        confirmed one (either side). The other side hears about it; a confirmed
+        meeting's room stays, for them to wrap up in."""
+        async with self._serial.hold(f"meeting:{meeting_id}"):
+            m = self.store.one("SELECT * FROM meetings WHERE id = ?", meeting_id)
+            if not m or attendee["id"] not in (m["proposer_id"], m["invitee_id"]):
+                raise HallwayError("No meeting of yours with that id. list_meetings shows them.")
+            if m["status"] == "proposed" and m["invitee_id"] == attendee["id"]:
+                raise HallwayError("They proposed this one: decline it with respond_meeting instead.")
+            if m["status"] not in ("proposed", "confirmed"):
+                return {"status": m["status"], "meeting_id": m["id"], "message": f"It's already {m['status']}."}
+            self.store.update("meetings", m["id"], status="cancelled")
+        other = self.store.need_attendee(id=m["invitee_id"] if m["proposer_id"] == attendee["id"] else m["proposer_id"])
+        self.store.notice(
+            other["id"],
+            "meeting_cancelled",
+            f"{attendee['name']} called off {m['time']}, {m['place']}.",
+            actor=Actor.person(attendee),
+            meeting_id=m["id"],
+            time=m["time"],
+            place=m["place"],
+        )
+        return {"status": "cancelled", "meeting_id": m["id"], "message": f"Called off; {other['name']} is told."}
 
     def _meeting_outcome(self, m: dict) -> dict:
         """What answering a meeting returns; the same for a repeat answer."""

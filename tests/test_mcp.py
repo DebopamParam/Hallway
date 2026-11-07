@@ -4,6 +4,9 @@ from .conftest import PROFILE, mcp_call, pass_privacy_check
 
 EXPECTED_TOOLS = {
     "whoami",
+    "cancel_meeting",
+    "leave_room",
+    "change_settings",
     "list_rooms",
     "read_room",
     "my_inbox",

@@ -343,12 +343,13 @@ def run(browser, theme: str) -> None:
         timeout=20,
         cookies={c["name"]: c["value"] for c in ctx.cookies() if c["name"] == "hw_session"},
     )
-    my = me.get("/api/me").json()
+    my = me.put("/api/me", json={"lobby_agent": True}).json()  # its agent asks for approvals below
 
     # A second attendee and their agent: a meeting request, a room, lobby chat.
     peer_c = client()
     peer = register(peer_c, f"Uidevpeer{n} Rao", f"uidev.peer.{n}@example.com")
     pt = peer["connect"]["token"]
+    peer_c.put("/api/me", json={"lobby_agent": True})  # people start with their agent out of the lobby
     mcp(peer_c, pt, "start_privacy_check")
     mcp(
         peer_c,
@@ -432,7 +433,9 @@ def run(browser, theme: str) -> None:
     check_screen(page, theme, "13-people-no-match", tab=False)
 
     page.click("[data-tab='me']")
-    page.wait_for_selector("#edit")
+    page.wait_for_selector("#edit", state="attached")
+    # Settings sit in folded groups.
+    page.evaluate("document.querySelectorAll('details.group').forEach((d) => d.open = true)")
     check_sheet(page, theme, "14-edit-badge-sheet", "#edit")
     check_sheet(page, theme, "15-new-key-sheet", "#rotate")
     check_sheet(page, theme, "16-signout-all-sheet", "#logout-all")
