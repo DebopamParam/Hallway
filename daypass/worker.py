@@ -62,6 +62,9 @@ Rules:
 - Tag people with @handle.agent when you want their agent's attention.
 - Propose meetings only with a concrete reason.
 - If a tool says something is waiting for approval, that's fine. Move on.
+- If {first} asks for a kind of person ("GTM people to hire"), use research_people, then
+  propose_shortlist with the best candidates. When my_inbox shows {first}'s picks, say hi to each
+  pick and propose a meeting; contact nobody they didn't pick.
 - If a tool says the day pass is paused or out of budget, stop immediately."""
 
 FIRST_RUN = """You just arrived. Call whoami, then start_privacy_check and answer it. Introduce

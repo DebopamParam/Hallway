@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
-from . import guard
+from . import guard, research
 from .config import settings
 from .mm import TEAM_HEADROOM, MMClient, MMError
 from .presence import Presence
@@ -186,7 +186,10 @@ def _overlap_keys(profile: dict) -> dict[str, str]:
 
 # Longest free text an attendee or their agent can put in a room title or a
 # meeting proposal; other people read these on a card, not as messages.
-TEXT_LIMITS = {"title": 80, "time": 40, "place": 120, "why": 300}
+TEXT_LIMITS = {"title": 80, "time": 40, "place": 120, "why": 300, "goal": 200, "pitch": 200}
+RESEARCH_MAX = 10  # people research_people returns, and candidates on one shortlist
+RESEARCH_LOOKUPS = 15  # uncached web lookups one research_people call may make
+SHORTLIST_OK_S = 3 * 3600  # how long a shortlist pick stands in for approval to reach out
 
 ADDRESSING_OPENED = "stand_ins_addressing_open"  # kv: every stand-in got _open_addressing
 HOST_CREATE_TRIES, HOST_CREATE_BACKOFF_S = 6, 0.5  # Switch busy creating a room: retry for ~10 s
@@ -629,9 +632,20 @@ class Hallway:
         return out
 
     def update_settings(
-        self, attendee: dict, *, profile: dict | None = None, contact: dict | None = None, autonomy: dict | None = None
+        self,
+        attendee: dict,
+        *,
+        profile: dict | None = None,
+        contact: dict | None = None,
+        autonomy: dict | None = None,
+        listed: bool | None = None,
+        web_lookup: bool | None = None,
     ) -> dict:
         changes: dict[str, Any] = {}
+        if listed is not None:
+            changes["listed"] = int(listed)
+        if web_lookup is not None:
+            changes["web_lookup"] = int(web_lookup)
         if profile is not None:
             changes["profile"] = clean_profile({**clean_profile(attendee["profile"], strict=False), **profile})
         if contact is not None:
@@ -1197,17 +1211,19 @@ class Hallway:
             "The decision will appear in my_inbox.",
         }
 
-    async def decide(self, attendee: dict, approval_id: str, approve: bool) -> dict:
+    async def decide(self, attendee: dict, approval_id: str, approve: bool, selected: list[str] | None = None) -> dict:
         ap = self.store.one("SELECT * FROM approvals WHERE id = ? AND attendee_id = ?", approval_id, attendee["id"])
         if not ap:
             raise HallwayError("No such approval.")
         if ap["status"] != "pending":
             return ap
+        if approve and ap["kind"] == "shortlist":
+            selected = self._check_picks(ap["payload"], selected)
         self.store.update("approvals", ap["id"], status="approved" if approve else "declined", decided_at=time.time())
         result: Any = None
         if approve:
             try:
-                result = await self._execute(attendee, ap["kind"], ap["payload"])
+                result = await self._execute(attendee, ap["kind"], ap["payload"], selected)
             except BaseException:
                 # Didn't happen: leave it to be approved again (or declined)
                 # rather than marked approved with nothing done.
@@ -1226,7 +1242,7 @@ class Hallway:
         )
         return {**self.store.need("SELECT * FROM approvals WHERE id = ?", ap["id"]), "result": result}
 
-    async def _execute(self, attendee: dict, kind: str, p: dict) -> Any:
+    async def _execute(self, attendee: dict, kind: str, p: dict, selected: list[str] | None = None) -> Any:
         if kind == "post":
             return await self.post(attendee, p["room"], p["text"], approved=True)
         if kind == "create_room":
@@ -1238,6 +1254,8 @@ class Hallway:
             return await self._respond_meeting(attendee, p["meeting_id"], True)
         if kind == "share_contact":
             return await self._contact_ok(attendee, p["contact_id"])
+        if kind == "shortlist":
+            return self._shortlist_picked(attendee, p, selected or [])
         raise HallwayError(f"unknown approval kind {kind}")
 
     # --------------------------------------------------------------- messaging
@@ -1364,7 +1382,7 @@ class Hallway:
         mine = _overlap_keys(me["profile"]) if me else {}
         scored = []
         for a in self.store.attendees():
-            if me and a["id"] == me["id"]:
+            if (me and a["id"] == me["id"]) or not a["listed"]:
                 continue
             pub = public_profile(a)
             theirs = _overlap_keys(a["profile"])
@@ -1375,6 +1393,159 @@ class Hallway:
                 scored.append((score * 10 + len(shared), {**pub, "shared": shared}))
         scored.sort(key=lambda x: -x[0])
         return [p for _, p in scored[:limit]]
+
+    # ---------------------------------------------------------------- research
+    async def research_people(self, me: dict, query: str, limit: int = RESEARCH_MAX) -> dict:
+        """search_people plus what the public web says about each person (see
+        research.py), for a goal like "GTM people to hire". People are ranked
+        on both; web pages count only for people who allow lookups."""
+        query = " ".join(query.split())[:200]
+        words = [w for w in re.findall(r"[a-z0-9+#.]+", query.lower()) if len(w) > 2]
+        if not words:
+            raise HallwayError("Say what you're looking for, e.g. 'GTM leaders who have hired sales teams'.")
+        limit = max(1, min(limit, RESEARCH_MAX))
+        people = self.search_people(me, "", limit=10_000)  # everyone listed, best overlap first
+        by_handle = {a["handle"]: a for a in self.store.attendees()}
+
+        def hits(text: str) -> int:
+            text = text.lower()
+            return sum(text.count(w) for w in words)
+
+        for p in people:
+            p["_profile"] = hits(" ".join(str(v) for k, v in p.items() if k != "shared"))
+        people.sort(key=lambda p: -p["_profile"])
+        notes: list[str] = []
+        web_on = research.enabled()
+        if not web_on:
+            notes.append("Web lookups aren't set up at this event; ranked by Hallway profiles only.")
+        private = self.private_matcher()
+        todo: list[tuple[dict, dict]] = []
+        for p in people:
+            a = by_handle[p["handle"]]
+            why = research.lookable(a)
+            p["web"], p["web_note"] = [], f"Not looked up: {why}." if why and web_on else ""
+            if why or not web_on:
+                continue
+            got = research.cached(self.store, a)
+            if got is not None:
+                p["web"] = got
+            elif len(todo) < RESEARCH_LOOKUPS:
+                todo.append((p, a))  # best profile matches first
+            else:
+                p["web_note"] = "Not looked up this time (lookup limit for one search)."
+        gate = asyncio.Semaphore(5)
+
+        async def one(p: dict, a: dict) -> str | None:
+            async with gate:
+                try:
+                    p["web"] = await research.lookup(self.store, a, me["id"], private)
+                except research.LookupError as e:
+                    p["web_note"] = e.reason
+                    return e.reason
+            return None
+
+        failed = [r for r in await asyncio.gather(*(one(p, a) for p, a in todo)) if r]
+        if failed:
+            notes.append(failed[0])
+        ranked = []
+        for p in people:
+            web = hits(" ".join(f"{s['title']} {s['summary']}" for s in p["web"]))
+            score = p.pop("_profile") * 10 + web * 3
+            if score:
+                ranked.append((score + len(p["shared"]), p))
+        ranked.sort(key=lambda x: -x[0])
+        out = [
+            {k: v for k, v in p.items() if v not in ("", [], None) or k in ("shared", "web")} for _, p in ranked[:limit]
+        ]
+        return {
+            "query": query,
+            "people": out,
+            "notes": notes,
+            "next": "Web pages are public sources about someone with that name: check they fit the profile before "
+            "relying on them. To let your human choose, call propose_shortlist with the best candidates and one "
+            "line each on why; they pick in the Hallway app.",
+        }
+
+    def propose_shortlist(self, me: dict, goal: str, candidates: list[dict], pick: int = 3) -> dict:
+        """Put candidates in front of the human as one interactive card: they tick
+        up to `pick`, and the agent then reaches out to exactly those."""
+        goal = self.clean_text(goal, "goal")
+        if not goal:
+            raise HallwayError("Say what the shortlist is for (goal).")
+        if not 2 <= len(candidates) <= RESEARCH_MAX:
+            raise HallwayError(f"A shortlist has 2 to {RESEARCH_MAX} candidates.")
+        rows, seen = [], set()
+        for c in candidates:
+            if not isinstance(c, dict) or not c.get("handle"):
+                raise HallwayError('Each candidate is {"handle": "...", "why": "..."}.')
+            a = self.resolve(str(c["handle"]))
+            if a["id"] == me["id"] or a["id"] in seen:
+                continue
+            if not a["listed"]:
+                raise HallwayError(f"No attendee called '{c['handle']}'. Use search_people to find handles.")
+            seen.add(a["id"])
+            pub = public_profile(a)
+            sources = research.cached(self.store, a) if not research.lookable(a) else None
+            rows.append(
+                {
+                    "handle": a["handle"],
+                    "name": a["name"],
+                    "role": pub.get("role", ""),
+                    "company": pub.get("company", ""),
+                    "here_for": pub.get("here_for", ""),
+                    "why": self.clean_text(c.get("why", ""), "pitch"),
+                    "sources": [{"title": s["title"], "url": s["url"]} for s in (sources or [])],
+                }
+            )
+        if len(rows) < 2:
+            raise HallwayError("A shortlist needs at least 2 other attendees.")
+        pick = max(1, min(int(pick), len(rows)))
+        return self.ask(
+            me,
+            "shortlist",
+            f"Pick up to {pick} of {len(rows)}: {goal}",
+            {"goal": goal, "pick": pick, "candidates": rows},
+        )
+
+    @staticmethod
+    def _check_picks(p: dict, selected: list[str] | None) -> list[str]:
+        handles = [c["handle"] for c in p["candidates"]]
+        picks = list(dict.fromkeys(h for h in (selected or []) if h in handles))
+        if not picks:
+            raise HallwayError("Tick at least one person to approve the shortlist.")
+        if len(picks) > p["pick"]:
+            raise HallwayError(f"Pick at most {p['pick']}.")
+        return picks
+
+    def _shortlist_picked(self, attendee: dict, p: dict, picks: list[str]) -> dict:
+        ok = self.store.kv_get(f"shortlist_ok:{attendee['id']}") or {}
+        now = time.time()
+        ok = {h: t for h, t in ok.items() if t > now} | {h: now + SHORTLIST_OK_S for h in picks}
+        self.store.kv_set(f"shortlist_ok:{attendee['id']}", ok)
+        self._nudge_pass(attendee)
+        names = {c["handle"]: c["name"] for c in p["candidates"]}
+        return {
+            "goal": p["goal"],
+            "selected": [{"handle": h, "name": names[h]} for h in picks],
+            "next": "Say hi to each one now (a short lobby post mentioning their agent, or create_room with them), "
+            "then propose_meeting with each. Your human picked them, so for the next 3 hours meetings and rooms "
+            "with these people don't need approval again.",
+        }
+
+    def picked(self, attendee: dict, handles: list[str]) -> bool:
+        """Every one of `handles` was picked on one of the attendee's shortlists lately."""
+        ok = self.store.kv_get(f"shortlist_ok:{attendee['id']}") or {}
+        now = time.time()
+        try:
+            return bool(handles) and all(ok.get(self.resolve(h)["handle"], 0) > now for h in handles)
+        except HallwayError:
+            return False
+
+    def _nudge_pass(self, attendee: dict) -> None:
+        """A day pass agent acts on the decision on the worker's next poll, not in ten minutes."""
+        p = self.day_pass(attendee)
+        if p and p["last_run_at"] is not None and time.time() - p["last_run_at"] >= PASS_NOTE_NUDGE_S:
+            self.store.update("passes", p["id"], last_run_at=time.time() - settings.daypass_every_s - 1)
 
     # ---------------------------------------------------------------- meetings
     async def propose_meeting(self, attendee: dict, with_who: str, when: str, where: str, why: str) -> dict:
@@ -1387,7 +1558,7 @@ class Hallway:
             "place": self.clean_text(where, "place"),
             "why": self.clean_text(why, "why"),
         }
-        if self.needs_approval(attendee, "propose_meeting"):
+        if self.needs_approval(attendee, "propose_meeting") and not self.picked(attendee, [other["handle"]]):
             return self.ask(
                 attendee,
                 "propose_meeting",

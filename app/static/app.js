@@ -416,6 +416,10 @@ async function landing(prefill = "") {
         </ol>
       </section>
       <section class="promise">
+        <h2 class="eyebrow">Only people in the room</h2>
+        <p class="small muted">At a real event, you'd join the live hallway by scanning a QR code at the venue, so only people who are actually there take part. You can set up your badge and connect your agent beforehand; it starts working the room once you check in. This demo skips the QR step so you can try it from anywhere.</p>
+      </section>
+      <section class="promise">
         <h2 class="eyebrow">Private stays private</h2>
         <div class="demo-msg"><span class="av agent sm">KS</span><p>Sure, call Kabir on <span class="redacted"><span>private</span></span> after the PQC talk.</p></div>
         <p class="small muted">Switch runs every message, human or agent, through Hallway's privacy guard. Phones, emails and travel plans are struck out before anyone sees them. Contact details move only when both people say yes, and only in this app.</p>
@@ -518,6 +522,8 @@ async function onboard(step) {
   const s = draft.step;
   const field = (id, label, value, placeholder, { hint = "", type = "text", ac = "" } = {}) => `
     <div class="fieldset"><label class="field" for="${id}">${label}</label><input id="${id}" type="${type}" value="${esc(value)}" placeholder="${placeholder}" ${ac ? `autocomplete="${ac}"` : ""}>${hint ? `<div class="hint">${hint}</div>` : ""}</div>`;
+  // The vault is optional: with nothing in it, step 2's button says so.
+  const nextLabel = () => (s === 4 ? "Enter the hallway" : s === 2 && !Object.keys(draft.contact).length ? "Skip" : "Continue");
   let body = "";
   if (s === 1) {
     const p = draft.profile;
@@ -582,7 +588,7 @@ async function onboard(step) {
     <div class="progress">${STEPS.map((l, i) => `<div class="${i + 1 < s ? "done" : i + 1 === s ? "now" : ""}"><span></span><em>${l}</em></div>`).join("")}</div>
     <div class="ob-body">${body}</div>
     <div class="ob-actions"><div class="ob-actions-inner">${s > 1 ? `<button class="btn ghost" id="back">${icon("back", "sm")}Back</button>` : ""}
-      <button class="btn ${s === 4 ? "signal" : "primary"} grow" id="next">${s === 4 ? "Enter the hallway" : "Continue"} ${icon("arrow", "sm")}</button></div></div>
+      <button class="btn ${s === 4 ? "signal" : "primary"} grow" id="next">${nextLabel()} ${icon("arrow", "sm")}</button></div></div>
   </main>`;
   $app.querySelector(".view").classList.add("enter");
   window.scrollTo(0, 0);
@@ -603,6 +609,9 @@ async function onboard(step) {
     keepDraft(email);
   };
   document.querySelector(".ob-body").addEventListener("input", save);
+  if (s === 2) document.querySelector(".ob-body").addEventListener("input", () => {
+    document.getElementById("next").innerHTML = `${nextLabel()} ${icon("arrow", "sm")}`;
+  });
   if (s === 1) {
     const preview = document.getElementById("badge-preview");
     const live = () => {
@@ -688,7 +697,55 @@ function bindPresets(target, onChange) {
 }
 
 // ---------------------------------------------------------------- now (home)
-const KIND_LABEL = { chat: "Chat", post: "Post a message", create_room: "Start a room", rooms: "Start a room", propose_meeting: "Propose a meeting", accept_meeting: "Accept a meeting", share_contact: "Swap contacts" };
+const KIND_LABEL = { chat: "Chat", post: "Post a message", create_room: "Start a room", rooms: "Start a room", propose_meeting: "Propose a meeting", accept_meeting: "Accept a meeting", share_contact: "Swap contacts", shortlist: "Shortlist" };
+
+// A shortlist card: the agent's candidates, rendered from data (never agent HTML),
+// each ticked or not. Approving sends the ticked handles; the agent reaches out to those.
+function shortlistTicket(a, me, ticked) {
+  const p = a.payload || { candidates: [], pick: 1 };
+  const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
+  return `
+    <article class="ticket shortlist" data-card data-pick="${p.pick}">
+      <div class="ticket-top">${av(me.name, "agent")}<div class="grow"><div class="ticket-kicker">Your agent found · Shortlist</div><div class="ticket-sum">${esc(p.goal || a.summary)}</div></div></div>
+      <div class="ticket-meta">Tick up to ${p.pick}. Your agent says hi to them and tries to set up a meeting. ${ago(a.created_at)}</div>
+      <div class="cands">${p.candidates.map((c) => `
+        <label class="cand"><input type="checkbox" data-pick-handle="${esc(c.handle)}" ${ticked.has(c.handle) ? "checked" : ""}>
+          <span class="tick">${icon("check", "sm")}</span>
+          <span class="grow"><span class="cand-name">${esc(c.name)}</span><span class="cand-role">${esc([c.role, c.company].filter(Boolean).join(" · "))}</span>
+            ${c.why ? `<span class="cand-why">${esc(c.why)}</span>` : ""}
+            ${(c.sources || []).length ? `<span class="cand-src">${c.sources.map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer nofollow" title="${esc(s.title)}">${esc(host(s.url))}</a>`).join("")}</span>` : ""}</span>
+        </label>`).join("")}</div>
+      <div class="ticket-tear"></div>
+      <div class="ticket-actions"><button class="btn ghost" data-shortlist="${a.id}" data-v="0">Not now</button><button class="btn primary" data-shortlist="${a.id}" data-v="1" disabled>${icon("check", "sm")}<span>Pick people</span></button></div>
+      <span class="stamp" aria-hidden="true"></span>
+    </article>`;
+}
+
+function bindShortlist(card, onDone) {
+  const pick = Number(card.dataset.pick) || 1;
+  const boxes = [...card.querySelectorAll("[data-pick-handle]")];
+  const go = card.querySelector('[data-shortlist][data-v="1"]');
+  const sync = () => {
+    const n = boxes.filter((b) => b.checked).length;
+    boxes.forEach((b) => (b.disabled = !b.checked && n >= pick));
+    go.disabled = !n;
+    go.querySelector("span").textContent = n ? `Say hi to ${n}` : "Pick people";
+  };
+  boxes.forEach((b) => (b.onchange = sync));
+  sync();
+  card.querySelectorAll("[data-shortlist]").forEach((b) => (b.onclick = async () => {
+    const yes = b.dataset.v === "1";
+    const selected = boxes.filter((x) => x.checked).map((x) => x.dataset.pickHandle);
+    card.querySelectorAll("button, input").forEach((x) => (x.disabled = true));
+    try {
+      await api(`/api/approvals/${b.dataset.shortlist}`, { body: { approve: yes, selected: yes ? selected : null } });
+      card.classList.add("stamped", yes ? "yes" : "no");
+      card.querySelector(".stamp").textContent = yes ? "Sent" : "Declined";
+      toast(yes ? `Your agent will reach out to ${plural(selected.length, "person", "people")}.` : "Declined", yes ? "ok" : "");
+      setTimeout(onDone, 900);
+    } catch (e) { toast(e.message); card.querySelectorAll("button, input").forEach((x) => (x.disabled = false)); sync(); }
+  }));
+}
 const NOTICE_ICON = { agent_verified: "check", mention: "at", meeting_proposed: "calendar", meeting_confirmed: "check", meeting_declined: "x", contact_exchanged: "swap", approval: "bolt" };
 
 function greeting() {
@@ -780,6 +837,8 @@ async function nowView() {
       if (fresh.length) announce(fresh.length === 1 ? fresh[0] : `${fresh.length} new cards need you. ${fresh[0]}`);
     }
     known = new Set(ids);
+    // Keep a half-ticked shortlist's ticks when the cards redraw.
+    const ticked = new Set([...needsEl.querySelectorAll("[data-pick-handle]:checked")].map((b) => b.dataset.pickHandle));
     const needs = pending.length + incoming.length;
     needsEl.innerHTML = `
       <div class="block-head"><h2>Needs you</h2>${needs ? `<span class="count">${needs}</span>` : ""}</div>
@@ -793,7 +852,7 @@ async function nowView() {
             <div class="ticket-actions"><button class="btn ghost" data-meet="${m.id}" data-v="0">Can't make it</button><button class="btn primary" data-meet="${m.id}" data-v="1">${icon("check", "sm")}Accept</button></div>
             <span class="stamp" aria-hidden="true"></span>
           </article>`).join("")}
-        ${pending.map((a) => `
+        ${pending.map((a) => a.kind === "shortlist" ? shortlistTicket(a, me, ticked) : `
           <article class="ticket" data-card>
             <div class="ticket-top">${av(me.name, "agent")}<div class="grow"><div class="ticket-kicker">Your agent asks · ${esc(KIND_LABEL[a.kind] || a.kind)}</div><div class="ticket-sum">${esc(a.summary)}</div></div></div>
             <div class="ticket-meta">${ago(a.created_at)}</div>
@@ -825,6 +884,7 @@ async function nowView() {
         setTimeout(() => { lastKey = ""; load(); refreshCounts(); }, 900);
       } catch (e) { toast(e.message); card.querySelectorAll("button").forEach((x) => (x.disabled = false)); }
     }));
+    needsEl.querySelectorAll(".shortlist").forEach((card) => bindShortlist(card, () => { lastKey = ""; load(); refreshCounts(); }));
     decideWith("[data-decide]", (b) => `/api/approvals/${b.dataset.decide}`, "approve", ["Approved", "Declined"]);
     decideWith("[data-meet]", (b) => `/api/meetings/${b.dataset.meet}`, "accept",
       ["Accepted", "Declined", (r, yes) => (yes ? (r.status === "confirmed" ? "Meeting confirmed. A room is open for you both." : "Accepted") : "Declined")]);
@@ -1099,6 +1159,14 @@ function commonSections(me) {
       ${badgeCard(me)}
       ${(me.talks || []).length ? `<div class="talks-mini">${me.talks.map((t) => `<span><b>${esc(t.slice(0, 5))}</b>${esc(t.slice(6))}</span>`).join("")}</div>` : ""}
       <p class="vault-note">${icon("lock", "xs")}${plural(nContact, "private detail")} in your vault. No agent can see ${nContact === 1 ? "it" : "them"}.</p></section>
+    <section class="block"><div class="block-head"><h2>Who can see you</h2></div>
+      <div class="seg wide" id="listed" data-v="${me.listed ? "public" : "private"}" role="group" aria-label="Profile visibility">
+        <button data-v="public" class="${me.listed ? "on" : ""}" aria-pressed="${me.listed}">Public</button>
+        <button data-v="private" class="${me.listed ? "" : "on"}" aria-pressed="${!me.listed}">Private</button></div>
+      <p class="small muted">${me.listed ? "Everyone at the event, and their agents, can find your badge and suggest meeting you."
+        : "Hidden from People and from other agents' searches. You and your agent can still reach out; people you meet see your name and badge."}</p>
+      <label class="check-row"><input type="checkbox" id="web_lookup" ${me.web_lookup ? "checked" : ""} ${me.listed ? "" : "disabled"}>
+        <span>Let agents read public web pages about me (via Exa) when they research who to meet</span></label></section>
     <section class="block"><div class="block-head"><h2>Appearance</h2></div>
       <div class="seg wide" id="theme" data-v="${theme}" role="group" aria-label="Theme">${THEMES.map((t) => `<button data-t="${t}" class="${theme === t ? "on" : ""}" aria-pressed="${theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div></section>
     <button class="btn ghost block signout" id="logout">Sign out</button>
@@ -1117,6 +1185,13 @@ function bindCommon(me) {
     document.getElementById("theme").dataset.v = b.dataset.t;
   }));
   document.getElementById("edit").onclick = () => editProfile(me);
+  const saveVisibility = async (body, msg) => {
+    try { state.me = await api("/api/me", { method: "PUT", body }); toast(msg, "ok"); render(); } catch (e) { toast(e.message); }
+  };
+  document.querySelectorAll("#listed button").forEach((b) => (b.onclick = () => {
+    if ((b.dataset.v === "public") !== me.listed) saveVisibility({ listed: b.dataset.v === "public" }, b.dataset.v === "public" ? "Your profile is public" : "Your profile is private");
+  }));
+  document.getElementById("web_lookup").onchange = (e) => saveVisibility({ web_lookup: e.target.checked }, e.target.checked ? "Web lookups on" : "Web lookups off");
   // Demo sign-in gives no new link to an email that already joined: signing out is for good there.
   const demo = state.event && state.event.signin_mode === "demo";
   const demoNote = demo ? `<p class="small"><strong>On this demo you can't sign back in with the same email.</strong></p>` : "";

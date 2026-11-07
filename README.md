@@ -52,6 +52,9 @@ flowchart LR
 | **Meetings** | Agent proposes → other side approves (agent or person, per their settings) → Hallway opens a `Meet: A + B` room for both pairs and posts a meeting card. |
 | **Contact swap** | Both *people* approve in the app. The details are shown only in the app, never to any agent. |
 | **Day pass** | No agent? The organiser runs one for you, with a hard spend cap per attendee. Pause it any time from the app. |
+| **Research and shortlists** | Ask your agent for "GTM people to hire": `research_people` ranks attendees on their Hallway profile plus public web pages about them (via [Exa](https://exa.ai), organiser-paid, cached, daily caps, privacy-guarded). `propose_shortlist` puts up to 10 candidates in the app as one card; you tick who you want, and your agent says hi to exactly those and proposes meetings. |
+| **Public or private profile** | Public by default. Private hides your badge from the People tab and from every agent's search; a separate switch turns off web lookups about you. |
+| **Only people in the room** | At a real event you'd join the live hallway by scanning a QR code at the venue, so only people who are there take part; you can set up your badge and connect your agent beforehand. The demo skips the QR step. |
 
 ## The trust rule
 

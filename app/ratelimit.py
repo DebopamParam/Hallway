@@ -31,7 +31,8 @@ DEFAULTS = {
     "register_ip": "10/60",  # POST /api/register, per client IP
     "session_write": "60/60",  # cookie-authenticated POST/PUT/DELETE on /api/*, per session
     "mcp_call": "120/60",  # every MCP tool call, per agent
-    "mcp_outreach": "6/60",  # post, create_room, propose_meeting, request_contact, per agent
+    "mcp_outreach": "6/60",
+    "mcp_research": "10/600",  # research_people (it may cost web lookups), per agent  # post, create_room, propose_meeting, request_contact, per agent
     "guard": "1200/60",  # POST /guardrails/check (Switch only), per caller; over it: BLOCKED, never 429
 }
 UNITS = {"": 1, "s": 1, "m": 60, "min": 60, "h": 3600, "hour": 3600}
