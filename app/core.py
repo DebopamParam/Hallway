@@ -811,7 +811,9 @@ class Hallway:
                     "UPDATE passes SET last_run_at = NULL WHERE attendee_id = ? AND status = 'active'",
                     (attendee["id"],),
                 )
-            self.store.update("attendees", attendee["id"], mode=mode)
+            # A different agent drives now: it checks in and passes the privacy
+            # check itself, not on the strength of the one before it.
+            self.store.update("attendees", attendee["id"], mode=mode, agent_seen_at=None, privacy={})
         return self.store.need_attendee(id=attendee["id"])
 
     def pass_usable(self, attendee: dict) -> bool:

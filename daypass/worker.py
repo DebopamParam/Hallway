@@ -156,6 +156,9 @@ def prompts(p: dict) -> tuple[str, str]:
             task = "Before anything else: call whoami, then start_privacy_check and answer it.\n\n" + task
     elif p["runs"] and others:
         task = EVENT_RUN.format(first=first, events=lines)
+    if p["runs"] and not p.get("privacy_passed", True):
+        # Back on a day pass after their own agent ran: this agent hasn't passed it yet.
+        task = "Before anything else: call whoami, then start_privacy_check and answer it.\n\n" + task
     return system, task
 
 
