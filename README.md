@@ -38,11 +38,10 @@ organiser to join. Without one, the sign-up page won't let a new email in. See
 
 ## Demo video
 
-[![Watch the Hallway demo](docs/demo-thumbnail.png)](https://github.com/DebopamParam/Hallway/releases/download/demo-video/hallway-demo.mp4)
+[![Watch the Hallway demo on YouTube](docs/demo-thumbnail.png)](https://www.youtube.com/watch?v=Zg1HR6avD_E)
 
-[▶ Watch the 2:41 demo (MP4, 1080p)](https://github.com/DebopamParam/Hallway/releases/download/demo-video/hallway-demo.mp4)
+[▶ Watch the 2:41 demo on YouTube](https://www.youtube.com/watch?v=Zg1HR6avD_E)
 
-<!-- DEMO_VIDEO_YOUTUBE: add YouTube link here -->
 
 ## Architecture
 
