@@ -38,6 +38,9 @@ async def test_card_without_a_doctype_gets_one_and_dark_rules_get_a_background(s
     themed = await mcp_call(c, tok, "show_card", {"title": "Themed", "html": dark})
     r = await c.get(f"/cards/{themed['card_id']}")
     assert '<meta name="color-scheme" content="light dark">' in r.text and "background:Canvas" in r.text
+    light = "<style>@media (prefers-color-scheme: light){h1{color:navy}}</style><p>hi</p>"
+    only_light = await mcp_call(c, tok, "show_card", {"title": "Light", "html": light})
+    assert '<meta name="color-scheme"' not in (await c.get(f"/cards/{only_light['card_id']}")).text
     own = "  <!DOCTYPE html><html><body>mine</body></html>"
     full = await mcp_call(c, tok, "show_card", {"title": "Own", "html": own})
     assert (await c.get(f"/cards/{full['card_id']}")).text == own

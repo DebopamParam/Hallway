@@ -10,6 +10,7 @@ import io
 import ipaddress
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -955,6 +956,7 @@ async def cards(hw_session: str | None = Cookie(None)) -> list[dict]:
 # A card with its own dark-mode rules also gets a matching background, or its light
 # text lands on the frame's white; one without them stays light, as written.
 CARD_HEAD = '<!doctype html><meta charset="utf-8">'
+CARD_DARK_RULES = re.compile(r"prefers-color-scheme\s*:\s*dark", re.I)
 CARD_DARK = '<meta name="color-scheme" content="light dark"><style>html{background:Canvas;color:CanvasText}</style>'
 
 
@@ -968,7 +970,7 @@ async def card(card_id: str, hw_session: str | None = Cookie(None)) -> HTMLRespo
         raise HTTPException(404, "No such card.")
     html = row["html"]
     if html.lstrip()[:9].lower() != "<!doctype":
-        html = CARD_HEAD + (CARD_DARK if "prefers-color-scheme" in html else "") + html
+        html = CARD_HEAD + (CARD_DARK if CARD_DARK_RULES.search(html) else "") + html
     return HTMLResponse(
         html,
         headers={
