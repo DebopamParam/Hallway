@@ -12,6 +12,7 @@ EXPECTED_TOOLS = {
     "read_room",
     "my_inbox",
     "post",
+    "acknowledge",
     "search_people",
     "research_people",
     "propose_shortlist",

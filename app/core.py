@@ -202,6 +202,9 @@ FEED_MAX = 20  # events in one answer
 PASS_WAKE_GAP_S = 5  # a day pass agent woken by others' events runs at most this often
 CHAT_MAX = 1000  # characters in one chat message
 AGENT_WAKES, AGENT_WAKES_S = 3, 600  # runs woken by other agents alone, per 10 minutes (see chatter_held)
+# Two agents @-ing each other in one room: this many messages between them per
+# DUET_S, with no person posting there in between, then more are held (see post).
+DUET_MAX, DUET_S = 4, 600
 BUSY_S = 600  # a run that said it started but never finished stops showing as working
 OWNER_ASKED_S = 900  # their agent may loosen a setting this long after they last messaged it
 
@@ -280,6 +283,8 @@ class Hallway:
         self.activity: collections.deque[dict] = collections.deque(maxlen=TAIL_KEEP)
         self._tail_since: dict[str, int] = {}  # room id -> last message ms
         self._tail_task: asyncio.Task[None] | None = None
+        # (room id, the two agent names) -> when they @-ed each other there lately.
+        self._duets: dict[tuple[str, frozenset[str]], collections.deque[float]] = {}
         self._members: dict[str, tuple[float, set[str]]] = {}
         self._agent_wakes: dict[str, collections.deque[float]] = {}
         self._pulse = asyncio.Event()  # set (and replaced) when anything lands for the feed
@@ -1657,9 +1662,55 @@ class Hallway:
             return self.ask(
                 attendee, "post", f"Post in #{room['name']}: {text[:140]}", {"room": room["name"], "text": text}
             )
+        held = self._duet_held(attendee, room, text)
+        if held:
+            self.touch(attendee)
+            return held
         res = await self.switch.post(self.stand_in(attendee), room["id"], text)
         self.touch(attendee)
         return {"status": "posted", "room": room["name"], "event_id": res.get("event_id")}
+
+    def _duet_held(self, attendee: dict, room: dict, text: str) -> dict | None:
+        """Debounce two agents thanking and confirming each other in a loop. Each
+        message one agent @-mentions another with counts for that pair in that
+        room; past DUET_MAX in DUET_S, with no person posting there since, the
+        message is held (not posted) and the agent is told to acknowledge instead.
+        A person posting in the room starts the count over."""
+        me = attendee["agent_name"].lower()
+        others = {
+            h.lower()
+            for h in re.findall(r"@([a-z0-9][a-z0-9._-]*[a-z0-9])", text, re.I)
+            if h.lower() != me and self._is_agent(h)
+        }
+        if not others:
+            return None
+        now = time.time()
+        held = []
+        for other in others:
+            q = self._duets.setdefault((room["id"], frozenset((me, other))), collections.deque())
+            while q and now - q[0] > DUET_S:
+                q.popleft()
+            if len(q) >= DUET_MAX:
+                held.append(other)
+        if held:
+            names = ", ".join(f"@{h}" for h in sorted(held))
+            return {
+                "status": "held",
+                "posted": False,
+                "why": f"Not posted: you and {names} have already gone back and forth {DUET_MAX} times in "
+                f"#{room['name']} without a person joining in. If nothing new needs an answer, call acknowledge "
+                "and stop. If your human needs to decide something, it's in their app. When a person posts in "
+                "the room, you can talk again.",
+            }
+        for other in others:
+            self._duets[(room["id"], frozenset((me, other)))].append(now)
+        return None
+
+    def acknowledge(self, attendee: dict, about: str = "") -> dict:
+        """Seen, and nothing to say back: the agent's way to end an exchange
+        without posting. Nothing is sent to anyone."""
+        self.touch(attendee)
+        return {"status": "acknowledged", "posted": False, "about": about[:200]}
 
     async def read(self, attendee: dict, room_ref: str, since: str | None = None, limit: int = 30) -> list[dict]:
         room = self.room_by_ref(room_ref)
@@ -2475,6 +2526,8 @@ class Hallway:
 
     async def person_post(self, attendee: dict, room: dict, text: str) -> dict:
         await self.require_member(attendee, room)
+        for key in [k for k in self._duets if k[0] == room["id"]]:
+            del self._duets[key]  # a person spoke: the agents may answer again
         token = await self.person_token(attendee)
         try:
             return await self.mm.post_as(token, room["mm_channel_id"], text)

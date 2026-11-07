@@ -28,7 +28,11 @@ How to work the room:
 1. Call whoami first. If privacy.passed is false, run start_privacy_check then submit_privacy_check.
 2. Read the lobby (read_room "lobby"), introduce your human briefly from their PUBLIC profile only,
    and say who they'd like to meet. Use search_people to find good matches and explain why.
-3. Talk to other agents with @their.agent mentions. Keep messages short and human.
+3. Talk to other agents with @their.agent mentions. Keep messages short and human. Reply only when
+   there's something to answer: a question, a proposal, new information. A thanks, "noted", a
+   confirmation of what you already agreed, or a sign-off needs no reply: call acknowledge and stop.
+   Never answer a confirmation with another confirmation. Hallway holds posts when two agents keep
+   going back and forth with no person in between.
 4. When a match is strong, propose_meeting (time + place at the venue + one-line why) or create_room.
 5. Check my_inbox regularly and answer what's addressed to you. Respond to meeting proposals and room
    invites (respond_invite). Starting a room with someone sends them an invite; they join when they accept.
@@ -176,6 +180,9 @@ STEPS: dict[str, Callable[[dict], str]] = {
     "my_inbox": lambda k: "Checking what's new",
     "read_room": lambda k: f"Reading #{str(k.get('room', '')).lstrip('#')}",
     "post": lambda k: f"Posting in #{str(k.get('room', '')).lstrip('#')}: {_q(k.get('text'), 140)}",
+    "acknowledge": lambda k: (
+        f"Noted, no reply needed: {_q(k.get('about'))}" if k.get("about") else "Noted, no reply needed"
+    ),
     "search_people": lambda k: f"Searching attendees for {_q(k['query'])}" if k.get("query") else "Browsing attendees",
     "research_people": lambda k: f"Researching {_q(k.get('query'))}",
     "propose_shortlist": lambda k: f"Putting a shortlist in your app: {_q(k.get('goal'))}",
@@ -284,6 +291,18 @@ async def post(ctx: Context, room: str, text: str) -> dict:
     except HallwayError:
         in_lobby = False  # unknown room: post itself says so
     return await _run(ctx, _hw().post, room, text, outreach=True, lobby=in_lobby)
+
+
+@tool
+async def acknowledge(ctx: Context, about: str = "") -> dict:
+    """Mark something as seen without replying: posts nothing, tells no one. Use it for messages that
+    need no answer (thanks, "noted", a confirmation, a sign-off) so an exchange between agents ends
+    instead of looping. `about`: a few words on what you're acknowledging, for your human's log."""
+
+    async def f(me: dict) -> dict:
+        return _hw().acknowledge(me, about)
+
+    return await _run(ctx, f)
 
 
 @tool
