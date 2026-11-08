@@ -230,16 +230,19 @@ def load_providers() -> None:
 
 # ---------------------------------------------------------------- engines
 # Per reply, reasoning included. A shortlist with its own html page runs to
-# thousands of tokens, so PricedModel gives each reply what the budget has room
-# for, up to MAX_OUT_TOKENS, and refuses only below MIN_OUT_TOKENS.
+# thousands of tokens, so PricedModel gives each reply half of what the budget
+# has room for, up to MAX_OUT_TOKENS, and refuses only below MIN_OUT_TOKENS. The
+# other half covers a prompt bigger than its estimate (a first prompt with the
+# tool list is about 5000 tokens, so MIN_PROMPT_TOKENS errs above it).
 MAX_OUT_TOKENS = 8192
 MIN_OUT_TOKENS = 1024
+MIN_PROMPT_TOKENS = 8000
 
 
 def priced_model(model, budget: float, price_in: float, price_out: float):
     """Wrap a model PydanticAI can't price so the budget is checked before every
-    request, not after: its reply may only use what's left once what's spent and its
-    worst-case prompt (the last one grown by a quarter) are paid for."""
+    request, not after: its reply may use half of what's left once what's spent and
+    its estimated prompt (the last one grown by a quarter) are paid for."""
     from pydantic_ai.exceptions import UsageLimitExceeded
     from pydantic_ai.models.wrapper import WrapperModel
 
@@ -248,9 +251,9 @@ def priced_model(model, budget: float, price_in: float, price_out: float):
         last_in = 0
 
         async def request(self, messages, model_settings, params):
-            left = budget - self.spent - max(self.last_in * 1.25, 4000) * price_in
+            left = budget - self.spent - max(self.last_in * 1.25, MIN_PROMPT_TOKENS) * price_in
             # A free output price leaves only the prompt to pay for.
-            room = left / price_out if price_out else (MAX_OUT_TOKENS if left >= 0 else 0)
+            room = left / 2 / price_out if price_out else (MAX_OUT_TOKENS if left >= 0 else 0)
             if room < MIN_OUT_TOKENS:
                 raise UsageLimitExceeded(f"next request could pass the ${budget:.4f} budget (${self.spent:.4f} spent)")
             settings = {**(model_settings or {}), "max_tokens": int(min(room, MAX_OUT_TOKENS))}
