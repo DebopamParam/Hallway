@@ -4,6 +4,7 @@ client) works the event. One bearer token per attendee, from the Connect page.
 
 import functools
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -229,6 +230,12 @@ def _log_step(name: str, args: tuple, kwargs: dict) -> None:
         return
 
 
+def _first_sentence(said: object) -> str:
+    """Refusals are written to the agent; their first sentence is the part a person can read."""
+    why = " ".join(str(said).split()).split(". ")[0].rstrip(".") + "."
+    return why[:120] + "…" if len(why) > 120 else why
+
+
 def _log_outcome(name: str, args: tuple, kwargs: dict, result: object) -> None:
     """Follow a step with what came of it when it didn't simply happen, so the
     chat doesn't claim a meeting or room that was refused or is waiting on them."""
@@ -238,9 +245,10 @@ def _log_outcome(name: str, args: tuple, kwargs: dict, result: object) -> None:
     if result.get("error") == OUT_OF_LOBBY:
         text = "↳ didn't go through: your agent isn't in the lobby (Lobby: Let my agent chat here)"
     elif "error" in result:
-        # Errors are written to the agent; their first sentence is the part a person can read.
-        why = " ".join(str(result["error"]).split()).split(". ")[0].rstrip(".") + "."
-        text = "↳ didn't go through: " + (why[:120] + "…" if len(why) > 120 else why)
+        text = "↳ didn't go through: " + _first_sentence(result["error"])
+    elif result.get("status") == "held":
+        why = re.sub(r"^Not posted( in the lobby)?: ", "", str(result.get("why", "")))
+        text = "↳ held back, not posted: " + _first_sentence(why)
     elif result.get("status") == "pending_approval":
         text = "↳ waiting for your OK on Now"
     else:
