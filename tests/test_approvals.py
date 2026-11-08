@@ -1,6 +1,6 @@
 """Approvals, rooms, meetings and the contact swap (web API + MCP together)."""
 
-from .conftest import mcp_call
+from .conftest import mcp_call, pass_privacy_check
 
 ASHA_CONTACT = {"phone": "+91 98111 22233", "email": "asha.private@juspay.in"}
 BO_CONTACT = {"phone": "+91 90000 11111", "linkedin": "linkedin.com/in/bo_secret_tg"}
@@ -291,3 +291,14 @@ async def test_a_refused_step_reads_to_the_person_not_the_agent(signup, client, 
     steps = [s["text"] for s in hallway.store.all("SELECT text FROM agent_chat WHERE role = 'step' ORDER BY rowid")]
     assert steps[1] == "↳ didn't go through: your agent isn't in the lobby (Lobby: Let my agent chat here)"
     assert steps[3].startswith("↳ didn't go through: ") and ". " not in steps[3]
+
+
+async def test_a_held_lobby_post_says_it_wasnt_posted(signup, client, hallway):
+    _, asha = await signup("Asha Rao", lobby=True)
+    await pass_privacy_check(client, asha["connect"]["token"])
+    res = await mcp_call(client, asha["connect"]["token"], "post", {"room": "lobby", "text": "Asha " * 200})
+    assert res["status"] == "held"
+
+    [step] = hallway.store.all("SELECT text FROM agent_chat WHERE role = 'step' AND text LIKE '↳%'")
+    assert step["text"].startswith("↳ held back, not posted: lobby posts are a short intro")
+    assert "Not posted" not in step["text"] and "create_room" not in step["text"]
