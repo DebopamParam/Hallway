@@ -1,5 +1,9 @@
 """Startup against the fake Switch, and the person+agent sync loop."""
 
+import dataclasses
+
+from app import main
+
 from .conftest import ADMIN_KEY
 
 
@@ -76,3 +80,13 @@ async def test_index_answers_head(client):
     """Link previewers and uptime checks send HEAD / first; a 404 reads as a dead link."""
     r = await client.head("/")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+
+
+def test_a_quote_in_the_public_url_stays_inside_the_attribute(monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, public_url='https://x.test/"><script>'))
+    main._index_html.cache_clear()
+    try:
+        assert "<script>/static" not in main._index_html()
+        assert 'content="https://x.test/&quot;&gt;&lt;script&gt;/static/brand/og.png"' in main._index_html()
+    finally:
+        main._index_html.cache_clear()
