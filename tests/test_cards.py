@@ -27,6 +27,25 @@ async def test_show_card_is_sandboxed_and_only_for_its_owner(signup):
     assert "frame-src 'self'" in (await c.get("/")).headers["content-security-policy"]
 
 
+async def test_card_without_a_doctype_gets_one_and_dark_rules_get_a_background(signup):
+    c, me = await signup("Asha Rao")
+    tok = me["connect"]["token"]
+    bare = await mcp_call(c, tok, "show_card", {"title": "Bare", "html": "<p>hi</p>"})
+    r = await c.get(f"/cards/{bare['card_id']}")
+    assert r.text.startswith("<!doctype html>") and r.text.endswith("<p>hi</p>")
+    assert "color-scheme" not in r.text  # no dark rules of its own: it stays light, on the frame's white
+    dark = "<style>@media (prefers-color-scheme: dark){body{color:#eee}}</style><p>hi</p>"
+    themed = await mcp_call(c, tok, "show_card", {"title": "Themed", "html": dark})
+    r = await c.get(f"/cards/{themed['card_id']}")
+    assert '<meta name="color-scheme" content="light dark">' in r.text and "background:Canvas" in r.text
+    light = "<style>@media (prefers-color-scheme: light){h1{color:navy}}</style><p>hi</p>"
+    only_light = await mcp_call(c, tok, "show_card", {"title": "Light", "html": light})
+    assert '<meta name="color-scheme"' not in (await c.get(f"/cards/{only_light['card_id']}")).text
+    own = "  <!DOCTYPE html><html><body>mine</body></html>"
+    full = await mcp_call(c, tok, "show_card", {"title": "Own", "html": own})
+    assert (await c.get(f"/cards/{full['card_id']}")).text == own
+
+
 async def test_show_card_limits(signup):
     c, me = await signup("Asha Rao")
     tok = me["connect"]["token"]
@@ -44,7 +63,7 @@ async def test_shortlist_with_own_page(signup):
     )
     ap = next(a for a in (await c.get("/api/approvals")).json() if a["id"] == res["approval_id"])
     card = ap["payload"]["card"]
-    assert (await c.get(f"/cards/{card}")).text == "<p>compare</p>"
+    assert (await c.get(f"/cards/{card}")).text.endswith("<p>compare</p>")
     assert [x["approval_id"] for x in (await c.get("/api/cards")).json()] == [res["approval_id"]]
 
 

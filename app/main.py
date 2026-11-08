@@ -6,10 +6,12 @@ import contextlib
 import csv
 import functools
 import hashlib
+import html as html_lib
 import io
 import ipaddress
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -230,12 +232,13 @@ def _agent_active(a: dict) -> bool:
 
 
 def _agent_online(a: dict) -> bool:
-    """Is their agent there right now? A day pass is while the pass runs; a Live
+    """Is their agent there right now? A day pass is while the pass runs, once
+    it has run or called a tool (before that it's still starting); a Live
     stand-in while its Switch socket is up; an agent they connect while its
     watcher polls (or it is mid-run, or calling Hallway's tools)."""
     if a["mode"] == "daypass":
         p = hallway.day_pass(a)
-        return bool(p and p["status"] == "active")
+        return bool(p and p["status"] == "active" and (p["runs"] or a.get("agent_seen_at")))
     if a["mode"] == "live":
         return a["id"] in hallway.presence.connected
     quiet = time.time() - (a.get("agent_seen_at") or 0)
@@ -661,6 +664,7 @@ class Register(BaseModel):
     autonomy: dict = {}
     mode: str = "connect"
     live_agent_name: str | None = None
+    lobby_agent: bool = False  # set with the row, so a day pass's first run already sees it
 
 
 @app.post("/api/register")
@@ -691,6 +695,7 @@ async def register(body: Register, request: Request, response: Response, hw_sess
                 autonomy=body.autonomy,
                 mode=body.mode,
                 live_agent_name=body.live_agent_name,
+                lobby_agent=body.lobby_agent and body.mode != "live",
                 is_persona=persona,
                 onboarding_key=_pre_key(hw_session),
             )
@@ -719,8 +724,9 @@ class UpdateMe(BaseModel):
 
 @app.put("/api/me")
 async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)) -> dict:
+    before = _me(hw_session)
     a = hallway.update_settings(
-        _me(hw_session),
+        before,
         profile=body.profile,
         contact=body.contact,
         autonomy=body.autonomy,
@@ -728,6 +734,10 @@ async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)) -> di
         web_lookup=body.web_lookup,
         lobby_agent=body.lobby_agent,
     )
+    if body.lobby_agent and not before["lobby_agent"]:
+        hallway.lobby_opened(a)
+    elif body.lobby_agent is False and before["lobby_agent"]:
+        hallway.lobby_closed(a)
     return _me_view(a)
 
 
@@ -950,6 +960,15 @@ async def cards(hw_session: str | None = Cookie(None)) -> list[dict]:
     )
 
 
+# Agents rarely write a doctype or a background. Without the doctype a card is in
+# quirks mode, where body.scrollHeight is the frame's 360 px, so it never shrinks.
+# A card with its own dark-mode rules also gets a matching background, or its light
+# text lands on the frame's white; one without them stays light, as written.
+CARD_HEAD = '<!doctype html><meta charset="utf-8">'
+CARD_DARK_RULES = re.compile(r"prefers-color-scheme\s*:\s*dark", re.I)
+CARD_DARK = '<meta name="color-scheme" content="light dark"><style>html{background:Canvas;color:CanvasText}</style>'
+
+
 @app.get("/cards/{card_id}")
 async def card(card_id: str, hw_session: str | None = Cookie(None)) -> HTMLResponse:
     """One agent-made card, for the app's sandboxed iframe: only to its owner,
@@ -958,8 +977,11 @@ async def card(card_id: str, hw_session: str | None = Cookie(None)) -> HTMLRespo
     row = hallway.store.one("SELECT html FROM cards WHERE id = ? AND attendee_id = ?", card_id, a["id"])
     if not row:
         raise HTTPException(404, "No such card.")
+    html = row["html"]
+    if html.lstrip()[:9].lower() != "<!doctype":
+        html = CARD_HEAD + (CARD_DARK if CARD_DARK_RULES.search(html) else "") + html
     return HTMLResponse(
-        row["html"],
+        html,
         headers={
             "content-security-policy": security.CARD_CSP,
             "x-frame-options": "SAMEORIGIN",
@@ -1505,14 +1527,16 @@ def _index_html() -> str:
     """index.html with ?v=<content hash> on the app's script and stylesheet. A
     CDN may keep /static/app.js for hours whatever Cache-Control says (Cloudflare
     did); a new URL per deploy means visitors get the new app at once."""
-    html = (STATIC / "index.html").read_text()
+    # Attribute-escaped: the URL comes from config, and a stray quote would break the page head.
+    url = html_lib.escape(settings.public_url, quote=True)
+    html = (STATIC / "index.html").read_text().replace("__HALLWAY_URL__", url)
     for name in VERSIONED:
         v = hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:12]
         html = html.replace(f'"/static/{name}"', f'"/static/{name}?v={v}"')
     return html
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])  # HEAD: link previewers and uptime checks
 async def index() -> HTMLResponse:
     return HTMLResponse(_index_html())
 

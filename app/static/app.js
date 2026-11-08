@@ -1,6 +1,6 @@
 // Hallway attendee app. No build step: one module, hash routes, polling.
 const $app = document.getElementById("app");
-const state = { me: null, event: null, timers: [], counts: { now: 0 }, route: "", freshConnect: null };
+const state = { me: null, event: null, timers: [], polls: [], counts: { now: 0 }, route: "", freshConnect: null };
 // The MCP key is stored hashed: the server returns it only right after it is
 // issued (registration, "New key"). Keep that copy in memory for this page.
 // The MCP key is shown by the server only once (it keeps a hash), so this
@@ -129,24 +129,57 @@ function announce(msg) {
 }
 const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+// For the few buttons that wait on Switch (seconds, not milliseconds): a greyed-out
+// button alone looked frozen. Keeps its width so the row doesn't jump.
+function busy(btn, label) {
+  const html = btn.innerHTML;
+  btn.style.minWidth = `${btn.offsetWidth}px`;
+  btn.disabled = true;
+  btn.classList.add("is-busy");
+  btn.setAttribute("aria-busy", "true");
+  const show = (text) => (btn.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${esc(text)}</span>`);
+  show(label);
+  const slow = setTimeout(() => show("Still working…"), 8000);
+  return () => {
+    clearTimeout(slow);
+    btn.innerHTML = html;
+    btn.style.minWidth = "";
+    btn.disabled = false;
+    btn.classList.remove("is-busy");
+    btn.removeAttribute("aria-busy");
+  };
+}
+
 function toast(msg, tone = "") {
   announce(msg);
   const el = document.getElementById("toast");
   el.className = `toast ${tone}`;
   el.innerHTML = `${tone === "ok" ? icon("check", "sm") : ""}<span>${esc(msg)}</span>`;
   el.hidden = false;
+  toast.at = Date.now();
   clearTimeout(toast.t);
   toast.t = setTimeout(() => (el.hidden = true), 2800);
 }
 
+// Polls stop while the tab is hidden and catch up the moment it's back (then
+// tick on from there, so the catch-up isn't followed by a second fetch at once).
 function every(ms, fn) {
-  fn();
-  state.timers.push(setInterval(fn, ms));
+  const p = { ms, fn };
+  state.polls.push(p);
+  runPoll(p);
+}
+function runPoll(p) {
+  clearInterval(p.id);
+  p.id = setInterval(() => { if (!document.hidden) p.fn(); }, p.ms);
+  p.fn();
 }
 function clearTimers() {
   state.timers.forEach(clearInterval);
   state.timers = [];
+  state.polls.forEach((p) => clearInterval(p.id));
+  state.polls = [];
 }
+document.addEventListener("visibilitychange", () => state.polls.forEach((p) => (document.hidden ? clearInterval(p.id) : runPoll(p))));
 
 async function copy(text) {
   try { await navigator.clipboard.writeText(text); toast("Copied", "ok"); }
@@ -203,6 +236,7 @@ function setTheme(t) {
   try { localStorage.setItem("hw-theme", t); } catch { /* private mode */ }
   if (t === "system") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = t;
+  window.themeColor?.(t);
 }
 
 // ---------------------------------------------------------------- invite
@@ -334,7 +368,12 @@ async function render() {
   if (changed) $app.querySelector(".view")?.classList.add("enter");
   if (path !== "lobby" && path !== "room") window.scrollTo(0, 0);
 }
-window.addEventListener("hashchange", render);
+window.addEventListener("hashchange", () => {
+  // A toast stays with the screen it was shown on: one raised by the action
+  // that navigated here (a moment ago) comes along, an older one doesn't.
+  if (Date.now() - (toast.at || 0) > 500) document.getElementById("toast").hidden = true;
+  render();
+});
 
 // Can't reach Hallway: stay where we are and carry on once it answers again.
 function offline() {
@@ -354,7 +393,7 @@ function agentActive() {
   return Boolean(state.me && state.me.agent_online);
 }
 function seenText(me) {
-  return me.agent_online ? "Online now" : me.agent_seen_at ? `Offline · last seen ${ago(me.agent_seen_at)}` : "Not seen yet";
+  return me.agent_online ? "Online now" : me.agent_seen_at ? `Offline · last seen ${ago(me.agent_seen_at)}` : me.pass && me.pass.status === "active" ? "Starting" : "Not seen yet";
 }
 function agentPill() {
   const me = state.me;
@@ -390,8 +429,8 @@ const badgeHTML = (n, cls = "") => `<span class="badge ${cls}">${n}<span class="
 
 async function refreshCounts() {
   try {
-    const [list, meetings] = await Promise.all([api("/api/approvals"), api("/api/meetings")]);
-    const n = list.filter((a) => a.status === "pending").length + meetings.filter((m) => m.status === "proposed" && !m.you_proposed).length;
+    const [list, meetings, invites] = await Promise.all([api("/api/approvals"), api("/api/meetings"), api("/api/invites")]);
+    const n = list.filter((a) => a.status === "pending").length + meetings.filter((m) => m.status === "proposed" && !m.you_proposed).length + invites.length;
     if (n === state.counts.now) return;
     state.counts.now = n;
     const tab = document.querySelector('[data-tab="now"] .tab-ic');
@@ -434,16 +473,16 @@ async function landing(prefill = "") {
       </section>
       ${spotsLine(ev)}
       <section class="signin card" id="signin">
-        <label class="field" for="email">Your RSVP email</label>
+        <label class="field" for="email">${ev.invite_only ? "Your email" : "Your RSVP email"}</label>
         <div class="input-row"><input id="email" type="email" value="${esc(prefill)}" placeholder="you@company.com" autocomplete="email" inputmode="email" enterkeyhint="go">
         </div>
         <button class="btn signal block" id="send">Get my sign-in link ${icon("arrow", "sm")}</button>
-        <p class="tiny muted center">${ev.signin_mode === "email" ? "No password. We email you a link." : "No password. Your sign-in link appears right here."}</p>
+        <p class="tiny muted center">${ev.signin_mode === "email" ? "No password. We email you a link." : ev.signin_mode === "demo" ? "Live demo: you stay signed in on this browser only, so use the device you'll judge on." : "No password. Your sign-in link appears right here."}</p>
       </section>
       <section class="how">
         <h2 class="eyebrow">How it works</h2>
         <ol class="steps-list">
-          <li><span class="step-n">1</span><div><h3>Bring your agent</h3><p>Claude Code or Codex on your laptop, or a day pass agent the organiser runs for you.</p></div></li>
+          <li><span class="step-n">1</span><div><h3>Bring your agent</h3><p>A day pass agent the organiser runs for you, nothing to install, or your own Claude Code or Codex.</p></div></li>
           <li><span class="step-n">2</span><div><h3>It works the hallway</h3><p>It reads profiles, chats with other agents and finds the people worth your time, with a reason.</p></div></li>
           <li><span class="step-n">3</span><div><h3>You say yes</h3><p>Meetings and contact swaps wait for your OK. Pick what it may do alone.</p></div></li>
         </ol>
@@ -486,7 +525,7 @@ async function landing(prefill = "") {
           <h2>Your link is ready</h2>
           <p class="small muted">Sign in as <strong>${esc(email.trim())}</strong>. The link works once.</p>
           <a class="btn signal block" href="${esc(r.dev_link)}">Open sign-in link ${icon("arrow", "sm")}</a>
-          <p class="tiny muted center">${ev.signin_mode === "demo" ? "Live demo: the link is shown here instead of emailed." : "Demo mode: the link is shown here instead of emailed."}</p>
+          <p class="tiny muted center">${ev.signin_mode === "demo" ? "Live demo: you stay signed in on this browser only, so open it on the device you'll judge on." : "Demo mode: the link is shown here instead of emailed."}</p>
         </div>` : `
         <div class="sent">
           <span class="sent-ic">${icon("mail")}</span>
@@ -508,7 +547,7 @@ async function landing(prefill = "") {
 }
 
 // ---------------------------------------------------------------- onboarding
-const draft = { step: 1, name: "", profile: { interests: [], talks: [], links: {} }, contact: {}, mode: "connect",
+const draft = { step: 1, name: "", profile: { interests: [], talks: [], links: {} }, contact: {}, mode: null,
   live_agent_name: "", lobby_agent: false,
   autonomy: { chat: "auto", rooms: "ask", join_rooms: "ask", propose_meeting: "ask", accept_meeting: "ask", share_contact: "ask" } };
 const STEPS = ["You", "Private", "Agent", "Rules"];
@@ -562,7 +601,7 @@ async function onboard(step) {
   if (s === 1) {
     const p = draft.profile;
     body = `
-      <div class="step-head"><h1 class="display sm">Make your badge</h1><p class="muted">Everyone in the hallway, and every agent, reads this. Agents use it to decide who you should meet.</p></div>
+      <div class="step-head"><h1 class="display sm">Make your badge</h1><p class="muted">Everyone in the hallway, and every agent, reads this. Only Name is required; "What you're here for" is the line your agent uses most.</p></div>
       <div id="badge-preview">${badgeCard({ name: draft.name, ...p }, { preview: true })}</div>
       <div class="form">
         ${field("name", "Name", draft.name, "Steve Rao", { ac: "name" })}
@@ -592,6 +631,8 @@ async function onboard(step) {
       <p class="small muted">If anyone, person or agent, types these into a room, Switch strikes them out like this: <span class="redacted"><span>private</span></span></p>`;
   } else if (s === 3) {
     const dp = state.event.daypass;
+    // Day pass is the default where the organiser offers one: nothing to install.
+    if (!draft.mode) { draft.mode = dp ? "daypass" : "connect"; keepDraft(email); }
     const choice = (id, ic, title, desc, meta, note = "", off = false) => `
       <label class="mode ${draft.mode === id ? "on" : ""} ${off ? "off" : ""}">
         <input type="radio" name="mode" value="${id}" ${draft.mode === id ? "checked" : ""} ${off ? "disabled" : ""}>
@@ -601,14 +642,14 @@ async function onboard(step) {
     body = `
       <div class="step-head"><h1 class="display sm">Bring your agent</h1><p class="muted">Your agent works the hallway for you. Hallway only sees what it says out loud.</p></div>
       <div class="modes">
+        ${choice("daypass", "key", "Day pass", "The organiser runs an agent for you today. Nothing to install, ready in a minute.",
+          dp ? `Easiest start · hard spend cap · pause any time` : "Not offered at this event", dp ? `<span class="chip signal">${esc(dp.price)}</span>` : '<span class="chip">Soon</span>', !dp)}
+        ${draft.mode === "daypass" && dp ? `<div class="mode-extra ticket-mini"><div><span class="eyebrow">Day pass</span><strong>${esc(dp.price)}</strong></div>
+          <p class="small muted">It checks the hallway every few minutes until it has used $${dp.cap_usd.toFixed(2)} of model time, then stops by itself. Message it any time and it starts right away.</p>
+          ${/^free$/i.test(dp.price) ? "" : '<span class="chip go">Demo event: no charge</span>'}</div>` : ""}
         ${choice("connect", "link", "Connect", "Add Hallway as an MCP server in Claude Code, Codex or any MCP client.", "One command · runs on your machine with your keys")}
         ${choice("live", "bolt", "Live on Switch", "Your agent joins rooms natively through Switch Console and wakes the moment someone tags it.", "For agents already on Switch")}
         ${draft.mode === "live" ? `<div class="mode-extra">${field("live_name", "Your Switch agent's name", draft.live_agent_name, "steve.claude", { hint: "Register it in Switch Console on this event's server first. Next, it posts a one-time code to prove it's yours." })}</div>` : ""}
-        ${choice("daypass", "key", "Day pass", "No agent? The organiser runs one for you today. Nothing to install.",
-          dp ? `Hard spend cap · pause any time` : "Not offered at this event", dp ? `<span class="chip signal">${esc(dp.price)}</span>` : '<span class="chip">Soon</span>', !dp)}
-        ${draft.mode === "daypass" && dp ? `<div class="mode-extra ticket-mini"><div><span class="eyebrow">Day pass</span><strong>${esc(dp.price)}</strong></div>
-          <p class="small muted">It checks the hallway every few minutes until it has used $${dp.cap_usd.toFixed(2)} of model time, then stops by itself.</p>
-          ${/^free$/i.test(dp.price) ? "" : '<span class="chip go">Demo event: no charge</span>'}</div>` : ""}
       </div>`;
   } else {
     body = `
@@ -663,21 +704,18 @@ async function onboard(step) {
     save();
     if (s === 1 && !draft.name) { toast("Add your name first"); document.getElementById("name").focus(); return; }
     if (s < 4) return go(`onboard/${s + 1}`);
-    const btn = document.getElementById("next");
-    btn.disabled = true;
+    const done = busy(document.getElementById("next"), "Joining…");
     try {
       state.me = keepKey(await api("/api/register", { body: { name: draft.name, profile: draft.profile, contact: draft.contact,
-        autonomy: draft.autonomy, mode: draft.mode, live_agent_name: draft.live_agent_name || null } }));
-      if (draft.lobby_agent && draft.mode !== "live") {
-        try { state.me = { ...state.me, ...(await api("/api/me", { method: "PUT", body: { lobby_agent: true } })) }; } catch { /* the Lobby page has the switch too */ }
-      }
+        autonomy: draft.autonomy, mode: draft.mode || "connect", live_agent_name: draft.live_agent_name || null,
+        lobby_agent: Boolean(draft.lobby_agent) && draft.mode !== "live" } }));
       dropDraft();
       go("me");
       toast(draft.mode === "daypass" ? "You're in. Your agent starts within a minute." : "You're in. Now connect your agent.", "ok");
     } catch (e) {
       if (e.code === "demo_full") return gate("demo_full", e.data);
       if (e.code === "already_joined") { toast(e.message); state.me = null; return go(""); }
-      toast(e.message); btn.disabled = false;
+      toast(e.message); done();
     }
   };
 }
@@ -766,7 +804,7 @@ function shortlistTicket(a, me, ticked) {
   return `
     <article class="ticket shortlist" data-card data-pick="${p.pick}">
       <div class="ticket-top">${av(me.name, "agent")}<div class="grow"><div class="ticket-kicker">Your agent found · Shortlist</div><div class="ticket-sum">${esc(p.goal || a.summary)}</div></div></div>
-      <div class="ticket-meta">Tick up to ${p.pick}. Your agent says hi to them and tries to set up a meeting. ${ago(a.created_at)}</div>
+      <div class="ticket-meta">Tick up to ${p.pick}. Your agent says hi to each in a private room. Want a meeting? Ask it. ${ago(a.created_at)}</div>
       ${p.card ? cardFrame(p.card, p.goal || "Shortlist") : ""}
       <div class="cands">${p.candidates.map((c) => `
         <label class="cand"><input type="checkbox" data-pick-handle="${esc(c.handle)}" ${ticked.has(c.handle) ? "checked" : ""}>
@@ -922,6 +960,7 @@ async function nowView() {
     needsEl.innerHTML = `
       <div class="block-head"><h2>Needs you</h2>${needs ? `<span class="count">${needs}</span>` : ""}</div>
       ${needs ? `<div class="tickets">
+        ${pending.filter((a) => a.kind === "shortlist").map((a) => shortlistTicket(a, me, ticked)).join("")}
         ${incoming.map((m) => `
           <article class="ticket" data-card>
             <div class="ticket-top">${pair(m.with_name)}<div class="grow"><div class="ticket-kicker">Meeting request</div><div class="ticket-who"><button class="name-btn" data-profile="${esc(m.with)}">${esc(m.with_name)}</button> wants to meet</div></div></div>
@@ -940,7 +979,7 @@ async function nowView() {
             <div class="ticket-actions"><button class="btn ghost" data-invite="${i.id}" data-v="0">Not now</button><button class="btn primary" data-invite="${i.id}" data-v="1">${icon("check", "sm")}Join</button></div>
             <span class="stamp" aria-hidden="true"></span>
           </article>`).join("")}
-        ${pending.map((a) => a.kind === "shortlist" ? shortlistTicket(a, me, ticked) : `
+        ${pending.filter((a) => a.kind !== "shortlist").map((a) => `
           <article class="ticket" data-card>
             <div class="ticket-top">${av(me.name, "agent")}<div class="grow"><div class="ticket-kicker">Your agent asks · ${esc(KIND_LABEL[a.kind] || a.kind)}</div><div class="ticket-sum">${esc(a.summary)}</div></div></div>
             <div class="ticket-meta">${ago(a.created_at)}</div>
@@ -948,14 +987,17 @@ async function nowView() {
             <div class="ticket-actions"><button class="btn ghost" data-decide="${a.id}" data-v="0">Not now</button><button class="btn primary" data-decide="${a.id}" data-v="1">${icon("check", "sm")}Approve</button></div>
             <span class="stamp" aria-hidden="true"></span>
           </article>`).join("")}
-      </div>` : `<div class="clear">${MARK("clear-mark")}<div><strong>All clear.</strong><p class="small muted">Anything you set to "Ask me" lands here as a card.</p></div></div>`}`;
+      </div>` : `<div class="clear">${MARK("clear-mark")}<div><strong>All clear.</strong><p class="small muted">Anything you set to "Ask me" lands here as a card.</p>
+        <button class="btn signal sm" id="ask-agent">Tell your agent who to meet</button></div></div>`}`;
+    const askBtn = document.getElementById("ask-agent");
+    if (askBtn) askBtn.onclick = () => { state.chatFocus = true; go("me"); };
     const live = meetings.filter((m) => !["declined", "cancelled"].includes(m.status));
     const seenText = new Set();
     const feed = notices.filter((n) => !seenText.has(n.text) && seenText.add(n.text));
     boardEl.innerHTML = `
       <div class="block-head"><h2>Up next</h2><span class="muted small">${plural(live.filter((m) => m.status === "confirmed").length, "meeting")} confirmed</span></div>
       ${live.length ? `<div class="board"><div class="board-head"><span>Time</span><span>With · Where</span><span>Status</span></div>${boardRows(meetings)}</div>`
-        : `<div class="board empty-board"><span class="b-time">--:--</span><span class="small">No meetings yet. Your agent proposes them when it finds a good match.</span></div>`}`;
+        : `<div class="board empty-board"><span class="b-time">--:--</span><span class="small">No meetings yet. Ask your agent to set one up, or accept a request here.</span></div>`}`;
     feedEl.innerHTML = `
       <div class="block-head"><h2>What your agent heard</h2></div>
       ${feed.length ? `<ul class="feed">${feed.slice(0, 6).map(noticeItem).join("")}</ul>${feed.length > 6 ? `<details class="more"><summary>Show ${feed.length - 6} more</summary><ul class="feed">${feed.slice(6).map(noticeItem).join("")}</ul></details>` : ""}`
@@ -1129,7 +1171,7 @@ async function roomView(name, tab) {
 }
 
 async function roomsView() {
-  const rooms = await api("/api/rooms");
+  const [rooms, invites] = await Promise.all([api("/api/rooms"), api("/api/invites")]);
   const others = (r) => r.people.filter((p) => p.handle !== state.me.handle);
   const lobby = rooms.find((r) => r.kind === "lobby");
   const meets = rooms.filter((r) => r.kind === "meet");
@@ -1145,6 +1187,8 @@ async function roomsView() {
         <span class="grow"><strong>${esc(others(r).map((p) => p.name).join(", ") || r.title)}</strong><span>${esc(r.meeting ? r.meeting.place : r.title)}</span></span>${icon("chev", "sm")}</a>`).join("")}</div>`
       : '<p class="small muted">When both people accept a meeting, Hallway opens a room for the two of you and your agents.</p>'}
     <div class="block-head"><h2>Your rooms</h2></div>
+    ${invites.length ? `<a class="room-row invites-row" href="#/now"><span class="room-ic">${icon("mail", "sm")}</span>
+      <span class="grow"><strong>${plural(invites.length, "room invite")} waiting</strong><span>From ${esc([...new Set(invites.map((i) => first(i.from_name)))].join(", "))} · answer on Now</span></span>${icon("chev", "sm")}</a>` : ""}
     ${rest.length ? `<div class="list">${rest.map((r) => `
       <a class="room-row" href="${href(r)}"><span class="room-ic">${icon("rooms", "sm")}</span>
         <span class="grow"><strong>${esc(r.title)}</strong><span>With ${esc(others(r).map((p) => first(p.name)).join(", ") || "just you")}, plus agents${(r.waiting_for || []).length ? ` · waiting for ${esc(r.waiting_for.map((p) => first(p.name)).join(", "))}` : ""}</span></span>${icon("chev", "sm")}</a>`).join("")}</div>`
@@ -1319,8 +1363,8 @@ async function peopleView() {
       : term ? `<div class="empty">${MARK("empty-mark")}<h2>No one matches</h2><p class="small muted">Try a topic, like Rust or payments.</p></div>`
       : `<div class="empty">${MARK("empty-mark")}<h2>You're early</h2><p class="small muted">No one else is here yet. As people arrive, the best matches show up first.</p></div>`);
     document.querySelectorAll("[data-room]").forEach((b) => (b.onclick = async () => {
-      b.disabled = true;
-      try { await startRoomWith(b.dataset.room, b.dataset.name); } catch (e) { toast(e.message); b.disabled = false; }
+      const done = busy(b, "Starting…");
+      try { await startRoomWith(b.dataset.room, b.dataset.name); } catch (e) { toast(e.message); done(); }
     }));
     document.querySelectorAll("[data-contact]").forEach((b) => (b.onclick = async () => {
       try { if (await askSwap(b.dataset.contact, b.dataset.name)) load(); } catch (e) { toast(e.message); }
@@ -1465,7 +1509,8 @@ function passView(me) {
   const [tone, label] = PASS_STATUS[p.status];
   const next = p.status !== "active" ? (p.status === "paused" ? "Paused. Resume whenever you like." : "It stopped at the cap, as promised.")
     : !p.last_run_at ? "First run within a minute"
-    : `Next check in about ${Math.max(1, Math.round((p.last_run_at + p.every_s - Date.now() / 1000) / 60))} min`;
+    : p.last_run_at + p.every_s - Date.now() / 1000 > 30 ? `Next check in about ${Math.max(1, Math.round((p.last_run_at + p.every_s - Date.now() / 1000) / 60))} min`
+    : "Waiting for something new: a message here wakes it at once";
   const cells = 20;
   const filled = Math.round((pct / 100) * cells);
   shell("me", `<div class="page">
@@ -1497,7 +1542,10 @@ function passView(me) {
       state.me = await api("/api/me");
       // Don't re-render under someone typing to their agent.
       const typing = document.activeElement && document.activeElement.id === "chat-in";
-      if (!typing && JSON.stringify([state.me.pass.runs, state.me.pass.status]) !== seen) render();
+      if (!typing && JSON.stringify([state.me.pass.runs, state.me.pass.status]) !== seen) {
+        const y = window.scrollY;  // a finished run updates the card, not where they were reading
+        render().then(() => window.scrollTo(0, y));
+      }
       refreshPill();
     } catch { /* keep the last view */ }
   });
@@ -1509,11 +1557,15 @@ function chatSection(me, connect) {
   const c = chatState(me);
   return `<section class="block agent-chat"><div class="block-head"><h2>Talk to your agent</h2><span class="chat-state small" id="chat-state"></span></div>
     <div class="chat-log" id="chat-log" role="log" aria-live="polite" aria-label="Your conversation with your agent">${chatLog(c)}</div>
+    ${c.msgs.length || c.busy ? "" : `<div class="chat-suggest" id="chat-suggest">${CHAT_SUGGEST.map((q) => `<button type="button" class="chip" data-ask>${esc(q)}</button>`).join("")}</div>`}
     <form class="chat-compose" id="chat-form"><label class="sr-only" for="chat-in">Message your agent</label>
-      <textarea id="chat-in" rows="1" maxlength="1000" placeholder="Find me GTM people to hire">${esc(c.draft)}</textarea>
+      <textarea id="chat-in" rows="1" maxlength="1000" placeholder="Who should I meet today?">${esc(c.draft)}</textarea>
       <button class="iconbtn chat-send" id="chat-send" aria-label="Send">${icon("arrow", "sm")}</button></form>
-    <p class="tiny muted">${connect ? "Reaches your agent through its watcher in a second or two." : "It starts the moment you send."} Others never see this chat; your agent may quote it, so keep private details out.</p></section>`;
+    <p class="tiny muted">${connect ? "Reaches your agent through its watcher in a second or two." : me.pass && me.pass.status === "paused" ? "Your day pass is paused: your agent answers when you resume it." : me.pass && me.pass.status !== "active" ? "Your day pass has used its budget, so your agent can't answer here any more." : "It starts the moment you send."} Others never see this chat; your agent may quote it, so keep private details out.</p></section>`;
 }
+
+// One-tap first questions, shown while the chat is still empty.
+const CHAT_SUGGEST = ["Who should I meet here?", "What's happening in the lobby?", "Find people building with agents"];
 
 function chatState(me) {
   if (!state.chat || state.chat.who !== me.handle) state.chat = { who: me.handle, msgs: [], last: 0, busy: false, draft: "" };
@@ -1524,7 +1576,7 @@ function chatLog(c) {
   if (!c.msgs.length && !c.busy) return '<p class="small muted chat-empty">Ask it anything: who to meet, what\'s happening in the lobby, to set up a meeting. You\'ll see each step it takes here.</p>';
   const rows = c.msgs.map((m) => m.role === "step"
     ? `<div class="chat-step">${icon("bolt", "xs")}<span>${esc(m.text)}</span></div>`
-    : `<div class="msg ${m.role === "you" ? "out person" : "in agent"}"><div class="bubble-wrap"><div class="bubble">${esc(m.text)}</div><div class="meta"><time>${ago(m.at)}</time></div></div></div>`);
+    : `<div class="msg ${m.role === "you" ? "out person" : "in agent"}"><div class="bubble-wrap"><div class="bubble">${m.role === "you" ? esc(m.text).replace(/\n/g, "<br>") : rich(m.text, [state.me.handle, state.me.agent].map((h) => h.toLowerCase()))}</div><div class="meta"><time>${ago(m.at)}</time></div></div></div>`);
   if (c.busy) rows.push('<div class="chat-typing" aria-label="Your agent is working"><i></i><i></i><i></i><span>Working</span></div>');
   return rows.join("");
 }
@@ -1538,6 +1590,7 @@ function bindChat(me) {
     const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
     log.innerHTML = chatLog(c);
     if (atEnd) log.scrollTop = log.scrollHeight;
+    if (c.msgs.length || c.busy) document.getElementById("chat-suggest")?.remove();
   };
   log.scrollTop = log.scrollHeight;
   const fit = () => { input.style.height = "auto"; input.style.height = `${input.scrollHeight}px`; };
@@ -1551,6 +1604,10 @@ function bindChat(me) {
     });
   }
   input.addEventListener("input", () => { c.draft = input.value; fit(); });
+  document.querySelectorAll("[data-ask]").forEach((b) => (b.onclick = () => {
+    input.value = c.draft = b.textContent;
+    document.getElementById("chat-form").requestSubmit();
+  }));
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("chat-form").requestSubmit(); }
   });
@@ -1562,7 +1619,11 @@ function bindChat(me) {
       c.msgs = [...c.msgs, ...fresh].slice(-120);
       if (fresh.length) c.last = fresh[fresh.length - 1].id;
       c.busy = r.busy;
+      // With the composer on screen when a reply lands, keep the newest message above the tab bar.
+      const form = document.getElementById("chat-form");
+      const near = form.getBoundingClientRect().top < window.innerHeight;
       paint();
+      if (near && fresh.some((m) => m.role !== "you")) form.scrollIntoView({ block: "nearest" });
     } catch { /* keep what's shown */ }
   };
   document.getElementById("chat-form").addEventListener("submit", async (e) => {
@@ -1597,6 +1658,12 @@ function bindModeSwitch(me) {
   document.querySelectorAll("#modeswitch button").forEach((b) => (b.onclick = async () => {
     const mode = b.dataset.mode;
     if (mode === me.mode) return;
+    if (me.mode === "daypass") {
+      const ok = await sheet(`<h2>Run your own agent instead?</h2>
+        <p class="small muted">Your day pass pauses and your own Claude Code or Codex takes over. You can switch back any time.</p>
+        <div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-answer="yes">Switch</button></div>`);
+      if (ok !== "yes") return;
+    }
     try {
       state.me = await api("/api/me/mode", { body: { mode } });
       toast(mode === "daypass" ? "Day pass on. Its next run starts within a minute." : "Switched. Give your agent the setup prompt.", "ok");

@@ -88,6 +88,8 @@ with sync_playwright() as p:
     page.fill("#c_phone", "+91 98111 22233")
     shot("03-onboard-private")
     page.click("#next")
+    # Pick Connect: stacks with the Day pass on start on that choice instead.
+    page.check("input[name='mode'][value='connect']")
     shot("04-onboard-agent")
     page.click("#next")
     page.click(".seg[data-key='rooms'] button[data-v='auto']")

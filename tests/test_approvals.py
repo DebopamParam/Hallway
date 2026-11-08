@@ -1,6 +1,6 @@
 """Approvals, rooms, meetings and the contact swap (web API + MCP together)."""
 
-from .conftest import mcp_call
+from .conftest import mcp_call, pass_privacy_check
 
 ASHA_CONTACT = {"phone": "+91 98111 22233", "email": "asha.private@juspay.in"}
 BO_CONTACT = {"phone": "+91 90000 11111", "linkedin": "linkedin.com/in/bo_secret_tg"}
@@ -261,3 +261,44 @@ async def test_asking_twice_for_the_same_thing_makes_one_card(signup, client):
     assert len(await pending(c)) == 1
     other = await mcp_call(client, tok, "propose_meeting", {**args, "time": "15:00"})
     assert other["approval_id"] != first["approval_id"] and len(await pending(c)) == 2
+
+
+async def test_chat_steps_say_when_an_action_is_waiting_or_refused(signup, client, hallway):
+    _, asha = await signup("Asha Rao", autonomy={"rooms": "ask"})
+    await signup("Bo Chen")
+    ta = asha["connect"]["token"]
+
+    assert (await mcp_call(client, ta, "create_room", {"title": "Payments", "invite": ["bo"]}))[
+        "status"
+    ] == "pending_approval"
+    meet = {"with_who": "asha", "time": "13:00", "place": "Lunch hall", "why": "Catch up"}
+    assert "error" in await mcp_call(client, ta, "propose_meeting", meet)
+    await mcp_call(client, ta, "my_inbox")
+
+    steps = [s["text"] for s in hallway.store.all("SELECT text FROM agent_chat WHERE role = 'step' ORDER BY rowid")]
+    assert steps[0] == "Opening a room with @bo"
+    assert steps[1] == "↳ waiting for your OK on Now"
+    assert steps[2:4] == ["Proposing a meeting with @asha at 13:00", "↳ didn't go through: You can't meet yourself."]
+    assert steps[4:] == ["Checking what's new"]  # a call that simply worked gets no follow-up
+
+
+async def test_a_refused_step_reads_to_the_person_not_the_agent(signup, client, hallway):
+    _, asha = await signup("Asha Rao", lobby=False)
+    ta = asha["connect"]["token"]
+    assert "error" in await mcp_call(client, ta, "search_people", {"query": "payments"})
+    assert "error" in await mcp_call(client, ta, "read_room", {"room": "no-such-room"})
+
+    steps = [s["text"] for s in hallway.store.all("SELECT text FROM agent_chat WHERE role = 'step' ORDER BY rowid")]
+    assert steps[1] == "↳ didn't go through: your agent isn't in the lobby (Lobby: Let my agent chat here)"
+    assert steps[3].startswith("↳ didn't go through: ") and ". " not in steps[3]
+
+
+async def test_a_held_lobby_post_says_it_wasnt_posted(signup, client, hallway):
+    _, asha = await signup("Asha Rao", lobby=True)
+    await pass_privacy_check(client, asha["connect"]["token"])
+    res = await mcp_call(client, asha["connect"]["token"], "post", {"room": "lobby", "text": "Asha " * 200})
+    assert res["status"] == "held"
+
+    [step] = hallway.store.all("SELECT text FROM agent_chat WHERE role = 'step' AND text LIKE '↳%'")
+    assert step["text"].startswith("↳ held back, not posted: lobby posts are a short intro")
+    assert "Not posted" not in step["text"] and "create_room" not in step["text"]

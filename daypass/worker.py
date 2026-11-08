@@ -90,7 +90,8 @@ Rules:
 - Meetings are {first}'s call. Don't propose one, or float times to other agents, until {first} asks you
   to set it up in the app; if someone looks worth meeting, tell {first} in your reply instead. When
   {first} asks, propose_meeting with a concrete reason.
-- If a tool says something is waiting for approval, that's fine. Move on.
+- If a tool says something is waiting for approval, that's fine. Move on, and say in your reply that it's
+  waiting for {first}'s OK on their Now tab.
 - If {first} asks for a kind of person ("GTM people to hire"), use research_people, then
   propose_shortlist with the best candidates. When my_inbox shows {first}'s picks, say hi to each
   pick (a meeting only if {first} asks); contact nobody they didn't pick.
@@ -109,8 +110,8 @@ search_people for who {first} should meet and reach out to the best one or two i
 (create_room), not in the lobby. Don't propose meetings: tell {first} who looks worth meeting. Finish with one or two sentences to {first} on what you did."""
 
 PRIVATE_FIRST_RUN = """You just arrived. Call whoami, then start_privacy_check and answer it. {first} hasn't
-let you into the lobby yet (a switch in the app's Lobby), so don't introduce them there. Finish with one sentence to {first}: you're ready, and
-what you can do for them from here."""
+let you into the lobby yet (a switch in the app's Lobby), so don't introduce them there. Finish with one or two sentences to
+{first}: you're ready, and one thing they could ask you, built from what they're here for ("Ask me to find people working on X")."""
 
 CHAT_RUN = """{first} just messaged you in the app:
 {asks}
@@ -131,6 +132,9 @@ happened and what you did."""
 NEXT_RUN = """Do one round in the hallway. If {first} left you a request, start there. Call my_inbox, reply to anything addressed to you or
 {first} that needs an answer (acknowledge the rest), respond to meeting requests, follow up on promising leads. Keep it short.
 Finish with one sentence to {first} on what you did."""
+
+
+FAILED_REPLY = "Something went wrong on my side. Try again in a minute."
 
 
 @dataclass
@@ -154,8 +158,9 @@ def prompts(p: dict) -> tuple[str, str]:
         ""
         if in_lobby
         else f"\n- {first} hasn't let you into the lobby (a switch in the app's Lobby): don't post there, browse"
-        " attendees or reach out to new people (the tools refuse). Work only on what they ask and what's sent to them;"
-        " if they want you to meet people, tell them where the switch is."
+        " attendees or reach out to new people (the tools refuse). Work only on what they ask and what's sent to them."
+        " If they ask you to find, introduce or meet people, that's them letting you in: change_settings(lobby=true),"
+        " tell them you did (the switch in the Lobby turns it off again) and carry on with what they asked."
     )
     system = SYSTEM.format(
         name=p["name"], first=first, here_for=p.get("here_for") or "meeting good people", note=note, lobby=lobby
@@ -224,13 +229,20 @@ def load_providers() -> None:
 
 
 # ---------------------------------------------------------------- engines
-MAX_OUT_TOKENS = 1024  # per request; bounds the worst case PricedModel checks against
+# Per reply, reasoning included. A shortlist with its own html page runs to
+# thousands of tokens, so PricedModel gives each reply half of what the budget
+# has room for, up to MAX_OUT_TOKENS, and refuses only below MIN_OUT_TOKENS. The
+# other half covers a prompt bigger than its estimate (a first prompt with the
+# tool list is about 5000 tokens, so MIN_PROMPT_TOKENS errs above it).
+MAX_OUT_TOKENS = 8192
+MIN_OUT_TOKENS = 1024
+MIN_PROMPT_TOKENS = 8000
 
 
 def priced_model(model, budget: float, price_in: float, price_out: float):
     """Wrap a model PydanticAI can't price so the budget is checked before every
-    request, not after: a request is refused when what's spent plus its worst case
-    (the last prompt grown by a quarter, plus a full reply) would pass the budget."""
+    request, not after: its reply may use half of what's left once what's spent and
+    its estimated prompt (the last one grown by a quarter) are paid for."""
     from pydantic_ai.exceptions import UsageLimitExceeded
     from pydantic_ai.models.wrapper import WrapperModel
 
@@ -239,10 +251,12 @@ def priced_model(model, budget: float, price_in: float, price_out: float):
         last_in = 0
 
         async def request(self, messages, model_settings, params):
-            worst = self.spent + max(self.last_in * 1.25, 4000) * price_in + MAX_OUT_TOKENS * price_out
-            if worst > budget:
+            left = budget - self.spent - max(self.last_in * 1.25, MIN_PROMPT_TOKENS) * price_in
+            # A free output price leaves only the prompt to pay for.
+            room = left / 2 / price_out if price_out else (MAX_OUT_TOKENS if left >= 0 else 0)
+            if room < MIN_OUT_TOKENS:
                 raise UsageLimitExceeded(f"next request could pass the ${budget:.4f} budget (${self.spent:.4f} spent)")
-            settings = {**(model_settings or {}), "max_tokens": MAX_OUT_TOKENS}
+            settings = {**(model_settings or {}), "max_tokens": int(min(room, MAX_OUT_TOKENS))}
             response = await super().request(messages, settings, params)
             self.last_in = response.usage.input_tokens
             self.spent += response.usage.input_tokens * price_in + response.usage.output_tokens * price_out
@@ -275,7 +289,10 @@ async def run_pydantic_ai(p: dict, budget: float, model=None) -> Run:
         summary, ok = (reply.splitlines()[-1] if reply else "(no summary)"), True
     except UsageLimitExceeded as e:
         summary, ok = f"Stopped at its limit: {e}", True
-        reply = "I hit this run's spending limit and stopped. Ask again and I'll pick it up."
+        reply = "I ran out of this round's budget partway through; the steps above are what I got done. Ask again and I'll carry on."
+    except Exception as e:  # its requests were billed all the same, so the pass is charged for them
+        log.exception("run failed for %s", p["handle"])
+        summary, ok, reply = f"{type(e).__name__}: {e}"[:300], False, FAILED_REPLY
     cost = model.spent if PRICE_PER_MTOK else float(usage.cost or 0)
     return Run(cost, usage.tool_calls, summary, ok, reply)
 
@@ -357,7 +374,7 @@ async def run_one(http: httpx.AsyncClient, p: dict, engine: str) -> None:
             0,
             f"{type(e).__name__}: {e}"[:300],
             ok=False,
-            reply="Something went wrong on my side. Try again in a minute.",
+            reply=FAILED_REPLY,
         )
     await say(http, p, text=run.reply, busy=False)  # before the report, which revokes the run token
     r = await http.post(
