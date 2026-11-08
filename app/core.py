@@ -50,6 +50,9 @@ DEFAULT_AUTONOMY = {
 }
 LOCKED_ASK = {"share_contact"}
 STAND_IN_MODES = ("connect", "daypass")
+LOBBY_OPENED_ASK = (
+    "I've let you into the lobby. Introduce me there in one line, then find one or two people worth meeting."
+)
 REGISTERED_GRACE_S = 600  # a finished onboarding cookie can be exchanged for a session this long (main._redeem)
 
 PUBLIC_PROFILE_FIELDS = ("role", "company", "bio", "here_for", "interests", "talks", "links")
@@ -1099,10 +1102,19 @@ class Hallway:
         self.store.notice(
             attendee["id"],
             "chat",
-            f"{first} (in the app): I've let you into the lobby. Introduce me there in one line, then find one or "
-            "two people worth meeting.",
+            f"{first} (in the app): {LOBBY_OPENED_ASK}",
             actor=Actor.person(attendee),
             audience="agent",
+        )
+
+    def lobby_closed(self, attendee: dict) -> None:
+        """They took their agent back out before it woke. The queued ask would read as
+        a fresh request to post, so it goes; one the agent already read stays history."""
+        first = attendee["name"].split()[0]
+        self.store.db.execute(
+            "DELETE FROM notices WHERE attendee_id = ? AND kind = 'chat' AND audience = 'agent' "
+            "AND agent_seen = 0 AND text = ?",
+            (attendee["id"], f"{first} (in the app): {LOBBY_OPENED_ASK}"),
         )
 
     def chat_from_agent(self, attendee: dict, text: str) -> None:

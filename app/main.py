@@ -735,6 +735,8 @@ async def update_me(body: UpdateMe, hw_session: str | None = Cookie(None)) -> di
     )
     if body.lobby_agent and not before["lobby_agent"]:
         hallway.lobby_opened(a)
+    elif body.lobby_agent is False and before["lobby_agent"]:
+        hallway.lobby_closed(a)
     return _me_view(a)
 
 

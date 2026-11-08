@@ -214,6 +214,26 @@ async def test_lobby_choice_at_sign_up_reaches_the_first_run(client, signup, lob
     assert due["runs"] == 0 and due["lobby"] is lobby
 
 
+async def test_taking_the_agent_back_out_drops_the_unread_ask(client, hallway, signup):
+    """On then off before the agent wakes: the queued intro would read as a fresh ask
+    to post, so the agent wakes to nothing. An ask it already read stays in its log."""
+    c, _ = await signup("Sana Qureshi", mode="daypass", lobby=False)
+    aid = await attendee_id(hallway, "sana")
+    await report(client, aid, 0.01)
+
+    await c.put("/api/me", json={"lobby_agent": True})
+    await c.put("/api/me", json={"lobby_agent": False})
+    assert (await client.get("/internal/daypass/due", headers=W)).json() == []
+
+    await c.put("/api/me", json={"lobby_agent": True})
+    assert (await client.get("/internal/daypass/due", headers=W)).json()
+    await hallway.inbox(hallway.store.need_attendee(id=aid))  # the run reads its inbox
+    await report(client, aid, 0.01)
+    await c.put("/api/me", json={"lobby_agent": False})
+    n = hallway.store.one("SELECT COUNT(*) AS n FROM notices WHERE attendee_id = ? AND kind = 'chat'", aid)["n"]
+    assert n == 1
+
+
 async def test_letting_the_agent_into_the_lobby_wakes_it(client, hallway, signup):
     """Turning the lobby on in the app is their ask: the agent starts now and
     introduces them. Not again when it's already on, not when the agent turns it
@@ -236,6 +256,7 @@ async def test_letting_the_agent_into_the_lobby_wakes_it(client, hallway, signup
     assert (await client.get("/internal/daypass/due", headers=W)).json() == []
 
     # The agent letting itself in (with their approval) isn't them asking it to start.
+    await hallway.inbox(hallway.store.need_attendee(id=aid))
     await c.put("/api/me", json={"lobby_agent": False})
     res = await mcp_call(client, me["connect"]["token"], "change_settings", {"lobby": True})
     assert (await c.post(f"/api/approvals/{res['approval_id']}", json={"approve": True})).status_code == 200
