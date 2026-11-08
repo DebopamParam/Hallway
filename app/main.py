@@ -6,6 +6,7 @@ import contextlib
 import csv
 import functools
 import hashlib
+import html as html_lib
 import io
 import ipaddress
 import logging
@@ -1526,7 +1527,9 @@ def _index_html() -> str:
     """index.html with ?v=<content hash> on the app's script and stylesheet. A
     CDN may keep /static/app.js for hours whatever Cache-Control says (Cloudflare
     did); a new URL per deploy means visitors get the new app at once."""
-    html = (STATIC / "index.html").read_text().replace("__HALLWAY_URL__", settings.public_url)
+    # Attribute-escaped: the URL comes from config, and a stray quote would break the page head.
+    url = html_lib.escape(settings.public_url, quote=True)
+    html = (STATIC / "index.html").read_text().replace("__HALLWAY_URL__", url)
     for name in VERSIONED:
         v = hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:12]
         html = html.replace(f'"/static/{name}"', f'"/static/{name}?v={v}"')
