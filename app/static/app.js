@@ -129,6 +129,27 @@ function announce(msg) {
 }
 const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+// For the few buttons that wait on Switch (seconds, not milliseconds): a greyed-out
+// button alone looked frozen. Keeps its width so the row doesn't jump.
+function busy(btn, label) {
+  const html = btn.innerHTML;
+  btn.style.minWidth = `${btn.offsetWidth}px`;
+  btn.disabled = true;
+  btn.classList.add("is-busy");
+  btn.setAttribute("aria-busy", "true");
+  const show = (text) => (btn.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${esc(text)}</span>`);
+  show(label);
+  const slow = setTimeout(() => show("Still working…"), 8000);
+  return () => {
+    clearTimeout(slow);
+    btn.innerHTML = html;
+    btn.style.minWidth = "";
+    btn.disabled = false;
+    btn.classList.remove("is-busy");
+    btn.removeAttribute("aria-busy");
+  };
+}
+
 function toast(msg, tone = "") {
   announce(msg);
   const el = document.getElementById("toast");
@@ -683,8 +704,7 @@ async function onboard(step) {
     save();
     if (s === 1 && !draft.name) { toast("Add your name first"); document.getElementById("name").focus(); return; }
     if (s < 4) return go(`onboard/${s + 1}`);
-    const btn = document.getElementById("next");
-    btn.disabled = true;
+    const done = busy(document.getElementById("next"), "Joining…");
     try {
       state.me = keepKey(await api("/api/register", { body: { name: draft.name, profile: draft.profile, contact: draft.contact,
         autonomy: draft.autonomy, mode: draft.mode || "connect", live_agent_name: draft.live_agent_name || null,
@@ -695,7 +715,7 @@ async function onboard(step) {
     } catch (e) {
       if (e.code === "demo_full") return gate("demo_full", e.data);
       if (e.code === "already_joined") { toast(e.message); state.me = null; return go(""); }
-      toast(e.message); btn.disabled = false;
+      toast(e.message); done();
     }
   };
 }
@@ -1343,8 +1363,8 @@ async function peopleView() {
       : term ? `<div class="empty">${MARK("empty-mark")}<h2>No one matches</h2><p class="small muted">Try a topic, like Rust or payments.</p></div>`
       : `<div class="empty">${MARK("empty-mark")}<h2>You're early</h2><p class="small muted">No one else is here yet. As people arrive, the best matches show up first.</p></div>`);
     document.querySelectorAll("[data-room]").forEach((b) => (b.onclick = async () => {
-      b.disabled = true;
-      try { await startRoomWith(b.dataset.room, b.dataset.name); } catch (e) { toast(e.message); b.disabled = false; }
+      const done = busy(b, "Starting…");
+      try { await startRoomWith(b.dataset.room, b.dataset.name); } catch (e) { toast(e.message); done(); }
     }));
     document.querySelectorAll("[data-contact]").forEach((b) => (b.onclick = async () => {
       try { if (await askSwap(b.dataset.contact, b.dataset.name)) load(); } catch (e) { toast(e.message); }
