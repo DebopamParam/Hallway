@@ -6,5 +6,5 @@ pytest-asyncio==1.4.1.post1
 # Browser checks: scripts/ui_smoke.py, scripts/a11y.py (then: python -m playwright install chromium)
 playwright==1.64.1
 # Lint, format and type check (config in pyproject.toml; CI job "lint", .pre-commit-config.yaml)
-ruff==0.17.3
+ruff==0.17.4
 mypy==2.4.1
