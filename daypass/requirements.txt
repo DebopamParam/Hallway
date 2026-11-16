@@ -464,9 +464,9 @@ fastmcp-slim==4.1.6 \
     --hash=sha256:cd181b9b780161bbfdfc16ca6e417aaa8efd75d0a9ae961fdd20fa992d3d789f \
     --hash=sha256:d25691ae70a7f2b9d8197d6261bdd0f4b9ff33064087cd35c20539b0b48bb1ca
     # via pydantic-ai-slim
-genai-prices==0.2.1 \
-    --hash=sha256:b438753161537f2e2a5c937887721467dd5a24297a52ae77f946f541ce22c3a0 \
-    --hash=sha256:d3c19682e63ae3827e7d166fc92c0f69943f446aa58725f38090301ca1cae36d
+genai-prices==0.2.3 \
+    --hash=sha256:56976ce2b04ec206117f7d0e53f4849211a6724ab3a12119afec304eba63ee25 \
+    --hash=sha256:cdee9b0b2e44b1323c477ebe3c84e44ddbcdd1a3feb0ebce5bb2af1bc667d900
     # via pydantic-ai-slim
 griffelib==2.4.1 \
     --hash=sha256:40c028dd2e623f464423f0e11e3c553158f1cf4f1368239a370534d73e1407ff \
@@ -704,9 +704,9 @@ pydantic==2.14.3 \
     #   pydantic-ai-slim
     #   pydantic-graph
     #   pydantic-settings
-pydantic-ai-slim==2.66.0 \
-    --hash=sha256:78968fa75086ddae9039bdaa3939e9510f15a40d5f1f58fb3ded04386f9292f2 \
-    --hash=sha256:c47bbd0abe6f51e5400308a53b4f7e3409a582b1459140c381e3d4701a205608
+pydantic-ai-slim==2.68.0 \
+    --hash=sha256:7e545ad147ee955d3ee83532ad793570a444a3e7c290328c4809b67a32c78a01 \
+    --hash=sha256:bb2fe81f198b77da7686f7b78c78c8a8ce966807c77d9ae277950fc20b77b165
     # via -r daypass/requirements.in
 pydantic-core==2.50.4 \
     --hash=sha256:0001d6920e3a5d92758cda460d6dc9f918a78ad6d5d092f1c8b5395e6b775356 \
@@ -850,9 +850,9 @@ pydantic-core==2.50.4 \
     --hash=sha256:fc04affef30be98c1f36f0c422a4061ef618fdc1dde79f5ad5458dd496fecffa \
     --hash=sha256:ffb616d8d55965839670301dc3bae3abacff560a7e137a89056058a8a9da4d96
     # via pydantic
-pydantic-graph==2.66.0 \
-    --hash=sha256:5b2a0aafc569c00fdb36879b1e80bed06ed5926979e2c1d44533222f208fd2ec \
-    --hash=sha256:af31fd3ad5f3446556a270b14e1a43b12996f4bb52a0511f58f739dbacadb3f9
+pydantic-graph==2.68.0 \
+    --hash=sha256:1314df1961b0decaa39176531a7a9b63b37c437e69a6463b042e0a1924fadea8 \
+    --hash=sha256:3428c563bb6346aeeda28a79322cfcbe4e0087d7a23881ec2f1b06a95e983f00
     # via pydantic-ai-slim
 pydantic-settings==2.16.2 \
     --hash=sha256:3dc08ffabed2bbd5dc2dd55ead7b78b4e4c5cd776aecd04310db5f1224caaf46 \
