@@ -1,6 +1,6 @@
 # Hallway: the attendee app, the MCP endpoint and the privacy guard.
 # The base image is pinned by exact tag and digest; Dependabot bumps both.
-FROM python:3.15.0-slim-trixie@sha256:f5b92f2a669a4c347044f29367f31983280b648250ca94dea66f98c53bc87e58
+FROM python:3.15.2-slim-trixie@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 
 # No .pyc files at runtime (the root filesystem is read-only in compose), logs
 # straight to `docker logs`, and no pip cache or version check in the image.
